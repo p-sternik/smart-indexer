@@ -1,0 +1,135 @@
+{
+  "name": "smart-indexer",
+  "displayName": "Smart Indexer",
+  "description": "Fast IntelliSense with persistent cache and Git-aware incremental indexing",
+  "version": "0.0.2",
+  "publisher": "local",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/placeholder/smart-indexer.git"
+  },
+  "engines": {
+    "vscode": "^1.106.1"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "smart-indexer.rebuildIndex",
+        "title": "Smart Indexer: Rebuild Index"
+      },
+      {
+        "command": "smart-indexer.clearCache",
+        "title": "Smart Indexer: Clear Cache"
+      },
+      {
+        "command": "smart-indexer.showStats",
+        "title": "Smart Indexer: Show Statistics"
+      }
+    ],
+    "configuration": {
+      "title": "Smart Indexer",
+      "properties": {
+        "smartIndexer.cacheDirectory": {
+          "type": "string",
+          "default": ".smart-index",
+          "description": "Directory name for index cache (relative to workspace root)"
+        },
+        "smartIndexer.enableGitIntegration": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Git-aware incremental indexing"
+        },
+        "smartIndexer.excludePatterns": {
+          "type": "array",
+          "default": [
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/out/**",
+            "**/.git/**",
+            "**/build/**",
+            "**/*.min.js"
+          ],
+          "description": "Glob patterns to exclude from indexing"
+        },
+        "smartIndexer.maxIndexedFileSize": {
+          "type": "number",
+          "default": 1048576,
+          "description": "Maximum file size to index in bytes (default: 1MB)"
+        },
+        "smartIndexer.maxFileSizeMB": {
+          "type": "number",
+          "default": 50,
+          "description": "Maximum file size in MB that Smart Indexer will attempt to index"
+        },
+        "smartIndexer.maxCacheSizeMB": {
+          "type": "number",
+          "default": 500,
+          "description": "Approximate soft limit for on-disk index/cache size in MB"
+        },
+        "smartIndexer.maxConcurrentIndexJobs": {
+          "type": "number",
+          "default": 4,
+          "description": "Maximum number of parallel indexing jobs (1-16)"
+        },
+        "smartIndexer.enableBackgroundIndex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable background indexing of the entire workspace"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "clean": "node -e \"const fs=require('fs');['dist','out','server/out'].forEach(d=>{if(fs.existsSync(d))fs.rmSync(d,{recursive:true,force:true})})\"",
+    "compile": "npm run check-types && npm run lint && npm run compile:client && npm run compile:server",
+    "compile:client": "node esbuild.js",
+    "compile:server": "tsc -p server/tsconfig.json",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "watch:server": "tsc -p server/tsconfig.json --watch",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production && npm run compile:server",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit && tsc -p server/tsconfig.json --noEmit",
+    "lint": "eslint src server/src",
+    "test": "vscode-test",
+    "build": "npm run compile",
+    "rebuild": "npm run clean && npm run build",
+    "vsix": "npm run clean && npm run package && npx vsce package"
+  },
+  "devDependencies": {
+    "@types/minimatch": "^5.1.2",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/sql.js": "^1.4.9",
+    "@types/vscode": "^1.106.1",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.27.0",
+    "eslint": "^9.39.1",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.3"
+  },
+  "dependencies": {
+    "@typescript-eslint/typescript-estree": "^8.48.0",
+    "minimatch": "^10.1.1",
+    "simple-git": "^3.30.0",
+    "sql.js": "^1.10.3",
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.12",
+    "vscode-uri": "^3.1.0"
+  }
+}

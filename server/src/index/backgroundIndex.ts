@@ -1,6 +1,8 @@
 import { ISymbolIndex } from './ISymbolIndex.js';
-import { IndexedSymbol, IndexedFileResult, FileInfo } from '../types.js';
+import { IndexedSymbol, IndexedFileResult, IndexedReference, ImportInfo, ReExportInfo } from '../types.js';
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
+import { LanguageRouter } from '../indexer/languageRouter.js';
+import { fuzzyScore } from '../utils/fuzzySearch.js';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -12,6 +14,9 @@ interface FileShard {
   uri: string;
   hash: string;
   symbols: IndexedSymbol[];
+  references: IndexedReference[];
+  imports: ImportInfo[];
+  reExports?: ReExportInfo[];
   lastIndexedAt: number;
 }
 
@@ -28,15 +33,24 @@ interface FileShard {
  */
 export class BackgroundIndex implements ISymbolIndex {
   private symbolIndexer: SymbolIndexer;
+  private languageRouter: LanguageRouter | null = null;
   private shardsDirectory: string = '';
   private fileMetadata: Map<string, { hash: string; lastIndexedAt: number; symbolCount: number }> = new Map();
   private symbolNameIndex: Map<string, Set<string>> = new Map(); // name -> Set of URIs
+  private symbolIdIndex: Map<string, string> = new Map(); // symbolId -> URI
   private isInitialized: boolean = false;
   private maxConcurrentJobs: number = 4;
 
   constructor(symbolIndexer: SymbolIndexer, maxConcurrentJobs: number = 4) {
     this.symbolIndexer = symbolIndexer;
     this.maxConcurrentJobs = maxConcurrentJobs;
+  }
+
+  /**
+   * Set the language router for multi-language indexing
+   */
+  setLanguageRouter(router: LanguageRouter): void {
+    this.languageRouter = router;
   }
 
   /**
@@ -96,6 +110,9 @@ export class BackgroundIndex implements ISymbolIndex {
               this.symbolNameIndex.set(symbol.name, uriSet);
             }
             uriSet.add(shard.uri);
+
+            // Build symbol ID index
+            this.symbolIdIndex.set(symbol.id, shard.uri);
           }
 
           loadedShards++;
@@ -172,6 +189,9 @@ export class BackgroundIndex implements ISymbolIndex {
       uri: result.uri,
       hash: result.hash,
       symbols: result.symbols,
+      references: result.references || [],
+      imports: result.imports || [],
+      reExports: result.reExports || [],
       lastIndexedAt: Date.now()
     };
 
@@ -191,6 +211,13 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     }
 
+    // Remove old symbol IDs for this URI
+    for (const [symbolId, storedUri] of this.symbolIdIndex) {
+      if (storedUri === uri) {
+        this.symbolIdIndex.delete(symbolId);
+      }
+    }
+
     // Add new symbols
     for (const symbol of result.symbols) {
       let uriSet = this.symbolNameIndex.get(symbol.name);
@@ -199,6 +226,9 @@ export class BackgroundIndex implements ISymbolIndex {
         this.symbolNameIndex.set(symbol.name, uriSet);
       }
       uriSet.add(uri);
+
+      // Add to symbol ID index
+      this.symbolIdIndex.set(symbol.id, uri);
     }
 
     // Save shard to disk
@@ -219,6 +249,13 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     }
 
+    // Remove from symbol ID index
+    for (const [symbolId, storedUri] of this.symbolIdIndex) {
+      if (storedUri === uri) {
+        this.symbolIdIndex.delete(symbolId);
+      }
+    }
+
     await this.deleteShard(uri);
   }
 
@@ -233,7 +270,7 @@ export class BackgroundIndex implements ISymbolIndex {
   /**
    * Get file info for a URI.
    */
-  getFileInfo(uri: string): FileInfo | undefined {
+  getFileInfo(uri: string): { uri: string; hash: string; lastIndexedAt: number } | undefined {
     const metadata = this.fileMetadata.get(uri);
     if (!metadata) {
       return undefined;
@@ -275,8 +312,34 @@ export class BackgroundIndex implements ISymbolIndex {
     return results;
   }
 
+  async findDefinitionById(symbolId: string): Promise<IndexedSymbol | null> {
+    const uri = this.symbolIdIndex.get(symbolId);
+    if (!uri) {
+      return null;
+    }
+
+    const shard = await this.loadShard(uri);
+    if (!shard) {
+      return null;
+    }
+
+    for (const symbol of shard.symbols) {
+      if (symbol.id === symbolId) {
+        return symbol;
+      }
+    }
+
+    return null;
+  }
+
   async findReferences(name: string): Promise<IndexedSymbol[]> {
     return this.findDefinitions(name);
+  }
+
+  async findReferencesById(symbolId: string): Promise<IndexedSymbol[]> {
+    // For now, return the definition itself
+    const def = await this.findDefinitionById(symbolId);
+    return def ? [def] : [];
   }
 
   async searchSymbols(query: string, limit: number): Promise<IndexedSymbol[]> {
@@ -284,9 +347,9 @@ export class BackgroundIndex implements ISymbolIndex {
     const seen = new Set<string>();
     const candidateUris = new Set<string>();
 
-    // Find all symbol names that match the query
+    // Find all symbol names that fuzzy match the query
     for (const [name, uriSet] of this.symbolNameIndex) {
-      if (name.startsWith(query)) {
+      if (fuzzyScore(name, query)) {
         for (const uri of uriSet) {
           candidateUris.add(uri);
         }
@@ -302,7 +365,7 @@ export class BackgroundIndex implements ISymbolIndex {
       const shard = await this.loadShard(uri);
       if (shard) {
         for (const symbol of shard.symbols) {
-          if (symbol.name.startsWith(query)) {
+          if (fuzzyScore(symbol.name, query)) {
             const key = `${symbol.name}:${symbol.location.uri}:${symbol.location.line}:${symbol.location.character}`;
             if (!seen.has(key)) {
               results.push(symbol);
@@ -322,6 +385,61 @@ export class BackgroundIndex implements ISymbolIndex {
   async getFileSymbols(uri: string): Promise<IndexedSymbol[]> {
     const shard = await this.loadShard(uri);
     return shard ? shard.symbols : [];
+  }
+
+  /**
+   * Find all references to a symbol by name.
+   * Returns locations where the symbol is used (not just defined).
+   */
+  async findReferencesByName(name: string): Promise<IndexedReference[]> {
+    const references: IndexedReference[] = [];
+    
+    // Get all URIs that might contain references to this symbol
+    const candidateUris = new Set<string>();
+    
+    // Include all files that define symbols with this name
+    const uriSet = this.symbolNameIndex.get(name);
+    if (uriSet) {
+      for (const uri of uriSet) {
+        candidateUris.add(uri);
+      }
+    }
+    
+    // Also search all files (since references can be in files without definitions)
+    // For efficiency, we could limit this to recently modified files or use a reference index
+    for (const uri of this.getAllFileUris()) {
+      candidateUris.add(uri);
+    }
+    
+    // Load shards and collect matching references
+    for (const uri of candidateUris) {
+      const shard = await this.loadShard(uri);
+      if (shard && shard.references) {
+        for (const ref of shard.references) {
+          if (ref.symbolName === name) {
+            references.push(ref);
+          }
+        }
+      }
+    }
+    
+    return references;
+  }
+
+  /**
+   * Get import info for a file (for import resolution).
+   */
+  async getFileImports(uri: string): Promise<ImportInfo[]> {
+    const shard = await this.loadShard(uri);
+    return shard?.imports || [];
+  }
+
+  /**
+   * Get re-export info for a file (for barrel file resolution).
+   */
+  async getFileReExports(uri: string): Promise<ReExportInfo[]> {
+    const shard = await this.loadShard(uri);
+    return shard?.reExports || [];
   }
 
   /**
@@ -387,7 +505,9 @@ export class BackgroundIndex implements ISymbolIndex {
       const batch = files.slice(i, i + this.maxConcurrentJobs);
       const promises = batch.map(async (uri) => {
         try {
-          const result = await this.symbolIndexer.indexFile(uri);
+          // Use language router if available, otherwise fall back to symbol indexer
+          const indexer = this.languageRouter || this.symbolIndexer;
+          const result = await indexer.indexFile(uri);
           await this.updateFile(uri, result);
           processed++;
           if (onProgress) {

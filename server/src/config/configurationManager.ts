@@ -7,6 +7,12 @@ export interface SmartIndexerConfig {
   maxCacheSizeMB: number;
   maxConcurrentIndexJobs: number;
   enableBackgroundIndex: boolean;
+  textIndexingEnabled: boolean;
+  staticIndexEnabled: boolean;
+  staticIndexPath: string;
+  maxConcurrentWorkers: number;
+  batchSize: number;
+  useFolderHashing: boolean;
 }
 
 const DEFAULT_CONFIG: SmartIndexerConfig = {
@@ -24,7 +30,13 @@ const DEFAULT_CONFIG: SmartIndexerConfig = {
   maxFileSizeMB: 50,
   maxCacheSizeMB: 500,
   maxConcurrentIndexJobs: 4,
-  enableBackgroundIndex: true
+  enableBackgroundIndex: true,
+  textIndexingEnabled: false,
+  staticIndexEnabled: false,
+  staticIndexPath: '',
+  maxConcurrentWorkers: 4,
+  batchSize: 50,
+  useFolderHashing: true
 };
 
 export class ConfigurationManager {
@@ -65,6 +77,24 @@ export class ConfigurationManager {
     if (typeof opts.enableBackgroundIndex === 'boolean') {
       this.config.enableBackgroundIndex = opts.enableBackgroundIndex;
     }
+    if (typeof opts.textIndexingEnabled === 'boolean') {
+      this.config.textIndexingEnabled = opts.textIndexingEnabled;
+    }
+    if (typeof opts.staticIndexEnabled === 'boolean') {
+      this.config.staticIndexEnabled = opts.staticIndexEnabled;
+    }
+    if (typeof opts.staticIndexPath === 'string') {
+      this.config.staticIndexPath = opts.staticIndexPath;
+    }
+    if (typeof opts.maxConcurrentWorkers === 'number') {
+      this.config.maxConcurrentWorkers = Math.max(1, Math.min(16, opts.maxConcurrentWorkers));
+    }
+    if (typeof opts.batchSize === 'number') {
+      this.config.batchSize = Math.max(1, opts.batchSize);
+    }
+    if (typeof opts.useFolderHashing === 'boolean') {
+      this.config.useFolderHashing = opts.useFolderHashing;
+    }
   }
 
   updateFromSettings(settings: any): void {
@@ -93,6 +123,24 @@ export class ConfigurationManager {
     }
     if (typeof settings.enableBackgroundIndex === 'boolean') {
       this.config.enableBackgroundIndex = settings.enableBackgroundIndex;
+    }
+    if (typeof settings.textIndexingEnabled === 'boolean') {
+      this.config.textIndexingEnabled = settings.textIndexingEnabled;
+    }
+    if (typeof settings.staticIndexEnabled === 'boolean') {
+      this.config.staticIndexEnabled = settings.staticIndexEnabled;
+    }
+    if (typeof settings.staticIndexPath === 'string') {
+      this.config.staticIndexPath = settings.staticIndexPath;
+    }
+    if (typeof settings.maxConcurrentWorkers === 'number') {
+      this.config.maxConcurrentWorkers = Math.max(1, Math.min(16, settings.maxConcurrentWorkers));
+    }
+    if (typeof settings.batchSize === 'number') {
+      this.config.batchSize = Math.max(1, settings.batchSize);
+    }
+    if (typeof settings.useFolderHashing === 'boolean') {
+      this.config.useFolderHashing = settings.useFolderHashing;
     }
   }
 

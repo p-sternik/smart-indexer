@@ -44,6 +44,9 @@ export async function activate(context: vscode.ExtensionContext) {
   };
 
   const config = vscode.workspace.getConfiguration('smartIndexer');
+  const mode = config.get<string>('mode', 'standalone');
+  const hybridTimeout = config.get<number>('hybridTimeoutMs', 100);
+  
   const initializationOptions = {
     cacheDirectory: config.get('cacheDirectory', '.smart-index'),
     enableGitIntegration: config.get('enableGitIntegration', true),
@@ -52,19 +55,49 @@ export async function activate(context: vscode.ExtensionContext) {
     maxFileSizeMB: config.get('maxFileSizeMB', 50),
     maxCacheSizeMB: config.get('maxCacheSizeMB', 500),
     maxConcurrentIndexJobs: config.get('maxConcurrentIndexJobs', 4),
-    enableBackgroundIndex: config.get('enableBackgroundIndex', true)
+    enableBackgroundIndex: config.get('enableBackgroundIndex', true),
+    textIndexingEnabled: config.get('textIndexing.enabled', false),
+    staticIndexEnabled: config.get('staticIndex.enabled', false),
+    staticIndexPath: config.get('staticIndex.path', ''),
+    maxConcurrentWorkers: config.get('indexing.maxConcurrentWorkers', 4),
+    batchSize: config.get('indexing.batchSize', 50),
+    useFolderHashing: config.get('indexing.useFolderHashing', true)
   };
 
   logChannel.info('[Client] Initialization options:', initializationOptions);
+  logChannel.info(`[Client] Mode: ${mode}, Hybrid timeout: ${hybridTimeout}ms`);
 
   const middleware: Middleware = {
     provideDefinition: async (document, position, token, next) => {
       logChannel.info(`[Client] Definition request: ${document.uri.fsPath}:${position.line}:${position.character}`);
       const start = Date.now();
       try {
+        // Hybrid mode: try native TypeScript service first
+        if (mode === 'hybrid') {
+          try {
+            const nativeResult = await Promise.race([
+              vscode.commands.executeCommand<vscode.Location[]>(
+                'vscode.executeDefinitionProvider',
+                document.uri,
+                position
+              ),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), hybridTimeout))
+            ]);
+            
+            if (nativeResult && nativeResult.length > 0) {
+              logChannel.info(`[Client] Definition from native TS service: ${nativeResult.length} locations, ${Date.now() - start} ms`);
+              return nativeResult;
+            }
+            logChannel.info(`[Client] Native TS service timed out or returned no results, falling back to Smart Indexer`);
+          } catch (error) {
+            logChannel.warn(`[Client] Native TS service error, falling back to Smart Indexer: ${error}`);
+          }
+        }
+        
+        // Standalone mode or fallback: use Smart Indexer
         const result = await next(document, position, token);
         const count = Array.isArray(result) ? result.length : (result ? 1 : 0);
-        logChannel.info(`[Client] Definition response: ${count} locations, ${Date.now() - start} ms`);
+        logChannel.info(`[Client] Definition response from Smart Indexer: ${count} locations, ${Date.now() - start} ms`);
         return result;
       } catch (error) {
         logChannel.error(`[Client] Definition error: ${error}, ${Date.now() - start} ms`);
@@ -75,9 +108,32 @@ export async function activate(context: vscode.ExtensionContext) {
       logChannel.info(`[Client] References request: ${document.uri.fsPath}:${position.line}:${position.character}`);
       const start = Date.now();
       try {
+        // Hybrid mode: try native TypeScript service first
+        if (mode === 'hybrid') {
+          try {
+            const nativeResult = await Promise.race([
+              vscode.commands.executeCommand<vscode.Location[]>(
+                'vscode.executeReferenceProvider',
+                document.uri,
+                position
+              ),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), hybridTimeout))
+            ]);
+            
+            if (nativeResult && nativeResult.length > 0) {
+              logChannel.info(`[Client] References from native TS service: ${nativeResult.length} locations, ${Date.now() - start} ms`);
+              return nativeResult;
+            }
+            logChannel.info(`[Client] Native TS service timed out or returned no results, falling back to Smart Indexer`);
+          } catch (error) {
+            logChannel.warn(`[Client] Native TS service error, falling back to Smart Indexer: ${error}`);
+          }
+        }
+        
+        // Standalone mode or fallback: use Smart Indexer
         const result = await next(document, position, context, token);
         const count = Array.isArray(result) ? result.length : 0;
-        logChannel.info(`[Client] References response: ${count} locations, ${Date.now() - start} ms`);
+        logChannel.info(`[Client] References response from Smart Indexer: ${count} locations, ${Date.now() - start} ms`);
         return result;
       } catch (error) {
         logChannel.error(`[Client] References error: ${error}, ${Date.now() - start} ms`);
@@ -178,9 +234,17 @@ export async function activate(context: vscode.ExtensionContext) {
         logChannel.info(`  - Total Shards: ${s.totalShards || 0}`);
         logChannel.info(`  - Dynamic Index: ${s.dynamicFiles || 0} files, ${s.dynamicSymbols || 0} symbols`);
         logChannel.info(`  - Background Index: ${s.backgroundFiles || 0} files, ${s.backgroundSymbols || 0} symbols`);
+        logChannel.info(`  - Static Index: ${s.staticFiles || 0} files, ${s.staticSymbols || 0} symbols`);
         logChannel.info(`  - Cache Hits: ${s.cacheHits}`);
         logChannel.info(`  - Cache Misses: ${s.cacheMisses}`);
         logChannel.info(`  - Last Update: ${new Date(s.lastUpdateTime).toISOString()}`);
+
+        const profilingInfo = s.avgDefinitionTimeMs ? `
+**Performance Metrics**:
+- Avg Definition Time: ${s.avgDefinitionTimeMs.toFixed(2)} ms
+- Avg References Time: ${s.avgReferencesTimeMs.toFixed(2)} ms
+- Avg File Index Time: ${s.avgFileIndexTimeMs.toFixed(2)} ms
+` : '';
 
         const message = `
 **Smart Indexer Statistics**
@@ -189,11 +253,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
 **Dynamic Index**: ${s.dynamicFiles || 0} files, ${s.dynamicSymbols || 0} symbols
 **Background Index**: ${s.backgroundFiles || 0} files, ${s.backgroundSymbols || 0} symbols
+**Static Index**: ${s.staticFiles || 0} files, ${s.staticSymbols || 0} symbols
 
 **Cache Performance**:
 - Hits: ${s.cacheHits}
 - Misses: ${s.cacheMisses}
-
+${profilingInfo}
 **Last Update**: ${new Date(s.lastUpdateTime).toLocaleString()}
         `.trim();
 
@@ -201,6 +266,57 @@ export async function activate(context: vscode.ExtensionContext) {
       } catch (error) {
         logChannel.error('[Client] Failed to get stats:', error);
         vscode.window.showErrorMessage(`Failed to get stats: ${error}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('smart-indexer.inspectIndex', async () => {
+      logChannel.info('[Client] ========== INSPECT INDEX COMMAND ==========');
+      try {
+        logChannel.info('[Client] Sending inspectIndex request to server...');
+        const data = await client.sendRequest('smart-indexer/inspectIndex') as any;
+        
+        logChannel.info(`[Client] Index data received: ${data.folderBreakdown?.length || 0} folders`);
+
+        // Build quick pick items
+        interface FolderItem extends vscode.QuickPickItem {
+          folder: string;
+          files: number;
+          symbols: number;
+          sizeBytes: number;
+        }
+
+        const items: FolderItem[] = (data.folderBreakdown || [])
+          .sort((a: any, b: any) => b.symbols - a.symbols)
+          .map((item: any) => ({
+            label: `$(folder) ${path.basename(item.folder)}`,
+            description: `${item.files} files, ${item.symbols} symbols`,
+            detail: `${(item.sizeBytes / 1024).toFixed(1)} KB - ${item.folder}`,
+            folder: item.folder,
+            files: item.files,
+            symbols: item.symbols,
+            sizeBytes: item.sizeBytes
+          }));
+
+        const header: vscode.QuickPickItem = {
+          label: `$(database) Smart Indexer - Total: ${data.totalFiles} files, ${data.totalSymbols} symbols`,
+          kind: vscode.QuickPickItemKind.Separator
+        };
+
+        const indexBreakdown: vscode.QuickPickItem = {
+          label: `Dynamic: ${data.dynamicFiles} files | Background: ${data.backgroundFiles} files | Static: ${data.staticFiles || 0} files`,
+          kind: vscode.QuickPickItemKind.Separator
+        };
+
+        await vscode.window.showQuickPick([header, indexBreakdown, ...items], {
+          title: 'Smart Indexer: Inspect Index',
+          placeHolder: 'Browse indexed folders...'
+        });
+
+      } catch (error) {
+        logChannel.error('[Client] Failed to inspect index:', error);
+        vscode.window.showErrorMessage(`Failed to inspect index: ${error}`);
       }
     })
   );

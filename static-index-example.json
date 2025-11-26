@@ -1,0 +1,41 @@
+{
+  "symbols": [
+    {
+      "name": "ExampleClass",
+      "kind": "class",
+      "location": {
+        "uri": "C:\\Users\\User\\example\\Example.java",
+        "line": 10,
+        "character": 13
+      }
+    },
+    {
+      "name": "processData",
+      "kind": "function",
+      "location": {
+        "uri": "C:\\Users\\User\\example\\Example.java",
+        "line": 15,
+        "character": 16
+      },
+      "containerName": "ExampleClass"
+    },
+    {
+      "name": "MyStruct",
+      "kind": "class",
+      "location": {
+        "uri": "C:\\Users\\User\\example\\example.go",
+        "line": 5,
+        "character": 5
+      }
+    },
+    {
+      "name": "DoSomething",
+      "kind": "function",
+      "location": {
+        "uri": "C:\\Users\\User\\example\\example.go",
+        "line": 12,
+        "character": 5
+      }
+    }
+  ]
+}

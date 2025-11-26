@@ -2,22 +2,29 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
 import { ConfigurationManager } from '../config/configurationManager.js';
+import { FolderHasher } from '../cache/folderHasher.js';
 
 export interface ScanOptions {
   excludePatterns: string[];
   maxFileSize: number;
   configManager: ConfigurationManager;
+  folderHasher?: FolderHasher;
+  useFolderHashing?: boolean;
 }
 
 export class FileScanner {
   private excludePatterns: string[] = [];
   private maxFileSize: number = 1048576;
   private configManager: ConfigurationManager | null = null;
+  private folderHasher: FolderHasher | null = null;
+  private useFolderHashing: boolean = true;
 
   configure(options: ScanOptions): void {
     this.excludePatterns = options.excludePatterns;
     this.maxFileSize = options.maxFileSize;
     this.configManager = options.configManager;
+    this.folderHasher = options.folderHasher || null;
+    this.useFolderHashing = options.useFolderHashing !== undefined ? options.useFolderHashing : true;
   }
 
   async scanWorkspace(workspaceRoot: string): Promise<string[]> {
@@ -30,6 +37,15 @@ export class FileScanner {
 
   private async scanDirectory(dir: string, files: string[]): Promise<void> {
     try {
+      // Check folder hash early exit if enabled
+      if (this.useFolderHashing && this.folderHasher) {
+        const changed = this.folderHasher.hasFolderChanged(dir);
+        if (changed === false) {
+          console.info(`[FileScanner] Skipping unchanged folder: ${dir} (hash unchanged)`);
+          return;
+        }
+      }
+
       const entries = fs.readdirSync(dir, { withFileTypes: true });
 
       for (const entry of entries) {
@@ -73,7 +89,10 @@ export class FileScanner {
     const indexableExtensions = [
       '.ts', '.tsx', '.js', '.jsx',
       '.mts', '.cts', '.mjs', '.cjs',
-      '.json', '.md', '.txt', '.yml', '.yaml'
+      '.json', '.md', '.txt', '.yml', '.yaml',
+      // Text indexable languages
+      '.java', '.go', '.cs', '.py', '.rs',
+      '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp'
     ];
 
     if (!indexableExtensions.includes(ext)) {

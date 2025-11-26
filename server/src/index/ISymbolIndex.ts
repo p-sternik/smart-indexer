@@ -1,4 +1,4 @@
-import { IndexedSymbol } from '../types.js';
+import { IndexedSymbol, ReExportInfo } from '../types.js';
 
 /**
  * Core interface for symbol indices.
@@ -11,10 +11,20 @@ export interface ISymbolIndex {
   findDefinitions(name: string): Promise<IndexedSymbol[]>;
 
   /**
+   * Find a specific symbol by its unique ID.
+   */
+  findDefinitionById(symbolId: string): Promise<IndexedSymbol | null>;
+
+  /**
    * Find all references to a symbol name.
    * For simplicity, this returns the same as findDefinitions.
    */
   findReferences(name: string): Promise<IndexedSymbol[]>;
+
+  /**
+   * Find all references to a specific symbol by ID.
+   */
+  findReferencesById(symbolId: string): Promise<IndexedSymbol[]>;
 
   /**
    * Search for symbols matching a query (prefix search).
@@ -25,4 +35,9 @@ export interface ISymbolIndex {
    * Get all symbols defined in a specific file.
    */
   getFileSymbols(uri: string): Promise<IndexedSymbol[]>;
+
+  /**
+   * Get all re-exports from a specific file (for barrel file resolution).
+   */
+  getFileReExports?(uri: string): Promise<ReExportInfo[]>;
 }

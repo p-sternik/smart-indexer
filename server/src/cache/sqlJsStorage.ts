@@ -97,18 +97,28 @@ export class SqlJsStorage {
         );
 
         CREATE TABLE IF NOT EXISTS symbols (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          id TEXT PRIMARY KEY,
           name TEXT NOT NULL,
           kind TEXT NOT NULL,
           uri TEXT NOT NULL,
           line INTEGER NOT NULL,
           character INTEGER NOT NULL,
-          containerName TEXT
+          startLine INTEGER NOT NULL,
+          startCharacter INTEGER NOT NULL,
+          endLine INTEGER NOT NULL,
+          endCharacter INTEGER NOT NULL,
+          containerName TEXT,
+          containerKind TEXT,
+          fullContainerPath TEXT,
+          isStatic INTEGER,
+          parametersCount INTEGER
         );
 
         CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
         CREATE INDEX IF NOT EXISTS idx_symbols_uri ON symbols(uri);
         CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
+        CREATE INDEX IF NOT EXISTS idx_symbols_container ON symbols(containerName);
+        CREATE INDEX IF NOT EXISTS idx_symbols_fullpath ON symbols(fullContainerPath);
       `);
       console.info('[SqlJsStorage] Database tables created/verified');
     } catch (error) {
@@ -213,12 +223,21 @@ export class SqlJsStorage {
 
   async insertSymbols(
     symbols: Array<{
+      id: string;
       name: string;
       kind: string;
       uri: string;
       line: number;
       character: number;
+      startLine: number;
+      startCharacter: number;
+      endLine: number;
+      endCharacter: number;
       containerName?: string;
+      containerKind?: string;
+      fullContainerPath?: string;
+      isStatic?: boolean;
+      parametersCount?: number;
     }>
   ): Promise<void> {
     if (!this.db || symbols.length === 0) { return; }
@@ -226,8 +245,27 @@ export class SqlJsStorage {
     try {
       for (const sym of symbols) {
         this.db.run(
-          'INSERT INTO symbols (name, kind, uri, line, character, containerName) VALUES (?, ?, ?, ?, ?, ?)',
-          [sym.name, sym.kind, sym.uri, sym.line, sym.character, sym.containerName || null]
+          `INSERT OR REPLACE INTO symbols 
+           (id, name, kind, uri, line, character, startLine, startCharacter, endLine, endCharacter, 
+            containerName, containerKind, fullContainerPath, isStatic, parametersCount) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            sym.id,
+            sym.name,
+            sym.kind,
+            sym.uri,
+            sym.line,
+            sym.character,
+            sym.startLine,
+            sym.startCharacter,
+            sym.endLine,
+            sym.endCharacter,
+            sym.containerName || null,
+            sym.containerKind || null,
+            sym.fullContainerPath || null,
+            sym.isStatic ? 1 : 0,
+            sym.parametersCount || null
+          ]
         );
       }
 
@@ -253,27 +291,46 @@ export class SqlJsStorage {
   }
 
   async findSymbolsByName(name: string): Promise<Array<{
+    id: string;
     name: string;
     kind: string;
     uri: string;
     line: number;
     character: number;
+    startLine: number;
+    startCharacter: number;
+    endLine: number;
+    endCharacter: number;
     containerName: string | null;
+    containerKind: string | null;
+    fullContainerPath: string | null;
+    isStatic: boolean | null;
+    parametersCount: number | null;
   }>> {
     if (!this.db) { return []; }
     try {
       const result = this.db.exec(
-        'SELECT name, kind, uri, line, character, containerName FROM symbols WHERE name = ?',
+        `SELECT id, name, kind, uri, line, character, startLine, startCharacter, endLine, endCharacter, 
+         containerName, containerKind, fullContainerPath, isStatic, parametersCount FROM symbols WHERE name = ?`,
         [name]
       );
       if (result.length > 0) {
         return result[0].values.map((row: any[]) => ({
-          name: row[0] as string,
-          kind: row[1] as string,
-          uri: row[2] as string,
-          line: row[3] as number,
-          character: row[4] as number,
-          containerName: row[5] as string | null
+          id: row[0] as string,
+          name: row[1] as string,
+          kind: row[2] as string,
+          uri: row[3] as string,
+          line: row[4] as number,
+          character: row[5] as number,
+          startLine: row[6] as number,
+          startCharacter: row[7] as number,
+          endLine: row[8] as number,
+          endCharacter: row[9] as number,
+          containerName: row[10] as string | null,
+          containerKind: row[11] as string | null,
+          fullContainerPath: row[12] as string | null,
+          isStatic: row[13] ? true : false,
+          parametersCount: row[14] as number | null
         }));
       }
       return [];
@@ -284,27 +341,42 @@ export class SqlJsStorage {
   }
 
   async findSymbolsByPrefix(prefix: string, limit: number): Promise<Array<{
+    id: string;
     name: string;
     kind: string;
     uri: string;
     line: number;
     character: number;
+    startLine: number;
+    startCharacter: number;
+    endLine: number;
+    endCharacter: number;
     containerName: string | null;
+    containerKind: string | null;
+    isStatic: boolean | null;
   }>> {
     if (!this.db) { return []; }
     try {
       const result = this.db.exec(
-        'SELECT name, kind, uri, line, character, containerName FROM symbols WHERE name LIKE ? LIMIT ?',
+        `SELECT id, name, kind, uri, line, character, startLine, startCharacter, endLine, endCharacter, 
+         containerName, containerKind, isStatic FROM symbols WHERE name LIKE ? LIMIT ?`,
         [prefix + '%', limit]
       );
       if (result.length > 0) {
         return result[0].values.map((row: any[]) => ({
-          name: row[0] as string,
-          kind: row[1] as string,
-          uri: row[2] as string,
-          line: row[3] as number,
-          character: row[4] as number,
-          containerName: row[5] as string | null
+          id: row[0] as string,
+          name: row[1] as string,
+          kind: row[2] as string,
+          uri: row[3] as string,
+          line: row[4] as number,
+          character: row[5] as number,
+          startLine: row[6] as number,
+          startCharacter: row[7] as number,
+          endLine: row[8] as number,
+          endCharacter: row[9] as number,
+          containerName: row[10] as string | null,
+          containerKind: row[11] as string | null,
+          isStatic: row[12] ? true : false
         }));
       }
       return [];
@@ -315,24 +387,41 @@ export class SqlJsStorage {
   }
 
   async getAllSymbols(): Promise<Array<{
+    id: string;
     name: string;
     kind: string;
     uri: string;
     line: number;
     character: number;
+    startLine: number;
+    startCharacter: number;
+    endLine: number;
+    endCharacter: number;
     containerName: string | null;
+    containerKind: string | null;
+    isStatic: boolean | null;
   }>> {
     if (!this.db) { return []; }
     try {
-      const result = this.db.exec('SELECT name, kind, uri, line, character, containerName FROM symbols');
+      const result = this.db.exec(
+        `SELECT id, name, kind, uri, line, character, startLine, startCharacter, endLine, endCharacter, 
+         containerName, containerKind, isStatic FROM symbols`
+      );
       if (result.length > 0) {
         const symbols = result[0].values.map((row: any[]) => ({
-          name: row[0] as string,
-          kind: row[1] as string,
-          uri: row[2] as string,
-          line: row[3] as number,
-          character: row[4] as number,
-          containerName: row[5] as string | null
+          id: row[0] as string,
+          name: row[1] as string,
+          kind: row[2] as string,
+          uri: row[3] as string,
+          line: row[4] as number,
+          character: row[5] as number,
+          startLine: row[6] as number,
+          startCharacter: row[7] as number,
+          endLine: row[8] as number,
+          endCharacter: row[9] as number,
+          containerName: row[10] as string | null,
+          containerKind: row[11] as string | null,
+          isStatic: row[12] ? true : false
         }));
         console.info(`[SqlJsStorage] getAllSymbols() called - returning ${symbols.length} symbols`);
         return symbols;
@@ -345,27 +434,42 @@ export class SqlJsStorage {
   }
 
   async getSymbolsByUri(uri: string): Promise<Array<{
+    id: string;
     name: string;
     kind: string;
     uri: string;
     line: number;
     character: number;
+    startLine: number;
+    startCharacter: number;
+    endLine: number;
+    endCharacter: number;
     containerName: string | null;
+    containerKind: string | null;
+    isStatic: boolean | null;
   }>> {
     if (!this.db) { return []; }
     try {
       const result = this.db.exec(
-        'SELECT name, kind, uri, line, character, containerName FROM symbols WHERE uri = ?',
+        `SELECT id, name, kind, uri, line, character, startLine, startCharacter, endLine, endCharacter, 
+         containerName, containerKind, isStatic FROM symbols WHERE uri = ?`,
         [uri]
       );
       if (result.length > 0) {
         return result[0].values.map((row: any[]) => ({
-          name: row[0] as string,
-          kind: row[1] as string,
-          uri: row[2] as string,
-          line: row[3] as number,
-          character: row[4] as number,
-          containerName: row[5] as string | null
+          id: row[0] as string,
+          name: row[1] as string,
+          kind: row[2] as string,
+          uri: row[3] as string,
+          line: row[4] as number,
+          character: row[5] as number,
+          startLine: row[6] as number,
+          startCharacter: row[7] as number,
+          endLine: row[8] as number,
+          endCharacter: row[9] as number,
+          containerName: row[10] as string | null,
+          containerKind: row[11] as string | null,
+          isStatic: row[12] ? true : false
         }));
       }
       return [];

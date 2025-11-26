@@ -15,8 +15,18 @@ export class StatsManager {
 
   private dynamicStats = { files: 0, symbols: 0 };
   private backgroundStats = { files: 0, symbols: 0, shards: 0 };
+  private staticStats = { files: 0, symbols: 0 };
   private lastFullIndexTime: number = 0;
   private lastIncrementalIndexTime: number = 0;
+  
+  // Profiling metrics
+  private profilingMetrics = {
+    avgDefinitionTimeMs: 0,
+    avgReferencesTimeMs: 0,
+    avgFileIndexTimeMs: 0,
+    avgFullIndexTimeMs: 0,
+    avgIncrementalIndexTimeMs: 0
+  };
 
   updateDynamicStats(files: number, symbols: number): void {
     this.dynamicStats = { files, symbols };
@@ -25,6 +35,11 @@ export class StatsManager {
 
   updateBackgroundStats(files: number, symbols: number, shards: number): void {
     this.backgroundStats = { files, symbols, shards };
+    this.recomputeStats();
+  }
+
+  updateStaticStats(files: number, symbols: number): void {
+    this.staticStats = { files, symbols };
     this.recomputeStats();
   }
 
@@ -47,10 +62,20 @@ export class StatsManager {
   }
 
   private recomputeStats(): void {
-    // Merge dynamic and background stats
+    // Merge dynamic, background, and static stats
     // Note: files may overlap, but we count unique files
-    this.stats.totalFiles = this.backgroundStats.files + this.dynamicStats.files;
-    this.stats.totalSymbols = this.backgroundStats.symbols + this.dynamicStats.symbols;
+    this.stats.totalFiles = this.backgroundStats.files + this.dynamicStats.files + this.staticStats.files;
+    this.stats.totalSymbols = this.backgroundStats.symbols + this.dynamicStats.symbols + this.staticStats.symbols;
+  }
+
+  updateProfilingMetrics(metrics: {
+    avgDefinitionTimeMs?: number;
+    avgReferencesTimeMs?: number;
+    avgFileIndexTimeMs?: number;
+    avgFullIndexTimeMs?: number;
+    avgIncrementalIndexTimeMs?: number;
+  }): void {
+    this.profilingMetrics = { ...this.profilingMetrics, ...metrics };
   }
 
   getStats(): IndexStats & { 
@@ -61,6 +86,13 @@ export class StatsManager {
     dynamicSymbols: number;
     backgroundFiles: number;
     backgroundSymbols: number;
+    staticFiles: number;
+    staticSymbols: number;
+    avgDefinitionTimeMs: number;
+    avgReferencesTimeMs: number;
+    avgFileIndexTimeMs: number;
+    avgFullIndexTimeMs: number;
+    avgIncrementalIndexTimeMs: number;
   } {
     return {
       ...this.stats,
@@ -70,7 +102,10 @@ export class StatsManager {
       dynamicFiles: this.dynamicStats.files,
       dynamicSymbols: this.dynamicStats.symbols,
       backgroundFiles: this.backgroundStats.files,
-      backgroundSymbols: this.backgroundStats.symbols
+      backgroundSymbols: this.backgroundStats.symbols,
+      staticFiles: this.staticStats.files,
+      staticSymbols: this.staticStats.symbols,
+      ...this.profilingMetrics
     };
   }
 
@@ -84,7 +119,15 @@ export class StatsManager {
     };
     this.dynamicStats = { files: 0, symbols: 0 };
     this.backgroundStats = { files: 0, symbols: 0, shards: 0 };
+    this.staticStats = { files: 0, symbols: 0 };
     this.lastFullIndexTime = 0;
     this.lastIncrementalIndexTime = 0;
+    this.profilingMetrics = {
+      avgDefinitionTimeMs: 0,
+      avgReferencesTimeMs: 0,
+      avgFileIndexTimeMs: 0,
+      avgFullIndexTimeMs: 0,
+      avgIncrementalIndexTimeMs: 0
+    };
   }
 }

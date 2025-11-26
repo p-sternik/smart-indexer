@@ -2,6 +2,72 @@
 
 All notable changes to the "smart-indexer" extension will be documented in this file.
 
+## [0.2.0] - 2025-11-26
+
+### Major Phase 2 Improvements - Enhanced Accuracy & UX
+
+#### Added
+- **Hybrid Mode**: Intelligent delegation to VS Code's native TypeScript server for higher accuracy
+  - New `smartIndexer.mode` configuration: `"hybrid"` | `"standalone"` | `"disabled"`
+  - Configurable timeout (`smartIndexer.hybridTimeoutMs`, default 100ms)
+  - Falls back to Smart Indexer if tsserver is slow or returns no results
+  - Eliminates duplicate results from competing providers
+
+- **Import Resolution**: Support for relative imports and partial path mapping
+  - New `ImportResolver` class maps imported symbols to exact source files
+  - Handles relative imports (`./foo`, `../bar`) with proper file extension resolution
+  - Significantly reduces false positives in "Go to Definition"
+  - Example: `import { Foo } from './bar'` now resolves to exact file
+
+- **True Reference Tracking**: Now indexes actual symbol usages, not just definitions
+  - Tracks `Identifier`, `CallExpression`, and `MemberExpression` nodes during AST traversal
+  - Creates `IndexedReference` entries for actual symbol usages
+  - "Find References" now returns where symbols are actually used
+  - Improved cross-file reference tracking
+
+- **Semantic Disambiguation**: Optional TypeChecker fallback for ambiguous symbols
+  - Lightweight `TypeScriptService` class for on-demand semantic resolution
+  - Uses `getSymbolAtLocation()` to disambiguate multiple symbols with same name
+  - Faster than full tsserver, more accurate than pure AST analysis
+  - Configurable timeout (default 200ms)
+
+- **Fuzzy Search & Ranking** (Step 3):
+  - Acronym matching: "CFA" finds "CompatFieldAdapter"
+  - CamelCase boundary detection with +25 point bonus
+  - Word boundary support for delimiters (`_`, `-`, `.`, `/`, `\`)
+  - Smart relevance ranking with multiple factors
+  - Symbol kind prioritization (classes > functions > variables)
+  - Proximity-based ranking (same/parent/sibling directories)
+  - Batched processing prevents UI blocking for large result sets
+
+#### Changed
+- **Significantly reduced false positives** in "Find References"
+  - Now tracks actual usages instead of just matching names
+  - Container-based filtering for better precision
+  
+- **Improved "Go to Definition" accuracy** for common method names
+  - Import resolution eliminates false matches from other files
+  - Semantic disambiguation handles ambiguous cases
+  - Proximity ranking prioritizes likely candidates
+
+- **Enhanced workspace symbol search**:
+  - Fuzzy matching supports acronyms and partial strings
+  - Results ranked by relevance (open files, proximity, symbol kind)
+  - Increased result limit from 100 to 200
+  - Batched processing for non-blocking search
+
+#### Performance
+- Batched symbol ranking (1000 symbols per batch)
+- Event loop yielding prevents UI freezing
+- Maximum 50ms blocking time per batch (down from 500ms+)
+
+#### Documentation
+- Created comprehensive `docs/` folder structure
+- `docs/ARCHITECTURE.md` - System architecture and design
+- `docs/FEATURES.md` - Complete feature documentation
+- `docs/CONFIGURATION.md` - All configuration settings
+- Migrated content from `SMART_INDEXER_VS_VSCODE_NATIVE.md`
+
 ## [0.0.2] - 2025-11-25
 
 ### Major Architecture Refactoring - Clangd-Inspired Index Design

@@ -1,6 +1,8 @@
 import { ISymbolIndex } from './ISymbolIndex.js';
-import { IndexedSymbol, IndexedFileResult } from '../types.js';
+import { IndexedSymbol, IndexedFileResult, IndexedReference, ImportInfo, ReExportInfo } from '../types.js';
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
+import { LanguageRouter } from '../indexer/languageRouter.js';
+import { fuzzyScore } from '../utils/fuzzySearch.js';
 
 /**
  * DynamicIndex - In-memory index for currently open/edited files.
@@ -14,9 +16,17 @@ import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 export class DynamicIndex implements ISymbolIndex {
   private fileSymbols: Map<string, IndexedFileResult> = new Map();
   private symbolIndexer: SymbolIndexer;
+  private languageRouter: LanguageRouter | null = null;
 
   constructor(symbolIndexer: SymbolIndexer) {
     this.symbolIndexer = symbolIndexer;
+  }
+
+  /**
+   * Set the language router for multi-language indexing
+   */
+  setLanguageRouter(router: LanguageRouter): void {
+    this.languageRouter = router;
   }
 
   /**
@@ -24,7 +34,9 @@ export class DynamicIndex implements ISymbolIndex {
    */
   async updateFile(uri: string, content?: string): Promise<void> {
     try {
-      const result = await this.symbolIndexer.indexFile(uri, content);
+      // Use language router if available, otherwise fall back to symbol indexer
+      const indexer = this.languageRouter || this.symbolIndexer;
+      const result = await indexer.indexFile(uri, content);
       this.fileSymbols.set(uri, result);
     } catch (error) {
       console.error(`[DynamicIndex] Error updating file ${uri}: ${error}`);
@@ -59,8 +71,26 @@ export class DynamicIndex implements ISymbolIndex {
     return results;
   }
 
+  async findDefinitionById(symbolId: string): Promise<IndexedSymbol | null> {
+    for (const [_, fileResult] of this.fileSymbols) {
+      for (const symbol of fileResult.symbols) {
+        if (symbol.id === symbolId) {
+          return symbol;
+        }
+      }
+    }
+    return null;
+  }
+
   async findReferences(name: string): Promise<IndexedSymbol[]> {
     return this.findDefinitions(name);
+  }
+
+  async findReferencesById(symbolId: string): Promise<IndexedSymbol[]> {
+    // For now, return the definition itself
+    // In a full implementation, this would return actual references
+    const def = await this.findDefinitionById(symbolId);
+    return def ? [def] : [];
   }
 
   async searchSymbols(query: string, limit: number): Promise<IndexedSymbol[]> {
@@ -69,7 +99,9 @@ export class DynamicIndex implements ISymbolIndex {
 
     for (const [_, fileResult] of this.fileSymbols) {
       for (const symbol of fileResult.symbols) {
-        if (symbol.name.startsWith(query)) {
+        // Use fuzzy matching instead of startsWith
+        const match = fuzzyScore(symbol.name, query);
+        if (match) {
           const key = `${symbol.name}:${symbol.location.uri}:${symbol.location.line}:${symbol.location.character}`;
           if (!seen.has(key)) {
             results.push(symbol);
@@ -88,6 +120,41 @@ export class DynamicIndex implements ISymbolIndex {
   async getFileSymbols(uri: string): Promise<IndexedSymbol[]> {
     const fileResult = this.fileSymbols.get(uri);
     return fileResult ? fileResult.symbols : [];
+  }
+
+  /**
+   * Find all references to a symbol by name.
+   */
+  async findReferencesByName(name: string): Promise<IndexedReference[]> {
+    const references: IndexedReference[] = [];
+    
+    for (const [_, fileResult] of this.fileSymbols) {
+      if (fileResult.references) {
+        for (const ref of fileResult.references) {
+          if (ref.symbolName === name) {
+            references.push(ref);
+          }
+        }
+      }
+    }
+    
+    return references;
+  }
+
+  /**
+   * Get import info for a file.
+   */
+  async getFileImports(uri: string): Promise<ImportInfo[]> {
+    const fileResult = this.fileSymbols.get(uri);
+    return fileResult?.imports || [];
+  }
+
+  /**
+   * Get re-export info for a file (for barrel file resolution).
+   */
+  async getFileReExports(uri: string): Promise<ReExportInfo[]> {
+    const fileResult = this.fileSymbols.get(uri);
+    return fileResult?.reExports || [];
   }
 
   /**

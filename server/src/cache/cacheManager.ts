@@ -53,6 +53,7 @@ export class CacheManager {
       for (const sym of allSymbols) {
         const existing = this.symbolCache.get(sym.name) || [];
         existing.push({
+          id: sym.id || '',
           name: sym.name,
           kind: sym.kind,
           location: {
@@ -60,7 +61,18 @@ export class CacheManager {
             line: sym.line,
             character: sym.character
           },
-          containerName: sym.containerName || undefined
+          range: {
+            startLine: sym.startLine || sym.line,
+            startCharacter: sym.startCharacter || sym.character,
+            endLine: sym.endLine || sym.line,
+            endCharacter: sym.endCharacter || (sym.character + sym.name.length)
+          },
+          containerName: sym.containerName || undefined,
+          containerKind: sym.containerKind || undefined,
+          fullContainerPath: (sym as any).fullContainerPath || undefined,
+          isStatic: sym.isStatic || undefined,
+          parametersCount: (sym as any).parametersCount || undefined,
+          filePath: sym.uri
         });
         this.symbolCache.set(sym.name, existing);
       }
@@ -107,12 +119,21 @@ export class CacheManager {
 
       if (result.symbols.length > 0) {
         const dbSymbols = result.symbols.map(s => ({
+          id: s.id,
           name: s.name,
           kind: s.kind,
           uri: result.uri,
           line: s.location.line,
           character: s.location.character,
-          containerName: s.containerName
+          startLine: s.range.startLine,
+          startCharacter: s.range.startCharacter,
+          endLine: s.range.endLine,
+          endCharacter: s.range.endCharacter,
+          containerName: s.containerName,
+          containerKind: s.containerKind,
+          fullContainerPath: s.fullContainerPath,
+          isStatic: s.isStatic,
+          parametersCount: s.parametersCount
         }));
 
         await this.storage.insertSymbols(dbSymbols);

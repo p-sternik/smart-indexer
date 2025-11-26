@@ -1,5 +1,5 @@
 import { ISymbolIndex } from './ISymbolIndex.js';
-import { IndexedSymbol, IndexedFileResult, IndexedReference, ImportInfo, ReExportInfo } from '../types.js';
+import { IndexedSymbol, IndexedFileResult, IndexedReference, ImportInfo, ReExportInfo, SHARD_VERSION } from '../types.js';
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { fuzzyScore } from '../utils/fuzzySearch.js';
@@ -18,6 +18,7 @@ interface FileShard {
   imports: ImportInfo[];
   reExports?: ReExportInfo[];
   lastIndexedAt: number;
+  shardVersion?: number;
 }
 
 /**
@@ -38,6 +39,7 @@ export class BackgroundIndex implements ISymbolIndex {
   private fileMetadata: Map<string, { hash: string; lastIndexedAt: number; symbolCount: number }> = new Map();
   private symbolNameIndex: Map<string, Set<string>> = new Map(); // name -> Set of URIs
   private symbolIdIndex: Map<string, string> = new Map(); // symbolId -> URI
+  private referenceMap: Map<string, Set<string>> = new Map(); // symbolName -> Set of URIs containing references
   private isInitialized: boolean = false;
   private maxConcurrentJobs: number = 4;
 
@@ -113,6 +115,18 @@ export class BackgroundIndex implements ISymbolIndex {
 
             // Build symbol ID index
             this.symbolIdIndex.set(symbol.id, shard.uri);
+          }
+
+          // Build reference map
+          if (shard.references) {
+            for (const ref of shard.references) {
+              let refUriSet = this.referenceMap.get(ref.symbolName);
+              if (!refUriSet) {
+                refUriSet = new Set();
+                this.referenceMap.set(ref.symbolName, refUriSet);
+              }
+              refUriSet.add(shard.uri);
+            }
           }
 
           loadedShards++;
@@ -218,6 +232,14 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     }
 
+    // Remove old references for this URI
+    for (const [symbolName, uriSet] of this.referenceMap) {
+      uriSet.delete(uri);
+      if (uriSet.size === 0) {
+        this.referenceMap.delete(symbolName);
+      }
+    }
+
     // Add new symbols
     for (const symbol of result.symbols) {
       let uriSet = this.symbolNameIndex.get(symbol.name);
@@ -229,6 +251,18 @@ export class BackgroundIndex implements ISymbolIndex {
 
       // Add to symbol ID index
       this.symbolIdIndex.set(symbol.id, uri);
+    }
+
+    // Add new references
+    if (result.references) {
+      for (const ref of result.references) {
+        let refUriSet = this.referenceMap.get(ref.symbolName);
+        if (!refUriSet) {
+          refUriSet = new Set();
+          this.referenceMap.set(ref.symbolName, refUriSet);
+        }
+        refUriSet.add(uri);
+      }
     }
 
     // Save shard to disk
@@ -253,6 +287,14 @@ export class BackgroundIndex implements ISymbolIndex {
     for (const [symbolId, storedUri] of this.symbolIdIndex) {
       if (storedUri === uri) {
         this.symbolIdIndex.delete(symbolId);
+      }
+    }
+
+    // Remove from reference map
+    for (const [symbolName, uriSet] of this.referenceMap) {
+      uriSet.delete(uri);
+      if (uriSet.size === 0) {
+        this.referenceMap.delete(symbolName);
       }
     }
 
@@ -390,33 +432,36 @@ export class BackgroundIndex implements ISymbolIndex {
   /**
    * Find all references to a symbol by name.
    * Returns locations where the symbol is used (not just defined).
+   * 
+   * @param name Symbol name to search for
+   * @param options Filtering options
    */
-  async findReferencesByName(name: string): Promise<IndexedReference[]> {
+  async findReferencesByName(
+    name: string,
+    options?: { excludeLocal?: boolean; scopeId?: string }
+  ): Promise<IndexedReference[]> {
     const references: IndexedReference[] = [];
     
-    // Get all URIs that might contain references to this symbol
-    const candidateUris = new Set<string>();
+    // Use inverted index to find only files that contain references to this symbol
+    const candidateUris = this.referenceMap.get(name);
     
-    // Include all files that define symbols with this name
-    const uriSet = this.symbolNameIndex.get(name);
-    if (uriSet) {
-      for (const uri of uriSet) {
-        candidateUris.add(uri);
-      }
+    if (!candidateUris || candidateUris.size === 0) {
+      return references; // Fast path: no references found
     }
     
-    // Also search all files (since references can be in files without definitions)
-    // For efficiency, we could limit this to recently modified files or use a reference index
-    for (const uri of this.getAllFileUris()) {
-      candidateUris.add(uri);
-    }
-    
-    // Load shards and collect matching references
+    // Load shards and collect matching references (only for files with references)
     for (const uri of candidateUris) {
       const shard = await this.loadShard(uri);
       if (shard && shard.references) {
         for (const ref of shard.references) {
           if (ref.symbolName === name) {
+            // Apply scope-based filtering
+            if (options?.excludeLocal && ref.isLocal) {
+              continue;
+            }
+            if (options?.scopeId && ref.scopeId !== options.scopeId) {
+              continue;
+            }
             references.push(ref);
           }
         }
@@ -560,9 +605,37 @@ export class BackgroundIndex implements ISymbolIndex {
 
       this.fileMetadata.clear();
       this.symbolNameIndex.clear();
+      this.symbolIdIndex.clear();
+      this.referenceMap.clear();
     } catch (error) {
       console.error(`[BackgroundIndex] Error clearing shards: ${error}`);
       throw error;
     }
+  }
+
+  /**
+   * Get all indexed file URIs.
+   */
+  async getAllFiles(): Promise<string[]> {
+    return this.getAllFileUris();
+  }
+
+  /**
+   * Get the complete file result (symbols, references, imports) for a URI.
+   */
+  async getFileResult(uri: string): Promise<IndexedFileResult | null> {
+    const shard = await this.loadShard(uri);
+    if (!shard) {
+      return null;
+    }
+
+    return {
+      uri: shard.uri,
+      hash: shard.hash,
+      symbols: shard.symbols,
+      references: shard.references,
+      imports: shard.imports,
+      reExports: shard.reExports
+    };
   }
 }

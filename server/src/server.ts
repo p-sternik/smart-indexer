@@ -36,6 +36,7 @@ import { RankingContext } from './utils/fuzzySearch.js';
 import { disambiguateSymbols } from './utils/disambiguation.js';
 import { IndexedSymbol } from './types.js';
 import { TypeScriptService } from './typescript/typeScriptService.js';
+import { DeadCodeDetector } from './features/deadCode.js';
 import { URI } from 'vscode-uri';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -63,6 +64,9 @@ let importResolver: ImportResolver;
 
 // TypeScript service for semantic intelligence
 const typeScriptService = new TypeScriptService();
+
+// Dead code detector
+let deadCodeDetector: DeadCodeDetector;
 
 // New clangd-inspired index architecture
 const dynamicIndex = new DynamicIndex(symbolIndexer);
@@ -450,6 +454,10 @@ async function initializeIndexing(): Promise<void> {
     backgroundIndex.setMaxConcurrentJobs(config.maxConcurrentWorkers || config.maxConcurrentIndexJobs);
     backgroundIndex.setLanguageRouter(languageRouter);
     connection.console.info(`[Server] Background index initialized with ${config.maxConcurrentWorkers || config.maxConcurrentIndexJobs} concurrent jobs`);
+
+    // Initialize dead code detector
+    deadCodeDetector = new DeadCodeDetector(backgroundIndex);
+    connection.console.info('[Server] Dead code detector initialized');
 
     // Set language router for dynamic index too
     dynamicIndex.setLanguageRouter(languageRouter);
@@ -1422,6 +1430,45 @@ function mapCompletionItemKind(kind: string): CompletionItemKind {
       return CompletionItemKind.Text;
   }
 }
+
+connection.onRequest('smart-indexer/findDeadCode', async (options?: {
+  excludePatterns?: string[];
+  includeTests?: boolean;
+}) => {
+  try {
+    connection.console.info('[Server] ========== FIND DEAD CODE REQUEST ==========');
+    
+    if (!deadCodeDetector) {
+      throw new Error('Dead code detector not initialized');
+    }
+    
+    const start = Date.now();
+    const result = await deadCodeDetector.findDeadCode(options);
+    const duration = Date.now() - start;
+    
+    connection.console.info(
+      `[Server] Dead code analysis complete: ${result.candidates.length} candidates found ` +
+      `(${result.analyzedFiles} files analyzed, ${result.totalExports} exports checked) in ${duration}ms`
+    );
+    
+    return {
+      candidates: result.candidates.map(c => ({
+        name: c.symbol.name,
+        kind: c.symbol.kind,
+        filePath: c.symbol.filePath,
+        location: c.symbol.location,
+        reason: c.reason,
+        confidence: c.confidence
+      })),
+      totalExports: result.totalExports,
+      analyzedFiles: result.analyzedFiles,
+      duration
+    };
+  } catch (error) {
+    connection.console.error(`[Server] Error finding dead code: ${error}`);
+    throw error;
+  }
+});
 
 documents.listen(connection);
 

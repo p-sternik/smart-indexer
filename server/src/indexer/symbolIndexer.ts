@@ -1,10 +1,43 @@
 import { parse } from '@typescript-eslint/typescript-estree';
 import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
-import { IndexedFileResult, IndexedSymbol, IndexedReference, ImportInfo, ReExportInfo } from '../types.js';
+import { IndexedFileResult, IndexedSymbol, IndexedReference, ImportInfo, ReExportInfo, SHARD_VERSION } from '../types.js';
 import { createSymbolId } from './symbolResolver.js';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+
+/**
+ * Tracks lexical scopes for local variable filtering.
+ */
+class ScopeTracker {
+  private scopeStack: string[] = [];
+  private localVariables: Map<string, Set<string>> = new Map(); // scopeId -> Set<varName>
+  
+  enterScope(scopeName: string): void {
+    this.scopeStack.push(scopeName);
+  }
+  
+  exitScope(): void {
+    this.scopeStack.pop();
+  }
+  
+  getCurrentScopeId(): string {
+    return this.scopeStack.join('::') || '<global>';
+  }
+  
+  addLocalVariable(varName: string): void {
+    const scopeId = this.getCurrentScopeId();
+    if (!this.localVariables.has(scopeId)) {
+      this.localVariables.set(scopeId, new Set());
+    }
+    this.localVariables.get(scopeId)!.add(varName);
+  }
+  
+  isLocalVariable(varName: string): boolean {
+    const scopeId = this.getCurrentScopeId();
+    return this.localVariables.get(scopeId)?.has(varName) || false;
+  }
+}
 
 export class SymbolIndexer {
   async indexFile(uri: string, content?: string): Promise<IndexedFileResult> {
@@ -23,7 +56,8 @@ export class SymbolIndexer {
           symbols: result.symbols,
           references: result.references,
           imports: result.imports,
-          reExports: result.reExports
+          reExports: result.reExports,
+          shardVersion: SHARD_VERSION
         };
       } else {
         const symbols = this.extractTextSymbols(uri, fileContent);
@@ -33,7 +67,8 @@ export class SymbolIndexer {
           symbols,
           references: [],
           imports: [],
-          reExports: []
+          reExports: [],
+          shardVersion: SHARD_VERSION
         };
       }
     } catch (error) {
@@ -45,7 +80,8 @@ export class SymbolIndexer {
         symbols: [],
         references: [],
         imports: [],
-        reExports: []
+        reExports: [],
+        shardVersion: SHARD_VERSION
       };
     }
   }
@@ -88,8 +124,9 @@ export class SymbolIndexer {
       this.extractImports(ast, imports);
       this.extractReExports(ast, reExports);
 
-      // Second pass: extract symbols and references
-      this.traverseAST(ast, symbols, references, uri, undefined, undefined, [], imports);
+      // Second pass: extract symbols and references with scope tracking
+      const scopeTracker = new ScopeTracker();
+      this.traverseAST(ast, symbols, references, uri, undefined, undefined, [], imports, scopeTracker);
     } catch (error) {
       console.error(`[SymbolIndexer] Error parsing code file ${uri}: ${error}`);
     }
@@ -171,7 +208,8 @@ export class SymbolIndexer {
     containerName?: string,
     containerKind?: string,
     containerPath: string[] = [],
-    imports: ImportInfo[] = []
+    imports: ImportInfo[] = [],
+    scopeTracker?: ScopeTracker
   ): void {
     if (!node || !node.loc) {return;}
 
@@ -183,6 +221,8 @@ export class SymbolIndexer {
         // Skip if this identifier is a declaration (we track it as a symbol)
         if (!this.isDeclaration(parent)) {
           const isImportRef = imports.some(imp => imp.localName === node.name);
+          const isLocal = scopeTracker?.isLocalVariable(node.name) || false;
+          const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
           
           references.push({
             symbolName: node.name,
@@ -198,7 +238,9 @@ export class SymbolIndexer {
               endCharacter: node.loc.end.column
             },
             containerName,
-            isImport: isImportRef
+            isImport: isImportRef,
+            scopeId,
+            isLocal
           });
         }
       }
@@ -207,6 +249,7 @@ export class SymbolIndexer {
       if (node.type === AST_NODE_TYPES.MemberExpression) {
         const memberExpr = node as TSESTree.MemberExpression;
         if (memberExpr.property.type === AST_NODE_TYPES.Identifier && memberExpr.property.loc) {
+          const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
           references.push({
             symbolName: memberExpr.property.name,
             location: {
@@ -220,7 +263,9 @@ export class SymbolIndexer {
               endLine: memberExpr.property.loc.end.line - 1,
               endCharacter: memberExpr.property.loc.end.column
             },
-            containerName
+            containerName,
+            scopeId,
+            isLocal: false
           });
         }
       }
@@ -229,6 +274,7 @@ export class SymbolIndexer {
       let symbolKind: string | undefined;
       let isStatic: boolean | undefined;
       let parametersCount: number | undefined;
+      let needsScopeTracking = false;
 
       switch (node.type) {
         case AST_NODE_TYPES.FunctionDeclaration:
@@ -236,6 +282,7 @@ export class SymbolIndexer {
             symbolName = (node as TSESTree.FunctionDeclaration).id!.name;
             symbolKind = 'function';
             parametersCount = (node as TSESTree.FunctionDeclaration).params.length;
+            needsScopeTracking = true;
           }
           break;
 
@@ -304,6 +351,11 @@ export class SymbolIndexer {
                 fullContainerPath,
                 filePath: uri
               });
+              
+              // Track as local variable if inside a function/method
+              if (scopeTracker && containerName) {
+                scopeTracker.addLocalVariable(varName);
+              }
             }
           }
           break;
@@ -348,6 +400,7 @@ export class SymbolIndexer {
               parametersCount: methodParams,
               filePath: uri
             });
+            needsScopeTracking = true;
           }
           break;
 
@@ -438,19 +491,46 @@ export class SymbolIndexer {
           newContainerPath.push(symbolName);
         }
         
+        // Enter scope for functions/methods
+        if (needsScopeTracking && scopeTracker) {
+          scopeTracker.enterScope(symbolName);
+          
+          // Add parameters as local variables
+          if (node.type === AST_NODE_TYPES.FunctionDeclaration) {
+            const funcNode = node as TSESTree.FunctionDeclaration;
+            for (const param of funcNode.params) {
+              if (param.type === AST_NODE_TYPES.Identifier) {
+                scopeTracker.addLocalVariable(param.name);
+              }
+            }
+          } else if (node.type === AST_NODE_TYPES.MethodDefinition) {
+            const methodNode = node as TSESTree.MethodDefinition;
+            for (const param of methodNode.value.params) {
+              if (param.type === AST_NODE_TYPES.Identifier) {
+                scopeTracker.addLocalVariable(param.name);
+              }
+            }
+          }
+        }
+        
         for (const key in node) {
           const child = (node as any)[key];
           if (child && typeof child === 'object') {
             if (Array.isArray(child)) {
               for (const item of child) {
                 if (item && typeof item === 'object' && item.type) {
-                  this.traverseAST(item, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports);
+                  this.traverseAST(item, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker);
                 }
               }
             } else if (child.type) {
-              this.traverseAST(child, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports);
+              this.traverseAST(child, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker);
             }
           }
+        }
+        
+        // Exit scope for functions/methods
+        if (needsScopeTracking && scopeTracker) {
+          scopeTracker.exitScope();
         }
       } else {
         for (const key in node) {
@@ -459,11 +539,11 @@ export class SymbolIndexer {
             if (Array.isArray(child)) {
               for (const item of child) {
                 if (item && typeof item === 'object' && item.type) {
-                  this.traverseAST(item, symbols, references, uri, containerName, containerKind, containerPath, imports);
+                  this.traverseAST(item, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker);
                 }
               }
             } else if (child.type) {
-              this.traverseAST(child, symbols, references, uri, containerName, containerKind, containerPath, imports);
+              this.traverseAST(child, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker);
             }
           }
         }

@@ -2,6 +2,49 @@
 
 All notable changes to the "smart-indexer" extension will be documented in this file.
 
+## [0.0.4] - 2025-11-26
+
+### Major Improvements - Stability & Dead Code Detection
+
+#### Added
+- **Stable Symbol IDs**: Content-based identifiers that survive code shifts
+  - New ID format: `<fileHash>:<semanticPath>[#signatureHash]`
+  - Position-independent (IDs don't break when adding/removing lines)
+  - File hash based on path (8 chars) + semantic path (e.g., `UserService.save`)
+  - Signature hash for overloaded methods/functions
+  - Shard version bumped to 2 for automatic migration
+
+- **Scope-Based Reference Filtering**: Accurate local variable tracking
+  - New `ScopeTracker` class tracks lexical scopes during AST traversal
+  - `IndexedReference` now includes `scopeId` and `isLocal` fields
+  - Eliminates false positives for local variables in "Find References"
+  - Enhanced `findReferencesByName()` with `excludeLocal` and `scopeId` options
+  - Automatically registers function/method parameters as local variables
+
+- **Dead Code Detection (Beta)**: Find unused exports
+  - New command: `Smart Indexer: Find Dead Code (Beta)`
+  - Analyzes cross-file references to identify unused exports
+  - Confidence scoring: High (no refs) / Medium (few same-file refs) / Low (many refs)
+  - Excludes symbols with `@public` or `@api` JSDoc tags
+  - QuickPick UI with navigation to symbol definitions
+  - Supports configurable exclusion patterns (node_modules, tests, etc.)
+
+#### Changed
+- Shard format version bumped from 1 to 2
+- Automatic re-indexing when old shard format detected
+- Symbol ID generation now uses MD5 hash of file path + semantic path
+
+#### Fixed
+- Symbol references breaking when code shifts (adding/removing lines above)
+- False positives in "Find References" for local variables with common names
+- Reference tracking now distinguishes local vs global scope
+
+#### Documentation
+- Added `IMPLEMENTATION_SUMMARY.md` - Detailed technical documentation
+- Added `IMPROVEMENTS_QUICK_REFERENCE.md` - User-facing quick reference guide
+- Added `IMPLEMENTATION_COMPLETE.md` - Implementation checklist and status
+- Updated README.md with new features and commands
+
 ## [0.2.0] - 2025-11-26
 
 ### Major Phase 2 Improvements - Enhanced Accuracy & UX

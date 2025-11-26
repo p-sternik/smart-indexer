@@ -67,29 +67,42 @@ export async function activate(context: vscode.ExtensionContext) {
   logChannel.info('[Client] Initialization options:', initializationOptions);
   logChannel.info(`[Client] Mode: ${mode}, Hybrid timeout: ${hybridTimeout}ms`);
 
+  let isDelegatingDefinition = false;
+  let isDelegatingReferences = false;
+
   const middleware: Middleware = {
     provideDefinition: async (document, position, token, next) => {
+      if (isDelegatingDefinition) {
+        return null;
+      }
+
       logChannel.info(`[Client] Definition request: ${document.uri.fsPath}:${position.line}:${position.character}`);
       const start = Date.now();
       try {
         // Hybrid mode: try native TypeScript service first
         if (mode === 'hybrid') {
           try {
-            const nativeResult = await Promise.race([
-              vscode.commands.executeCommand<vscode.Location[]>(
-                'vscode.executeDefinitionProvider',
-                document.uri,
-                position
-              ),
-              new Promise<null>((resolve) => setTimeout(() => resolve(null), hybridTimeout))
-            ]);
-            
-            if (nativeResult && nativeResult.length > 0) {
-              logChannel.info(`[Client] Definition from native TS service: ${nativeResult.length} locations, ${Date.now() - start} ms`);
-              return nativeResult;
+            isDelegatingDefinition = true;
+            try {
+              const nativeResult = await Promise.race([
+                vscode.commands.executeCommand<vscode.Location[]>(
+                  'vscode.executeDefinitionProvider',
+                  document.uri,
+                  position
+                ),
+                new Promise<null>((resolve) => setTimeout(() => resolve(null), hybridTimeout))
+              ]);
+              
+              if (nativeResult && nativeResult.length > 0) {
+                logChannel.info(`[Client] Definition from native TS service: ${nativeResult.length} locations, ${Date.now() - start} ms`);
+                return nativeResult;
+              }
+              logChannel.info(`[Client] Native TS service timed out or returned no results, falling back to Smart Indexer`);
+            } finally {
+              isDelegatingDefinition = false;
             }
-            logChannel.info(`[Client] Native TS service timed out or returned no results, falling back to Smart Indexer`);
           } catch (error) {
+            isDelegatingDefinition = false;
             logChannel.warn(`[Client] Native TS service error, falling back to Smart Indexer: ${error}`);
           }
         }
@@ -105,27 +118,37 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     },
     provideReferences: async (document, position, context, token, next) => {
+      if (isDelegatingReferences) {
+        return null;
+      }
+
       logChannel.info(`[Client] References request: ${document.uri.fsPath}:${position.line}:${position.character}`);
       const start = Date.now();
       try {
         // Hybrid mode: try native TypeScript service first
         if (mode === 'hybrid') {
           try {
-            const nativeResult = await Promise.race([
-              vscode.commands.executeCommand<vscode.Location[]>(
-                'vscode.executeReferenceProvider',
-                document.uri,
-                position
-              ),
-              new Promise<null>((resolve) => setTimeout(() => resolve(null), hybridTimeout))
-            ]);
-            
-            if (nativeResult && nativeResult.length > 0) {
-              logChannel.info(`[Client] References from native TS service: ${nativeResult.length} locations, ${Date.now() - start} ms`);
-              return nativeResult;
+            isDelegatingReferences = true;
+            try {
+              const nativeResult = await Promise.race([
+                vscode.commands.executeCommand<vscode.Location[]>(
+                  'vscode.executeReferenceProvider',
+                  document.uri,
+                  position
+                ),
+                new Promise<null>((resolve) => setTimeout(() => resolve(null), hybridTimeout))
+              ]);
+              
+              if (nativeResult && nativeResult.length > 0) {
+                logChannel.info(`[Client] References from native TS service: ${nativeResult.length} locations, ${Date.now() - start} ms`);
+                return nativeResult;
+              }
+              logChannel.info(`[Client] Native TS service timed out or returned no results, falling back to Smart Indexer`);
+            } finally {
+              isDelegatingReferences = false;
             }
-            logChannel.info(`[Client] Native TS service timed out or returned no results, falling back to Smart Indexer`);
           } catch (error) {
+            isDelegatingReferences = false;
             logChannel.warn(`[Client] Native TS service error, falling back to Smart Indexer: ${error}`);
           }
         }
@@ -317,6 +340,112 @@ ${profilingInfo}
       } catch (error) {
         logChannel.error('[Client] Failed to inspect index:', error);
         vscode.window.showErrorMessage(`Failed to inspect index: ${error}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('smart-indexer.findDeadCode', async () => {
+      logChannel.info('[Client] ========== FIND DEAD CODE COMMAND ==========');
+      try {
+        logChannel.info('[Client] Sending findDeadCode request to server...');
+        
+        const result = await client.sendRequest('smart-indexer/findDeadCode', {
+          excludePatterns: ['node_modules', '.test.', '.spec.', 'test/', 'tests/'],
+          includeTests: false
+        }) as any;
+        
+        logChannel.info(
+          `[Client] Dead code analysis complete: ${result.candidates?.length || 0} candidates, ` +
+          `${result.analyzedFiles} files analyzed, ${result.totalExports} exports in ${result.duration}ms`
+        );
+
+        if (!result.candidates || result.candidates.length === 0) {
+          vscode.window.showInformationMessage('No dead code found! All exports are being used.');
+          return;
+        }
+
+        // Group by confidence
+        const highConfidence = result.candidates.filter((c: any) => c.confidence === 'high');
+        const mediumConfidence = result.candidates.filter((c: any) => c.confidence === 'medium');
+        const lowConfidence = result.candidates.filter((c: any) => c.confidence === 'low');
+
+        // Build quick pick items
+        interface DeadCodeItem extends vscode.QuickPickItem {
+          filePath: string;
+          location: any;
+        }
+
+        const items: (DeadCodeItem | vscode.QuickPickItem)[] = [];
+
+        if (highConfidence.length > 0) {
+          items.push({
+            label: `$(warning) High Confidence (${highConfidence.length})`,
+            kind: vscode.QuickPickItemKind.Separator
+          });
+          
+          for (const candidate of highConfidence) {
+            items.push({
+              label: `$(symbol-${candidate.kind}) ${candidate.name}`,
+              description: candidate.kind,
+              detail: `${candidate.filePath}:${candidate.location.line + 1} - ${candidate.reason}`,
+              filePath: candidate.filePath,
+              location: candidate.location
+            });
+          }
+        }
+
+        if (mediumConfidence.length > 0) {
+          items.push({
+            label: `$(info) Medium Confidence (${mediumConfidence.length})`,
+            kind: vscode.QuickPickItemKind.Separator
+          });
+          
+          for (const candidate of mediumConfidence) {
+            items.push({
+              label: `$(symbol-${candidate.kind}) ${candidate.name}`,
+              description: candidate.kind,
+              detail: `${candidate.filePath}:${candidate.location.line + 1} - ${candidate.reason}`,
+              filePath: candidate.filePath,
+              location: candidate.location
+            });
+          }
+        }
+
+        if (lowConfidence.length > 0) {
+          items.push({
+            label: `$(question) Low Confidence (${lowConfidence.length})`,
+            kind: vscode.QuickPickItemKind.Separator
+          });
+          
+          for (const candidate of lowConfidence.slice(0, 20)) { // Limit low confidence to 20
+            items.push({
+              label: `$(symbol-${candidate.kind}) ${candidate.name}`,
+              description: candidate.kind,
+              detail: `${candidate.filePath}:${candidate.location.line + 1} - ${candidate.reason}`,
+              filePath: candidate.filePath,
+              location: candidate.location
+            });
+          }
+        }
+
+        const selected = await vscode.window.showQuickPick(items, {
+          title: `Dead Code Analysis - ${result.candidates.length} unused exports found`,
+          placeHolder: 'Select a symbol to navigate to its definition...'
+        });
+
+        if (selected && 'filePath' in selected) {
+          const uri = vscode.Uri.file(selected.filePath);
+          const document = await vscode.workspace.openTextDocument(uri);
+          const editor = await vscode.window.showTextDocument(document);
+          const position = new vscode.Position(selected.location.line, selected.location.character);
+          editor.selection = new vscode.Selection(position, position);
+          editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+        }
+
+      } catch (error) {
+        logChannel.error('[Client] Failed to find dead code:', error);
+        vscode.window.showErrorMessage(`Failed to find dead code: ${error}`);
       }
     })
   );

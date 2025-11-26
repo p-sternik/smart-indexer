@@ -35,6 +35,10 @@
       {
         "command": "smart-indexer.inspectIndex",
         "title": "Smart Indexer: Inspect Index"
+      },
+      {
+        "command": "smart-indexer.findDeadCode",
+        "title": "Smart Indexer: Find Dead Code (Beta)"
       }
     ],
     "configuration": {

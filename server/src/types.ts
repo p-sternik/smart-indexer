@@ -31,6 +31,8 @@ export interface IndexedReference {
   range: SymbolRange;
   containerName?: string; // context where usage occurs
   isImport?: boolean; // true if part of import declaration
+  scopeId?: string; // lexical scope identifier for local variable filtering
+  isLocal?: boolean; // true if reference is to a local variable/parameter
 }
 
 export interface ImportInfo {
@@ -53,7 +55,8 @@ export interface IndexedFileResult {
   symbols: IndexedSymbol[];
   references: IndexedReference[];
   imports: ImportInfo[];
-  reExports?: ReExportInfo[]; // Track re-exports
+  reExports?: ReExportInfo[];
+  shardVersion?: number; // version of the shard format
 }
 
 export interface FileInfo {
@@ -64,9 +67,12 @@ export interface FileInfo {
 
 export interface Metadata {
   version: number;
+  shardVersion?: number; // current shard format version
   lastGitHash?: string;
   lastUpdatedAt: number;
 }
+
+export const SHARD_VERSION = 2; // Bump when ID format changes
 
 export interface IndexStats {
   totalFiles: number;

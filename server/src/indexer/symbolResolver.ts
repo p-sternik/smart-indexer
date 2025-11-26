@@ -20,7 +20,11 @@ export interface SymbolAtPosition {
 }
 
 /**
- * Create a stable, unique symbol ID based on symbol metadata.
+ * Create a stable, unique symbol ID based on file path hash and semantic path.
+ * Format: <filePathHash>:<containerPath>.<symbolName>[#overloadIndex]
+ * 
+ * This ensures IDs remain stable even when code shifts (e.g., adding lines).
+ * The file path hash is based on the normalized relative path, not content.
  */
 export function createSymbolId(
   uri: string,
@@ -33,18 +37,28 @@ export function createSymbolId(
   startLine: number,
   startCharacter: number
 ): string {
-  const parts = [
-    uri,
-    fullContainerPath || containerName || '<global>',
-    name,
-    kind,
-    isStatic ? 'static' : 'instance',
-    parametersCount !== undefined ? parametersCount.toString() : 'na',
-    startLine.toString(),
-    startCharacter.toString()
-  ];
-  const combined = parts.join(':');
-  return crypto.createHash('sha256').update(combined).digest('hex').substring(0, 16);
+  // Create stable file identifier (hash of file path, not content)
+  const fileHash = crypto.createHash('md5').update(uri).digest('hex').substring(0, 8);
+  
+  // Build semantic path: Container.SymbolName
+  const semanticPath = fullContainerPath 
+    ? `${fullContainerPath}.${name}`
+    : containerName
+      ? `${containerName}.${name}`
+      : name;
+  
+  // For overloaded methods/functions, append signature discriminator
+  let signatureHash = '';
+  if (kind === 'method' || kind === 'function') {
+    const signature = [
+      kind,
+      isStatic ? 'static' : 'instance',
+      parametersCount !== undefined ? parametersCount.toString() : '0'
+    ].join(':');
+    signatureHash = '#' + crypto.createHash('md5').update(signature).digest('hex').substring(0, 4);
+  }
+  
+  return `${fileHash}:${semanticPath}${signatureHash}`;
 }
 
 /**

@@ -27,15 +27,21 @@ For detailed information, see the [docs/](docs/) folder:
 
 ## ✨ What's New
 
-**Latest Version** - Enhanced Accuracy & UX:
-- 🎯 **Hybrid Mode** - Intelligent delegation to VS Code's TypeScript with fast fallback
+**v0.0.3+ - Enhanced Accuracy & Dead Code Detection**:
+- 🆔 **Stable Symbol IDs** - Content-based identifiers survive code shifts
+- 🎯 **Scope-Based Filtering** - Accurate local variable vs global symbol tracking
+- 💀 **Dead Code Detection (Beta)** - Find unused exports with confidence scoring
 - 🔗 **Import Resolution** - Navigate imports to exact files (eliminates false positives)
 - 📍 **True Reference Tracking** - Find References returns actual usages across the workspace
+
+**Previous Version Highlights**:
+- 🎯 **Hybrid Mode** - Intelligent delegation to VS Code's TypeScript with fast fallback
 - 🔍 **Fuzzy Search** - Acronym matching ("CFA" → "CompatFieldAdapter"), smart ranking
 - 🧠 **Semantic Disambiguation** - TypeScript fallback for ambiguous symbols
 - ⚡ **Dual-Index Architecture** - Fast dynamic index + persistent background index
 - 🌍 **Multi-language Support** - Text-based indexing for Java, Go, C#, Python, Rust, C++
 
+See [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) for details on latest improvements.  
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 ## Features
@@ -62,6 +68,7 @@ See [docs/FEATURES.md](docs/FEATURES.md) for complete feature list.
 - **Smart Indexer: Clear Cache** - Clears the on-disk index cache
 - **Smart Indexer: Show Statistics** - Displays indexing statistics with profiling metrics
 - **Smart Indexer: Inspect Index** - Browse index state with folder breakdown
+- **Smart Indexer: Find Dead Code (Beta)** - Identifies unused exports with confidence scoring
 
 ## Configuration
 

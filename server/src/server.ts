@@ -24,6 +24,7 @@ import { SymbolIndexer } from './indexer/symbolIndexer.js';
 import { LanguageRouter } from './indexer/languageRouter.js';
 import { ImportResolver } from './indexer/importResolver.js';
 import { findSymbolAtPosition, matchSymbolById } from './indexer/symbolResolver.js';
+import { parseMemberAccess, resolvePropertyRecursively } from './indexer/recursiveResolver.js';
 import { ConfigurationManager } from './config/configurationManager.js';
 import { DynamicIndex } from './index/dynamicIndex.js';
 import { BackgroundIndex } from './index/backgroundIndex.js';
@@ -872,6 +873,76 @@ connection.onDefinition(
       }
 
       const text = document.getText();
+
+      // NEW: Check if this is a member expression (e.g., myStore.actions.opened)
+      const memberAccess = parseMemberAccess(text, line, character);
+      if (memberAccess && memberAccess.propertyChain.length > 0) {
+        connection.console.log(
+          `[Server] Detected member expression: ${memberAccess.baseName}.${memberAccess.propertyChain.join('.')}`
+        );
+
+        // Step 1: Find the base object definition
+        const baseCandidates = await mergedIndex.findDefinitions(memberAccess.baseName);
+        
+        if (baseCandidates.length > 0) {
+          // Use the first candidate (or disambiguate if needed)
+          let baseSymbol = baseCandidates[0];
+          if (baseCandidates.length > 1) {
+            const ranked = disambiguateSymbols(baseCandidates, uri);
+            baseSymbol = ranked[0];
+          }
+
+          connection.console.log(
+            `[Server] Found base symbol: ${baseSymbol.name} at ${baseSymbol.location.uri}:${baseSymbol.location.line}`
+          );
+
+          // Step 2: Recursively resolve the property chain
+          const fileResolver = async (fileUri: string) => {
+            try {
+              return fs.readFileSync(fileUri, 'utf-8');
+            } catch {
+              return '';
+            }
+          };
+
+          const symbolFinder = async (name: string, fileUri?: string) => {
+            if (fileUri) {
+              const fileSymbols = await mergedIndex.getFileSymbols(fileUri);
+              return fileSymbols.filter(sym => sym.name === name);
+            }
+            return await mergedIndex.findDefinitions(name);
+          };
+
+          const resolved = await resolvePropertyRecursively(
+            baseSymbol,
+            memberAccess.propertyChain,
+            fileResolver,
+            symbolFinder,
+            typeScriptService.isInitialized() ? typeScriptService : undefined
+          );
+
+          if (resolved) {
+            const duration = Date.now() - start;
+            profiler.record('definition', duration);
+            statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
+            
+            connection.console.log(
+              `[Server] Recursive resolution succeeded: ${memberAccess.baseName}.${memberAccess.propertyChain.join('.')} ` +
+              `-> ${resolved.location.uri}:${resolved.location.line} in ${duration} ms`
+            );
+
+            return {
+              uri: URI.file(resolved.location.uri).toString(),
+              range: {
+                start: { line: resolved.range.startLine, character: resolved.range.startCharacter },
+                end: { line: resolved.range.endLine, character: resolved.range.endCharacter }
+              }
+            };
+          } else {
+            connection.console.log(`[Server] Recursive resolution failed, falling back to standard resolution`);
+          }
+        }
+      }
 
       // Try to resolve the exact symbol at the cursor position
       const symbolAtCursor = findSymbolAtPosition(uri, text, line, character);

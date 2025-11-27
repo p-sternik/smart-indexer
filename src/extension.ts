@@ -119,6 +119,56 @@ export async function activate(context: vscode.ExtensionContext) {
   let isDelegatingDefinition = false;
   let isDelegatingReferences = false;
 
+  /**
+   * Deduplicate location results by creating unique keys for each location.
+   * Prevents duplicate definitions pointing to the same location.
+   */
+  function deduplicateLocations(locations: vscode.Location[]): vscode.Location[] {
+    const seen = new Set<string>();
+    const deduplicated: vscode.Location[] = [];
+    
+    for (const location of locations) {
+      const key = `${location.uri.toString()}:${location.range.start.line}:${location.range.start.character}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduplicated.push(location);
+      }
+    }
+    
+    return deduplicated;
+  }
+
+  /**
+   * Normalize result to array format for consistent processing.
+   * Handles Location, Location[], LocationLink, and LocationLink[].
+   */
+  function normalizeToArray(result: vscode.Definition | vscode.LocationLink[] | null | undefined): vscode.Location[] {
+    if (!result) {
+      return [];
+    }
+    if (Array.isArray(result)) {
+      return result.map(item => {
+        // Check if it's a LocationLink (has targetUri property)
+        if ('targetUri' in item) {
+          const link = item as vscode.LocationLink;
+          return new vscode.Location(link.targetUri, link.targetRange);
+        }
+        // Already a Location
+        return item as vscode.Location;
+      });
+    }
+    // Single Location
+    if ('uri' in result) {
+      return [result as vscode.Location];
+    }
+    // Single LocationLink
+    const link = result as vscode.LocationLink;
+    if ('targetUri' in link) {
+      return [new vscode.Location(link.targetUri, link.targetRange)];
+    }
+    return [];
+  }
+
   const middleware: Middleware = {
     provideDefinition: async (document, position, token, next) => {
       if (isDelegatingDefinition) {
@@ -144,7 +194,8 @@ export async function activate(context: vscode.ExtensionContext) {
               
               if (nativeResult && nativeResult.length > 0) {
                 logChannel.info(`[Client] Definition from native TS service: ${nativeResult.length} locations, ${Date.now() - start} ms`);
-                return nativeResult;
+                // Return native results immediately - don't call Smart Indexer
+                return deduplicateLocations(nativeResult);
               }
               logChannel.info(`[Client] Native TS service timed out or returned no results, falling back to Smart Indexer`);
             } finally {
@@ -156,11 +207,13 @@ export async function activate(context: vscode.ExtensionContext) {
           }
         }
         
-        // Standalone mode or fallback: use Smart Indexer
+        // Standalone mode or fallback: use Smart Indexer only
         const result = await next(document, position, token);
-        const count = Array.isArray(result) ? result.length : (result ? 1 : 0);
-        logChannel.info(`[Client] Definition response from Smart Indexer: ${count} locations, ${Date.now() - start} ms`);
-        return result;
+        const normalized = normalizeToArray(result);
+        const deduplicated = deduplicateLocations(normalized);
+        
+        logChannel.info(`[Client] Definition response from Smart Indexer: ${deduplicated.length} locations, ${Date.now() - start} ms`);
+        return deduplicated.length > 0 ? deduplicated : null;
       } catch (error) {
         logChannel.error(`[Client] Definition error: ${error}, ${Date.now() - start} ms`);
         throw error;
@@ -190,7 +243,8 @@ export async function activate(context: vscode.ExtensionContext) {
               
               if (nativeResult && nativeResult.length > 0) {
                 logChannel.info(`[Client] References from native TS service: ${nativeResult.length} locations, ${Date.now() - start} ms`);
-                return nativeResult;
+                // Return native results immediately - don't call Smart Indexer
+                return deduplicateLocations(nativeResult);
               }
               logChannel.info(`[Client] Native TS service timed out or returned no results, falling back to Smart Indexer`);
             } finally {
@@ -202,11 +256,13 @@ export async function activate(context: vscode.ExtensionContext) {
           }
         }
         
-        // Standalone mode or fallback: use Smart Indexer
+        // Standalone mode or fallback: use Smart Indexer only
         const result = await next(document, position, context, token);
-        const count = Array.isArray(result) ? result.length : 0;
-        logChannel.info(`[Client] References response from Smart Indexer: ${count} locations, ${Date.now() - start} ms`);
-        return result;
+        const normalized = normalizeToArray(result);
+        const deduplicated = deduplicateLocations(normalized);
+        
+        logChannel.info(`[Client] References response from Smart Indexer: ${deduplicated.length} locations, ${Date.now() - start} ms`);
+        return deduplicated.length > 0 ? deduplicated : null;
       } catch (error) {
         logChannel.error(`[Client] References error: ${error}, ${Date.now() - start} ms`);
         throw error;

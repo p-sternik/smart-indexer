@@ -352,6 +352,11 @@ export class SymbolIndexer {
                 filePath: uri
               });
               
+              // If the initializer is an object literal, index its properties as nested symbols
+              if (decl.init && decl.init.type === AST_NODE_TYPES.ObjectExpression) {
+                this.indexObjectProperties(decl.init, varName, varKind, uri, symbols, [...containerPath, varName]);
+              }
+              
               // Track as local variable if inside a function/method
               if (scopeTracker && containerName) {
                 scopeTracker.addLocalVariable(varName);
@@ -576,6 +581,68 @@ export class SymbolIndexer {
     // This is a simplified version - in a real implementation,
     // you'd track parent during traversal
     return null;
+  }
+
+  private indexObjectProperties(
+    objExpr: TSESTree.ObjectExpression,
+    containerName: string,
+    containerKind: string,
+    uri: string,
+    symbols: IndexedSymbol[],
+    containerPath: string[]
+  ): void {
+    for (const prop of objExpr.properties) {
+      if (prop.type === AST_NODE_TYPES.Property && prop.loc) {
+        if (prop.key.type === AST_NODE_TYPES.Identifier && prop.key.loc) {
+          const propName = prop.key.name;
+          const fullContainerPath = containerPath.join('.');
+          const id = createSymbolId(
+            uri,
+            propName,
+            containerName,
+            fullContainerPath,
+            'property',
+            false,
+            undefined,
+            prop.key.loc.start.line - 1,
+            prop.key.loc.start.column
+          );
+          
+          symbols.push({
+            id,
+            name: propName,
+            kind: 'property',
+            location: {
+              uri,
+              line: prop.key.loc.start.line - 1,
+              character: prop.key.loc.start.column
+            },
+            range: {
+              startLine: prop.key.loc.start.line - 1,
+              startCharacter: prop.key.loc.start.column,
+              endLine: prop.key.loc.end.line - 1,
+              endCharacter: prop.key.loc.end.column
+            },
+            containerName,
+            containerKind,
+            fullContainerPath,
+            filePath: uri
+          });
+          
+          // Recursively index nested object literals
+          if (prop.value.type === AST_NODE_TYPES.ObjectExpression) {
+            this.indexObjectProperties(
+              prop.value,
+              propName,
+              'property',
+              uri,
+              symbols,
+              [...containerPath, propName]
+            );
+          }
+        }
+      }
+    }
   }
 
   private extractTextSymbols(uri: string, content: string): IndexedSymbol[] {

@@ -39,7 +39,8 @@
           ]
         },
         "writerOpts": {
-          "commitsSort": null
+          "commitsSort": false,
+          "groupBy": "type"
         }
       }
     ],

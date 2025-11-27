@@ -36,6 +36,9 @@ jobs:
         run: xvfb-run -a npm test
         continue-on-error: true
 
+      - name: Configure Git Date Format
+        run: git config --global log.date iso
+
       - name: Semantic Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

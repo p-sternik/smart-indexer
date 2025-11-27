@@ -37,6 +37,9 @@
             { "type": "ci", "section": "CI/CD", "hidden": true },
             { "type": "chore", "section": "Chores", "hidden": true }
           ]
+        },
+        "writerOpts": {
+          "commitsSort": null
         }
       }
     ],

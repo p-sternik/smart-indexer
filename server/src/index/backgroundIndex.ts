@@ -3,6 +3,7 @@ import { IndexedSymbol, IndexedFileResult, IndexedReference, ImportInfo, ReExpor
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { fuzzyScore } from '../utils/fuzzySearch.js';
+import { WorkerPool } from '../utils/workerPool.js';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -42,6 +43,7 @@ export class BackgroundIndex implements ISymbolIndex {
   private referenceMap: Map<string, Set<string>> = new Map(); // symbolName -> Set of URIs containing references
   private isInitialized: boolean = false;
   private maxConcurrentJobs: number = 4;
+  private workerPool: WorkerPool | null = null;
 
   constructor(symbolIndexer: SymbolIndexer, maxConcurrentJobs: number = 4) {
     this.symbolIndexer = symbolIndexer;
@@ -71,6 +73,9 @@ export class BackgroundIndex implements ISymbolIndex {
     if (!fs.existsSync(this.shardsDirectory)) {
       fs.mkdirSync(this.shardsDirectory, { recursive: true });
     }
+
+    const workerScriptPath = path.join(__dirname, 'indexer', 'worker.js');
+    this.workerPool = new WorkerPool(workerScriptPath, this.maxConcurrentJobs);
 
     await this.loadShardMetadata();
     this.isInitialized = true;
@@ -576,14 +581,20 @@ export class BackgroundIndex implements ISymbolIndex {
     let processed = 0;
     const total = files.length;
 
-    // Process in batches
     for (let i = 0; i < files.length; i += this.maxConcurrentJobs) {
       const batch = files.slice(i, i + this.maxConcurrentJobs);
       const promises = batch.map(async (uri) => {
         try {
-          // Use language router if available, otherwise fall back to symbol indexer
-          const indexer = this.languageRouter || this.symbolIndexer;
-          const result = await indexer.indexFile(uri);
+          let result: IndexedFileResult;
+          
+          if (this.workerPool) {
+            const content = fs.readFileSync(uri, 'utf-8');
+            result = await this.workerPool.runTask({ uri, content });
+          } else {
+            const indexer = this.languageRouter || this.symbolIndexer;
+            result = await indexer.indexFile(uri);
+          }
+          
           await this.updateFile(uri, result);
           processed++;
           if (onProgress) {
@@ -636,6 +647,16 @@ export class BackgroundIndex implements ISymbolIndex {
     } catch (error) {
       console.error(`[BackgroundIndex] Error clearing shards: ${error}`);
       throw error;
+    }
+  }
+
+  /**
+   * Cleanup resources including worker pool.
+   */
+  async dispose(): Promise<void> {
+    if (this.workerPool) {
+      await this.workerPool.terminate();
+      this.workerPool = null;
     }
   }
 

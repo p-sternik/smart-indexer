@@ -1546,6 +1546,7 @@ documents.listen(connection);
 connection.onShutdown(async () => {
   try {
     connection.console.info('[Server] Shutting down, closing resources...');
+    await backgroundIndex.dispose();
     connection.console.info('[Server] Resources closed successfully');
   } catch (error) {
     connection.console.error(`[Server] Error during shutdown: ${error}`);

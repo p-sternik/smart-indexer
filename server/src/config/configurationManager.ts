@@ -24,7 +24,10 @@ const DEFAULT_CONFIG: SmartIndexerConfig = {
     '**/out/**',
     '**/.git/**',
     '**/build/**',
-    '**/*.min.js'
+    '**/*.min.js',
+    '**/.angular/**',
+    '**/.nx/**',
+    '**/coverage/**'
   ],
   maxIndexedFileSize: 1048576,
   maxFileSizeMB: 50,
@@ -153,19 +156,33 @@ export class ConfigurationManager {
   }
 
   shouldExcludePath(filePath: string): boolean {
-    // Hardcoded exclusions for VS Code internal and Copilot caches
+    // Hardcoded exclusions for VS Code internal, Copilot caches, and build artifacts
     const hardcodedExclusions = [
       'vscode-userdata:',
       'github.copilot-chat',
       'commandEmbeddings.json',
       '.vscode/extensions',
       'User/globalStorage',
-      'User/workspaceStorage'
+      'User/workspaceStorage',
+      // Angular/Nx build artifacts
+      '/.angular/',
+      '\\.angular\\',
+      '/.nx/',
+      '\\.nx\\',
+      '/dist/',
+      '\\dist\\',
+      '/coverage/',
+      '\\coverage\\',
+      '/node_modules/',
+      '\\node_modules\\',
+      '/.smart-index/',
+      '\\.smart-index\\'
     ];
 
-    const lowerPath = filePath.toLowerCase();
+    const normalizedPath = filePath.replace(/\\/g, '/');
     for (const exclusion of hardcodedExclusions) {
-      if (lowerPath.includes(exclusion.toLowerCase())) {
+      const normalizedExclusion = exclusion.replace(/\\/g, '/');
+      if (normalizedPath.includes(normalizedExclusion)) {
         return true;
       }
     }

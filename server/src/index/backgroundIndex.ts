@@ -4,6 +4,7 @@ import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { fuzzyScore } from '../utils/fuzzySearch.js';
 import { WorkerPool } from '../utils/workerPool.js';
+import { ConfigurationManager } from '../config/configurationManager.js';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -20,6 +21,7 @@ interface FileShard {
   reExports?: ReExportInfo[];
   lastIndexedAt: number;
   shardVersion?: number;
+  mtime?: number; // File modification time in milliseconds
 }
 
 /**
@@ -36,8 +38,9 @@ interface FileShard {
 export class BackgroundIndex implements ISymbolIndex {
   private symbolIndexer: SymbolIndexer;
   private languageRouter: LanguageRouter | null = null;
+  private configManager: ConfigurationManager | null = null;
   private shardsDirectory: string = '';
-  private fileMetadata: Map<string, { hash: string; lastIndexedAt: number; symbolCount: number }> = new Map();
+  private fileMetadata: Map<string, { hash: string; lastIndexedAt: number; symbolCount: number; mtime?: number }> = new Map();
   private symbolNameIndex: Map<string, Set<string>> = new Map(); // name -> Set of URIs
   private symbolIdIndex: Map<string, string> = new Map(); // symbolId -> URI
   private referenceMap: Map<string, Set<string>> = new Map(); // symbolName -> Set of URIs containing references
@@ -55,6 +58,13 @@ export class BackgroundIndex implements ISymbolIndex {
    */
   setLanguageRouter(router: LanguageRouter): void {
     this.languageRouter = router;
+  }
+
+  /**
+   * Set the configuration manager for exclusion filtering
+   */
+  setConfigurationManager(configManager: ConfigurationManager): void {
+    this.configManager = configManager;
   }
 
   /**
@@ -103,7 +113,8 @@ export class BackgroundIndex implements ISymbolIndex {
           this.fileMetadata.set(shard.uri, {
             hash: shard.hash,
             lastIndexedAt: shard.lastIndexedAt,
-            symbolCount: shard.symbols.length
+            symbolCount: shard.symbols.length,
+            mtime: shard.mtime
           });
 
           // Build symbol name index
@@ -237,6 +248,15 @@ export class BackgroundIndex implements ISymbolIndex {
    * Update/add a file to the background index.
    */
   async updateFile(uri: string, result: IndexedFileResult): Promise<void> {
+    // Get current mtime
+    let mtime: number | undefined;
+    try {
+      const stats = fs.statSync(uri);
+      mtime = stats.mtimeMs;
+    } catch (error) {
+      console.warn(`[BackgroundIndex] Could not get mtime for ${uri}: ${error}`);
+    }
+
     const shard: FileShard = {
       uri: result.uri,
       hash: result.hash,
@@ -244,14 +264,17 @@ export class BackgroundIndex implements ISymbolIndex {
       references: result.references || [],
       imports: result.imports || [],
       reExports: result.reExports || [],
-      lastIndexedAt: Date.now()
+      lastIndexedAt: Date.now(),
+      shardVersion: SHARD_VERSION,
+      mtime
     };
 
     // Update in-memory metadata
     this.fileMetadata.set(uri, {
       hash: result.hash,
       lastIndexedAt: shard.lastIndexedAt,
-      symbolCount: result.symbols.length
+      symbolCount: result.symbols.length,
+      mtime
     });
 
     // Update symbol name index
@@ -345,6 +368,37 @@ export class BackgroundIndex implements ISymbolIndex {
   async hasUpToDateShard(uri: string, hash: string): Promise<boolean> {
     const metadata = this.fileMetadata.get(uri);
     return metadata !== undefined && metadata.hash === hash;
+  }
+
+  /**
+   * Check if file needs reindexing based on mtime.
+   * Returns true if file should be indexed (cache miss or stale).
+   */
+  private needsReindexing(uri: string): boolean {
+    const metadata = this.fileMetadata.get(uri);
+    if (!metadata) {
+      return true; // No cache entry
+    }
+
+    // If no mtime stored, fall back to hash-based check
+    if (!metadata.mtime) {
+      return true;
+    }
+
+    try {
+      const stats = fs.statSync(uri);
+      const currentMtime = stats.mtimeMs;
+      
+      // If mtime matches, file is unchanged
+      if (currentMtime === metadata.mtime) {
+        return false;
+      }
+      
+      return true;
+    } catch (error) {
+      // File might not exist anymore
+      return true;
+    }
   }
 
   /**
@@ -536,16 +590,33 @@ export class BackgroundIndex implements ISymbolIndex {
   ): Promise<void> {
     const filesToIndex: string[] = [];
     let checked = 0;
+    let excluded = 0;
 
     // Check which files need indexing
     for (const uri of allFiles) {
       try {
-        const currentHash = await computeHash(uri);
-        const isUpToDate = await this.hasUpToDateShard(uri, currentHash);
-
-        if (!isUpToDate) {
-          filesToIndex.push(uri);
+        // STEP 1: Apply exclusion filters BEFORE any processing
+        if (this.configManager && this.configManager.shouldExcludePath(uri)) {
+          excluded++;
+          checked++;
+          if (onProgress) {
+            onProgress(checked, allFiles.length);
+          }
+          continue;
         }
+
+        // STEP 2: Check mtime-based cache (fast path)
+        if (!this.needsReindexing(uri)) {
+          // File is unchanged based on mtime - skip indexing
+          checked++;
+          if (onProgress) {
+            onProgress(checked, allFiles.length);
+          }
+          continue;
+        }
+
+        // STEP 3: File needs indexing (mtime changed or no cache)
+        filesToIndex.push(uri);
 
         checked++;
         if (onProgress) {
@@ -556,12 +627,19 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     }
 
+    if (excluded > 0) {
+      console.info(`[BackgroundIndex] Excluded ${excluded} files from indexing (build artifacts, node_modules, etc.)`);
+    }
+
     // Remove stale shards (files that no longer exist)
     const currentFileSet = new Set(allFiles);
     const staleFiles = this.getAllFileUris().filter(uri => !currentFileSet.has(uri));
     for (const uri of staleFiles) {
       await this.removeFile(uri);
     }
+
+    // Clean up previously indexed excluded files (purge .angular, dist, etc.)
+    await this.purgeExcludedFiles();
 
     // Index files in parallel using worker pool
     if (filesToIndex.length > 0) {
@@ -570,6 +648,33 @@ export class BackgroundIndex implements ISymbolIndex {
         (current) => onProgress(checked - filesToIndex.length + current, allFiles.length) : 
         undefined
       );
+    } else {
+      console.info(`[BackgroundIndex] All files up to date (mtime-based check)`);
+    }
+  }
+
+  /**
+   * Purge previously indexed files that should now be excluded.
+   * Removes shards for files in .angular, .nx, dist, coverage, etc.
+   */
+  private async purgeExcludedFiles(): Promise<void> {
+    if (!this.configManager) {
+      return;
+    }
+
+    const filesToPurge: string[] = [];
+    
+    for (const uri of this.fileMetadata.keys()) {
+      if (this.configManager.shouldExcludePath(uri)) {
+        filesToPurge.push(uri);
+      }
+    }
+
+    if (filesToPurge.length > 0) {
+      console.info(`[BackgroundIndex] Purging ${filesToPurge.length} excluded files from cache`);
+      for (const uri of filesToPurge) {
+        await this.removeFile(uri);
+      }
     }
   }
 

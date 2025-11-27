@@ -8,6 +8,8 @@ import {
   TransportKind,
   Middleware
 } from 'vscode-languageclient/node';
+import { HybridDefinitionProvider } from './providers/HybridDefinitionProvider';
+import { HybridReferencesProvider } from './providers/HybridReferencesProvider';
 
 let client: LanguageClient;
 let statusBarItem: vscode.StatusBarItem;
@@ -116,160 +118,6 @@ export async function activate(context: vscode.ExtensionContext) {
   logChannel.info('[Client] Initialization options:', initializationOptions);
   logChannel.info(`[Client] Mode: ${mode}, Hybrid timeout: ${hybridTimeout}ms`);
 
-  let isDelegatingDefinition = false;
-  let isDelegatingReferences = false;
-
-  /**
-   * Deduplicate location results by creating unique keys for each location.
-   * Prevents duplicate definitions pointing to the same location.
-   */
-  function deduplicateLocations(locations: vscode.Location[]): vscode.Location[] {
-    const seen = new Set<string>();
-    const deduplicated: vscode.Location[] = [];
-    
-    for (const location of locations) {
-      const key = `${location.uri.toString()}:${location.range.start.line}:${location.range.start.character}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        deduplicated.push(location);
-      }
-    }
-    
-    return deduplicated;
-  }
-
-  /**
-   * Normalize result to array format for consistent processing.
-   * Handles Location, Location[], LocationLink, and LocationLink[].
-   */
-  function normalizeToArray(result: vscode.Definition | vscode.LocationLink[] | null | undefined): vscode.Location[] {
-    if (!result) {
-      return [];
-    }
-    if (Array.isArray(result)) {
-      return result.map(item => {
-        // Check if it's a LocationLink (has targetUri property)
-        if ('targetUri' in item) {
-          const link = item as vscode.LocationLink;
-          return new vscode.Location(link.targetUri, link.targetRange);
-        }
-        // Already a Location
-        return item as vscode.Location;
-      });
-    }
-    // Single Location
-    if ('uri' in result) {
-      return [result as vscode.Location];
-    }
-    // Single LocationLink
-    const link = result as vscode.LocationLink;
-    if ('targetUri' in link) {
-      return [new vscode.Location(link.targetUri, link.targetRange)];
-    }
-    return [];
-  }
-
-  const middleware: Middleware = {
-    provideDefinition: async (document, position, token, next) => {
-      if (isDelegatingDefinition) {
-        return null;
-      }
-
-      logChannel.info(`[Client] Definition request: ${document.uri.fsPath}:${position.line}:${position.character}`);
-      const start = Date.now();
-      try {
-        // Hybrid mode: try native TypeScript service first
-        if (mode === 'hybrid') {
-          try {
-            isDelegatingDefinition = true;
-            try {
-              const nativeResult = await Promise.race([
-                vscode.commands.executeCommand<vscode.Location[]>(
-                  'vscode.executeDefinitionProvider',
-                  document.uri,
-                  position
-                ),
-                new Promise<null>((resolve) => setTimeout(() => resolve(null), hybridTimeout))
-              ]);
-              
-              if (nativeResult && nativeResult.length > 0) {
-                logChannel.info(`[Client] Definition from native TS service: ${nativeResult.length} locations, ${Date.now() - start} ms`);
-                // Return native results immediately - don't call Smart Indexer
-                return deduplicateLocations(nativeResult);
-              }
-              logChannel.info(`[Client] Native TS service timed out or returned no results, falling back to Smart Indexer`);
-            } finally {
-              isDelegatingDefinition = false;
-            }
-          } catch (error) {
-            isDelegatingDefinition = false;
-            logChannel.warn(`[Client] Native TS service error, falling back to Smart Indexer: ${error}`);
-          }
-        }
-        
-        // Standalone mode or fallback: use Smart Indexer only
-        const result = await next(document, position, token);
-        const normalized = normalizeToArray(result);
-        const deduplicated = deduplicateLocations(normalized);
-        
-        logChannel.info(`[Client] Definition response from Smart Indexer: ${deduplicated.length} locations, ${Date.now() - start} ms`);
-        return deduplicated.length > 0 ? deduplicated : null;
-      } catch (error) {
-        logChannel.error(`[Client] Definition error: ${error}, ${Date.now() - start} ms`);
-        throw error;
-      }
-    },
-    provideReferences: async (document, position, context, token, next) => {
-      if (isDelegatingReferences) {
-        return null;
-      }
-
-      logChannel.info(`[Client] References request: ${document.uri.fsPath}:${position.line}:${position.character}`);
-      const start = Date.now();
-      try {
-        // Hybrid mode: try native TypeScript service first
-        if (mode === 'hybrid') {
-          try {
-            isDelegatingReferences = true;
-            try {
-              const nativeResult = await Promise.race([
-                vscode.commands.executeCommand<vscode.Location[]>(
-                  'vscode.executeReferenceProvider',
-                  document.uri,
-                  position
-                ),
-                new Promise<null>((resolve) => setTimeout(() => resolve(null), hybridTimeout))
-              ]);
-              
-              if (nativeResult && nativeResult.length > 0) {
-                logChannel.info(`[Client] References from native TS service: ${nativeResult.length} locations, ${Date.now() - start} ms`);
-                // Return native results immediately - don't call Smart Indexer
-                return deduplicateLocations(nativeResult);
-              }
-              logChannel.info(`[Client] Native TS service timed out or returned no results, falling back to Smart Indexer`);
-            } finally {
-              isDelegatingReferences = false;
-            }
-          } catch (error) {
-            isDelegatingReferences = false;
-            logChannel.warn(`[Client] Native TS service error, falling back to Smart Indexer: ${error}`);
-          }
-        }
-        
-        // Standalone mode or fallback: use Smart Indexer only
-        const result = await next(document, position, context, token);
-        const normalized = normalizeToArray(result);
-        const deduplicated = deduplicateLocations(normalized);
-        
-        logChannel.info(`[Client] References response from Smart Indexer: ${deduplicated.length} locations, ${Date.now() - start} ms`);
-        return deduplicated.length > 0 ? deduplicated : null;
-      } catch (error) {
-        logChannel.error(`[Client] References error: ${error}, ${Date.now() - start} ms`);
-        throw error;
-      }
-    }
-  };
-
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
       { scheme: 'file', language: 'typescript' },
@@ -281,8 +129,7 @@ export async function activate(context: vscode.ExtensionContext) {
       fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{ts,tsx,js,jsx,mts,cts,mjs,cjs}')
     },
     initializationOptions,
-    outputChannel: logChannel,
-    middleware
+    outputChannel: logChannel
   };
 
   client = new LanguageClient(
@@ -300,6 +147,86 @@ export async function activate(context: vscode.ExtensionContext) {
     logChannel.error('[Client] Failed to start language client:', error);
     vscode.window.showErrorMessage(`Smart Indexer failed to start: ${error}`);
     throw error;
+  }
+
+  // Register hybrid providers to deduplicate results from native TS and Smart Indexer
+  if (mode === 'hybrid') {
+    logChannel.info('[Client] Registering hybrid providers for deduplication');
+
+    const languageSelector: vscode.DocumentSelector = [
+      { scheme: 'file', language: 'typescript' },
+      { scheme: 'file', language: 'javascript' },
+      { scheme: 'file', language: 'typescriptreact' },
+      { scheme: 'file', language: 'javascriptreact' }
+    ];
+
+    // Create wrapper functions to call the LSP client
+    const smartDefinitionProvider = async (
+      document: vscode.TextDocument,
+      position: vscode.Position,
+      token: vscode.CancellationToken
+    ): Promise<vscode.Definition | vscode.LocationLink[] | null | undefined> => {
+      try {
+        const result = await client.sendRequest(
+          'textDocument/definition',
+          {
+            textDocument: { uri: document.uri.toString() },
+            position: { line: position.line, character: position.character }
+          },
+          token
+        );
+        return result as vscode.Definition | vscode.LocationLink[] | null | undefined;
+      } catch (error) {
+        logChannel.error(`[Client] Smart definition provider error: ${error}`);
+        return null;
+      }
+    };
+
+    const smartReferencesProvider = async (
+      document: vscode.TextDocument,
+      position: vscode.Position,
+      context: vscode.ReferenceContext,
+      token: vscode.CancellationToken
+    ): Promise<vscode.Location[] | null | undefined> => {
+      try {
+        const result = await client.sendRequest(
+          'textDocument/references',
+          {
+            textDocument: { uri: document.uri.toString() },
+            position: { line: position.line, character: position.character },
+            context: { includeDeclaration: context.includeDeclaration }
+          },
+          token
+        );
+        return result as vscode.Location[] | null | undefined;
+      } catch (error) {
+        logChannel.error(`[Client] Smart references provider error: ${error}`);
+        return null;
+      }
+    };
+
+    const hybridDefinitionProvider = new HybridDefinitionProvider(
+      smartDefinitionProvider,
+      hybridTimeout,
+      logChannel
+    );
+
+    const hybridReferencesProvider = new HybridReferencesProvider(
+      smartReferencesProvider,
+      hybridTimeout,
+      logChannel
+    );
+
+    // Register with high priority to intercept before other providers
+    context.subscriptions.push(
+      vscode.languages.registerDefinitionProvider(languageSelector, hybridDefinitionProvider)
+    );
+
+    context.subscriptions.push(
+      vscode.languages.registerReferenceProvider(languageSelector, hybridReferencesProvider)
+    );
+
+    logChannel.info('[Client] Hybrid providers registered successfully');
   }
 
   context.subscriptions.push(

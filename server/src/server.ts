@@ -454,6 +454,7 @@ async function initializeIndexing(): Promise<void> {
     await backgroundIndex.init(workspaceRoot, config.cacheDirectory);
     backgroundIndex.setMaxConcurrentJobs(config.maxConcurrentWorkers || config.maxConcurrentIndexJobs);
     backgroundIndex.setLanguageRouter(languageRouter);
+    backgroundIndex.setConfigurationManager(configManager);
     connection.console.info(`[Server] Background index initialized with ${config.maxConcurrentWorkers || config.maxConcurrentIndexJobs} concurrent jobs`);
 
     // Initialize dead code detector

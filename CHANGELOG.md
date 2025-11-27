@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0](https://github.com/p-sternik/smart-indexer/compare/v1.4.0...v1.5.0) (2025-11-27)
+
+
+### Features
+
+* Implement NgRx Pattern Recognition with modern and legacy support ([3005df3](https://github.com/p-sternik/smart-indexer/commit/3005df30de1553232df4635b13f3fe25eb66d867))
+
 ## [1.4.0](https://github.com/p-sternik/smart-indexer/compare/v1.3.0...v1.4.0) (2025-11-27)
 
 

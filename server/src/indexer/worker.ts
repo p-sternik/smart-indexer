@@ -3,6 +3,7 @@ import { parse } from '@typescript-eslint/typescript-estree';
 import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
 import { IndexedFileResult, IndexedSymbol, IndexedReference, ImportInfo, ReExportInfo, SHARD_VERSION, NgRxMetadata } from '../types.js';
 import { createSymbolId } from './symbolResolver.js';
+import { toCamelCase } from '../utils/stringUtils.js';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -55,6 +56,13 @@ function isNgRxCreateActionCall(node: TSESTree.CallExpression): boolean {
   return false;
 }
 
+function isNgRxCreateActionGroupCall(node: TSESTree.CallExpression): boolean {
+  if (node.callee.type === AST_NODE_TYPES.Identifier) {
+    return node.callee.name === 'createActionGroup';
+  }
+  return false;
+}
+
 function isNgRxCreateEffectCall(node: TSESTree.CallExpression): boolean {
   if (node.callee.type === AST_NODE_TYPES.Identifier) {
     return node.callee.name === 'createEffect';
@@ -97,6 +105,145 @@ function hasActionInterface(node: TSESTree.ClassDeclaration): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Process createActionGroup calls and generate virtual symbols for action methods
+ * 
+ * Example:
+ *   const PageActions = createActionGroup({
+ *     source: 'Page',
+ *     events: {
+ *       'Load Data': emptyProps(),
+ *       'Load': emptyProps()
+ *     }
+ *   });
+ * 
+ * This generates virtual symbols:
+ *   - loadData (method) for 'Load Data'
+ *   - load (method) for 'Load'
+ */
+function processCreateActionGroup(
+  callExpr: TSESTree.CallExpression,
+  containerName: string,
+  uri: string,
+  symbols: IndexedSymbol[],
+  containerPath: string[]
+): void {
+  // createActionGroup expects a config object as first argument
+  if (callExpr.arguments.length === 0) {
+    return;
+  }
+
+  const configArg = callExpr.arguments[0];
+  if (configArg.type !== AST_NODE_TYPES.ObjectExpression) {
+    return;
+  }
+
+  // Find the 'events' property in the config object
+  let eventsProperty: TSESTree.Property | null = null;
+  for (const prop of configArg.properties) {
+    if (prop.type === AST_NODE_TYPES.Property && 
+        prop.key.type === AST_NODE_TYPES.Identifier &&
+        prop.key.name === 'events') {
+      eventsProperty = prop;
+      break;
+    }
+  }
+
+  if (!eventsProperty || eventsProperty.value.type !== AST_NODE_TYPES.ObjectExpression) {
+    return;
+  }
+
+  const eventsObject = eventsProperty.value as TSESTree.ObjectExpression;
+  const fullContainerPath = containerPath.length > 0 ? containerPath.join('.') : undefined;
+
+  // Process each event in the events object
+  for (const eventProp of eventsObject.properties) {
+    if (eventProp.type !== AST_NODE_TYPES.Property || !eventProp.loc) {
+      continue;
+    }
+
+    let eventKey: string | null = null;
+    let keyLocation: { line: number; character: number } | null = null;
+    let keyRange: { startLine: number; startCharacter: number; endLine: number; endCharacter: number } | null = null;
+
+    // Extract the event key (can be Identifier or StringLiteral)
+    if (eventProp.key.type === AST_NODE_TYPES.Identifier && eventProp.key.loc) {
+      eventKey = eventProp.key.name;
+      keyLocation = {
+        line: eventProp.key.loc.start.line - 1,
+        character: eventProp.key.loc.start.column
+      };
+      keyRange = {
+        startLine: eventProp.key.loc.start.line - 1,
+        startCharacter: eventProp.key.loc.start.column,
+        endLine: eventProp.key.loc.end.line - 1,
+        endCharacter: eventProp.key.loc.end.column
+      };
+    } else if (eventProp.key.type === AST_NODE_TYPES.Literal && 
+               typeof eventProp.key.value === 'string' &&
+               eventProp.key.loc) {
+      eventKey = eventProp.key.value;
+      keyLocation = {
+        line: eventProp.key.loc.start.line - 1,
+        character: eventProp.key.loc.start.column
+      };
+      keyRange = {
+        startLine: eventProp.key.loc.start.line - 1,
+        startCharacter: eventProp.key.loc.start.column,
+        endLine: eventProp.key.loc.end.line - 1,
+        endCharacter: eventProp.key.loc.end.column
+      };
+    }
+
+    if (!eventKey || !keyLocation || !keyRange) {
+      continue;
+    }
+
+    // Convert the event key to camelCase (this is what NgRx generates at runtime)
+    // 'Load Data' -> 'loadData'
+    // 'Load' -> 'load'
+    const camelCaseName = toCamelCase(eventKey);
+
+    if (!camelCaseName) {
+      continue;
+    }
+
+    // Create a virtual symbol for the generated action method
+    const id = createSymbolId(
+      uri,
+      camelCaseName,
+      containerName,
+      fullContainerPath,
+      'method',
+      false,
+      0, // Action creators typically have 0 or optional props parameter
+      keyLocation.line,
+      keyLocation.character
+    );
+
+    symbols.push({
+      id,
+      name: camelCaseName,
+      kind: 'method',
+      location: {
+        uri,
+        line: keyLocation.line,
+        character: keyLocation.character
+      },
+      range: keyRange,
+      containerName,
+      containerKind: 'constant',
+      fullContainerPath,
+      filePath: uri,
+      parametersCount: 0,
+      ngrxMetadata: {
+        type: eventKey, // Original event key name
+        role: 'action'
+      }
+    });
+  }
 }
 
 function hasEffectDecorator(node: TSESTree.PropertyDefinition): boolean {
@@ -536,7 +683,7 @@ function traverseAST(
             const varName = decl.id.name;
             const fullContainerPath = containerPath.length > 0 ? containerPath.join('.') : undefined;
             
-            // Check if this is an NgRx createAction call
+            // Check if this is an NgRx call expression
             let ngrxMetadata: NgRxMetadata | undefined;
             if (decl.init && decl.init.type === AST_NODE_TYPES.CallExpression) {
               const callExpr = decl.init as TSESTree.CallExpression;
@@ -550,6 +697,24 @@ function traverseAST(
                     role: 'action'
                   };
                 }
+              }
+              
+              // Modern NgRx: createActionGroup
+              // Process this BEFORE creating the main symbol, so virtual symbols are added first
+              if (isNgRxCreateActionGroupCall(callExpr)) {
+                processCreateActionGroup(
+                  callExpr,
+                  varName,
+                  uri,
+                  symbols,
+                  [...containerPath, varName]
+                );
+                
+                // Add metadata to the container variable itself
+                ngrxMetadata = {
+                  type: varName,
+                  role: 'action'
+                };
               }
               
               // Modern NgRx: createEffect

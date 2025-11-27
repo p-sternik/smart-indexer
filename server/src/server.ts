@@ -1667,6 +1667,66 @@ connection.onRequest('smart-indexer/findDeadCode', async (options?: {
   }
 });
 
+// Initialize dependency graph service
+import { DependencyGraphService } from './features/dependencyGraph.js';
+let dependencyGraphService: DependencyGraphService;
+
+connection.onRequest('smartIndexer/getDependencyTree', async (params: {
+  filePath: string;
+  direction: 'incoming' | 'outgoing';
+  maxDepth?: number;
+}) => {
+  try {
+    connection.console.info(
+      `[Server] Get dependency tree: ${params.filePath}, direction: ${params.direction}, depth: ${params.maxDepth || 3}`
+    );
+
+    if (!dependencyGraphService) {
+      dependencyGraphService = new DependencyGraphService(mergedIndex);
+    }
+
+    const tree = await dependencyGraphService.buildDependencyTree(
+      params.filePath,
+      params.direction,
+      params.maxDepth || 3
+    );
+
+    connection.console.info(`[Server] Dependency tree built for ${params.filePath}`);
+    return tree;
+  } catch (error) {
+    connection.console.error(`[Server] Error building dependency tree: ${error}`);
+    throw error;
+  }
+});
+
+connection.onRequest('smartIndexer/generateMermaid', async (params: {
+  filePath: string;
+  direction: 'incoming' | 'outgoing';
+  maxDepth?: number;
+}) => {
+  try {
+    connection.console.info(
+      `[Server] Generate Mermaid: ${params.filePath}, direction: ${params.direction}, depth: ${params.maxDepth || 3}`
+    );
+
+    if (!dependencyGraphService) {
+      dependencyGraphService = new DependencyGraphService(mergedIndex);
+    }
+
+    const mermaidString = await dependencyGraphService.generateMermaidString(
+      params.filePath,
+      params.direction,
+      params.maxDepth || 3
+    );
+
+    connection.console.info(`[Server] Mermaid diagram generated for ${params.filePath}`);
+    return { mermaidString };
+  } catch (error) {
+    connection.console.error(`[Server] Error generating Mermaid: ${error}`);
+    throw error;
+  }
+});
+
 documents.listen(connection);
 
 connection.onShutdown(async () => {

@@ -1181,18 +1181,22 @@ loadUsers$ = this.actions$.pipe(ofType('[Users] Load'));
 
 ---
 
-## 11. Related Documentation
+## 11. Additional Resources
 
-- **Implementation Details:** `IMPLEMENTATION_COMPLETE.md`
-- **Incremental Indexing:** `INCREMENTAL_INDEXING_IMPLEMENTATION.md`
-- **Live Sync:** `LIVE_SYNC_IMPLEMENTATION.md`
-- **Worker Pool:** `WORKER_POOL_ARCHITECTURE.md`
-- **Storage Optimization:** `STORAGE_IMPLEMENTATION_SUMMARY.md`
-- **AST Parser Improvements:** `AST_PARSER_IMPROVEMENTS.md`
-- **Hybrid Deduplication:** `HYBRID_DEDUPLICATION_IMPLEMENTATION.md`
-- **NgRx Pattern Recognition:** `NGRX_PATTERN_RECOGNITION.md` ✨ **NEW**
-- **NgRx Quick Reference:** `NGRX_QUICK_REF.md` ✨ **NEW**
+### Project Documentation
+- **Project README:** `../README.md` - Extension overview and installation
+- **Changelog:** `../CHANGELOG.md` - Version history and release notes
+- **Marketplace README:** `MARKETPLACE_README.md` - VS Code Marketplace listing
+
+### Repository Audit
+For a comprehensive technical comparison with VS Code's native TypeScript service, including detailed performance benchmarks and architecture analysis, see `../SMART_INDEXER_AUDIT.md`.
 
 ---
 
 **END OF ARCHITECTURAL CONTEXT**
+
+---
+
+## Document History
+
+**2025-11-27**: Consolidated all implementation documentation into this single source of truth. Removed redundant files for cleaner repository structure.

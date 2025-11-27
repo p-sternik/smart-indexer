@@ -4,7 +4,7 @@
   "description": "Fast IntelliSense with persistent cache and Git-aware incremental indexing",
   "version": "1.5.0",
   "publisher": "psternik",
-  "readme": "./docs/MARKETPLACE_README.md",
+  "readme": "./MARKETPLACE_README.md",
   "repository": {
     "type": "git",
     "url": "https://github.com/p-sternik/smart-indexer.git"
@@ -40,8 +40,59 @@
       {
         "command": "smart-indexer.findDeadCode",
         "title": "Smart Indexer: Find Dead Code (Beta)"
+      },
+      {
+        "command": "smart-indexer.showImpact",
+        "title": "Smart Indexer: Show Impact Analysis",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "smart-indexer.exportMermaid",
+        "title": "Export to Mermaid",
+        "icon": "$(export)"
+      },
+      {
+        "command": "smart-indexer.refreshDependencyTree",
+        "title": "Refresh",
+        "icon": "$(refresh)"
       }
     ],
+    "views": {
+      "explorer": [
+        {
+          "id": "smartIndexer.dependencyTree",
+          "name": "Impact Analysis",
+          "when": "smartIndexer.dependencyTreeEnabled"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "smartIndexer.dependencyTree",
+        "contents": "No dependency analysis active.\n[Show Impact](command:smart-indexer.showImpact)\nRight-click on a file in the explorer to analyze its dependencies."
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "smart-indexer.showImpact",
+          "when": "resourceExtname =~ /\\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$/",
+          "group": "navigation@1"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "smart-indexer.exportMermaid",
+          "when": "view == smartIndexer.dependencyTree",
+          "group": "navigation@1"
+        },
+        {
+          "command": "smart-indexer.refreshDependencyTree",
+          "when": "view == smartIndexer.dependencyTree",
+          "group": "navigation@2"
+        }
+      ]
+    },
     "configuration": {
       "title": "Smart Indexer",
       "properties": {

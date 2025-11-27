@@ -1,4 +1,4 @@
-import { IndexedSymbol, ReExportInfo } from '../types.js';
+import { IndexedSymbol, ReExportInfo, IndexedReference, ImportInfo } from '../types.js';
 
 /**
  * Core interface for symbol indices.
@@ -40,4 +40,14 @@ export interface ISymbolIndex {
    * Get all re-exports from a specific file (for barrel file resolution).
    */
   getFileReExports?(uri: string): Promise<ReExportInfo[]>;
+
+  /**
+   * Find all references by name (actual usages).
+   */
+  findReferencesByName?(name: string): Promise<IndexedReference[]>;
+
+  /**
+   * Get import info for a file.
+   */
+  getFileImports?(uri: string): Promise<ImportInfo[]>;
 }

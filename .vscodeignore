@@ -6,6 +6,7 @@ src/**
 .gitignore
 .yarnrc
 esbuild.js
+esbuild.server.js
 vsc-extension-quickstart.md
 **/tsconfig.json
 **/eslint.config.mjs
@@ -14,3 +15,11 @@ vsc-extension-quickstart.md
 **/.vscode-test.*
 !server/out/**/*.js
 server/src/**
+README.md
+docs/**
+*.ps1
+SMART_INDEXER_AUDIT.md
+CHANGELOG.md
+test-files/**
+static-index-example.json
+*.vsix

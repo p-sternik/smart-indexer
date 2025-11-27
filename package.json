@@ -4,7 +4,7 @@
   "description": "Fast IntelliSense with persistent cache and Git-aware incremental indexing",
   "version": "1.6.2",
   "publisher": "psternik",
-  "readme": "docs/MARKETPLACE_README.md",
+  "readme": "./MARKETPLACE_README.md",
   "repository": {
     "type": "git",
     "url": "https://github.com/p-sternik/smart-indexer.git"
@@ -209,7 +209,8 @@
     "test": "vscode-test",
     "build": "npm run compile",
     "rebuild": "npm run clean && npm run build",
-    "vsix": "npm run clean && npm run package && npx vsce package"
+    "vsix": "npm run clean && npm run package && npx vsce package --readme MARKETPLACE_README.md",
+    "publish": "npx vsce publish --readme MARKETPLACE_README.md"
   },
   "devDependencies": {
     "@semantic-release/changelog": "^6.0.3",

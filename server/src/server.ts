@@ -31,6 +31,7 @@ import { BackgroundIndex } from './index/backgroundIndex.js';
 import { MergedIndex } from './index/mergedIndex.js';
 import { StaticIndex } from './index/staticIndex.js';
 import { StatsManager } from './index/statsManager.js';
+import { FileWatcher } from './index/fileWatcher.js';
 import { Profiler } from './profiler/profiler.js';
 import { FolderHasher } from './cache/folderHasher.js';
 import { RankingContext } from './utils/fuzzySearch.js';
@@ -68,6 +69,9 @@ const typeScriptService = new TypeScriptService();
 
 // Dead code detector
 let deadCodeDetector: DeadCodeDetector;
+
+// File watcher for live synchronization
+let fileWatcher: FileWatcher | null = null;
 
 // New clangd-inspired index architecture
 const dynamicIndex = new DynamicIndex(symbolIndexer);
@@ -524,6 +528,18 @@ async function initializeIndexing(): Promise<void> {
     connection.console.info(
       `[Server] Indexing initialization complete: ${stats.totalFiles} files, ${stats.totalSymbols} symbols indexed`
     );
+
+    // Initialize file watcher for live synchronization
+    fileWatcher = new FileWatcher(
+      connection,
+      documents,
+      backgroundIndex,
+      configManager,
+      workspaceRoot,
+      600 // 600ms debounce delay
+    );
+    await fileWatcher.init();
+    connection.console.info('[Server] Live file synchronization enabled');
   } catch (error) {
     connection.console.error(`[Server] Error initializing indexing: ${error}`);
     if (error instanceof Error) {
@@ -1547,7 +1563,15 @@ documents.listen(connection);
 connection.onShutdown(async () => {
   try {
     connection.console.info('[Server] Shutting down, closing resources...');
+    
+    // Dispose file watcher first
+    if (fileWatcher) {
+      await fileWatcher.dispose();
+    }
+    
+    // Then dispose background index
     await backgroundIndex.dispose();
+    
     connection.console.info('[Server] Resources closed successfully');
   } catch (error) {
     connection.console.error(`[Server] Error during shutdown: ${error}`);

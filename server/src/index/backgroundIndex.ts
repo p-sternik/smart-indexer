@@ -331,6 +331,83 @@ export class BackgroundIndex implements ISymbolIndex {
   }
 
   /**
+   * Update a single file in the background index (for live synchronization).
+   * 
+   * This method:
+   * 1. Removes all existing entries for the file (cleanup)
+   * 2. Re-indexes the file using the worker pool
+   * 3. Merges the new results into the index
+   * 4. Persists the updated shard to disk
+   * 
+   * @param filePath - Absolute path to the file to re-index
+   */
+  async updateSingleFile(filePath: string): Promise<void> {
+    try {
+      // STEP A: Cleanup - remove existing entries
+      // This is already handled by updateFile(), but we call removeFile first
+      // to ensure a clean slate and prevent "ghost" references
+      const hadExistingEntry = this.fileMetadata.has(filePath);
+      
+      if (hadExistingEntry) {
+        // Clean up old entries from in-memory indexes
+        // (but don't delete the shard yet - we'll overwrite it)
+        this.cleanupFileFromIndexes(filePath);
+      }
+
+      // STEP B: Process - index the file
+      let result: IndexedFileResult;
+      
+      if (this.workerPool) {
+        // Use worker pool for parallel processing
+        result = await this.workerPool.runTask({ uri: filePath });
+      } else {
+        // Fallback to synchronous indexing
+        const indexer = this.languageRouter || this.symbolIndexer;
+        result = await indexer.indexFile(filePath);
+      }
+
+      // STEP C & D: Merge and Persist - handled by updateFile()
+      await this.updateFile(filePath, result);
+      
+    } catch (error) {
+      console.error(`[BackgroundIndex] Error updating single file ${filePath}: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Clean up a file's entries from in-memory indexes without deleting the shard.
+   * This is used by updateSingleFile to prevent ghost references.
+   */
+  private cleanupFileFromIndexes(uri: string): void {
+    // Remove from file metadata
+    this.fileMetadata.delete(uri);
+
+    // Remove from symbol name index
+    for (const [name, uriSet] of this.symbolNameIndex) {
+      uriSet.delete(uri);
+      if (uriSet.size === 0) {
+        this.symbolNameIndex.delete(name);
+      }
+    }
+
+    // Remove from symbol ID index
+    for (const [symbolId, storedUri] of this.symbolIdIndex) {
+      if (storedUri === uri) {
+        this.symbolIdIndex.delete(symbolId);
+      }
+    }
+
+    // Remove from reference map
+    for (const [symbolName, uriSet] of this.referenceMap) {
+      uriSet.delete(uri);
+      if (uriSet.size === 0) {
+        this.referenceMap.delete(symbolName);
+      }
+    }
+  }
+
+  /**
    * Remove a file from the background index.
    */
   async removeFile(uri: string): Promise<void> {

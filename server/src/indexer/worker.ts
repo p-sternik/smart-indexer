@@ -114,27 +114,56 @@ function extractReExports(ast: TSESTree.Program, reExports: ReExportInfo[]): voi
   }
 }
 
-function isDeclaration(parent: string | null): boolean {
+function isDeclarationContext(node: TSESTree.Node, parent: TSESTree.Node | null): boolean {
   if (!parent) {
     return false;
   }
-  return [
-    'FunctionDeclaration',
-    'ClassDeclaration',
-    'VariableDeclarator',
-    'MethodDefinition',
-    'PropertyDefinition',
-    'TSInterfaceDeclaration',
-    'TSTypeAliasDeclaration',
-    'TSEnumDeclaration',
-    'ImportSpecifier',
-    'ImportDefaultSpecifier',
-    'ImportNamespaceSpecifier'
-  ].includes(parent);
-}
 
-function getParentContext(node: TSESTree.Node): string | null {
-  return null;
+  // Check if this identifier is the name being declared
+  switch (parent.type) {
+    case AST_NODE_TYPES.FunctionDeclaration:
+      return (parent as TSESTree.FunctionDeclaration).id === node;
+    
+    case AST_NODE_TYPES.ClassDeclaration:
+      return (parent as TSESTree.ClassDeclaration).id === node;
+    
+    case AST_NODE_TYPES.VariableDeclarator:
+      return (parent as TSESTree.VariableDeclarator).id === node;
+    
+    case AST_NODE_TYPES.MethodDefinition:
+      return (parent as TSESTree.MethodDefinition).key === node;
+    
+    case AST_NODE_TYPES.PropertyDefinition:
+      return (parent as TSESTree.PropertyDefinition).key === node;
+    
+    case AST_NODE_TYPES.TSInterfaceDeclaration:
+      return (parent as TSESTree.TSInterfaceDeclaration).id === node;
+    
+    case AST_NODE_TYPES.TSTypeAliasDeclaration:
+      return (parent as TSESTree.TSTypeAliasDeclaration).id === node;
+    
+    case AST_NODE_TYPES.TSEnumDeclaration:
+      return (parent as TSESTree.TSEnumDeclaration).id === node;
+    
+    case AST_NODE_TYPES.ImportSpecifier:
+    case AST_NODE_TYPES.ImportDefaultSpecifier:
+    case AST_NODE_TYPES.ImportNamespaceSpecifier:
+      return true;
+    
+    // Parameter declarations
+    case AST_NODE_TYPES.FunctionExpression:
+    case AST_NODE_TYPES.ArrowFunctionExpression:
+      const funcExpr = parent as TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression;
+      return funcExpr.params.includes(node as any);
+    
+    // Property key in object literal (when not computed)
+    case AST_NODE_TYPES.Property:
+      const prop = parent as TSESTree.Property;
+      return prop.key === node && !prop.computed;
+    
+    default:
+      return false;
+  }
 }
 
 function indexObjectProperties(
@@ -207,15 +236,16 @@ function traverseAST(
   containerKind?: string,
   containerPath: string[] = [],
   imports: ImportInfo[] = [],
-  scopeTracker?: ScopeTracker
+  scopeTracker?: ScopeTracker,
+  parent: TSESTree.Node | null = null
 ): void {
   if (!node || !node.loc) {return;}
 
   try {
+    // Handle Identifiers - but only if they are NOT part of a declaration
     if (node.type === AST_NODE_TYPES.Identifier && node.loc) {
-      const parent = getParentContext(node);
-      
-      if (!isDeclaration(parent)) {
+      // Skip if this identifier is the name being declared
+      if (!isDeclarationContext(node, parent)) {
         const isImportRef = imports.some(imp => imp.localName === node.name);
         const isLocal = scopeTracker?.isLocalVariable(node.name) || false;
         const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
@@ -241,10 +271,14 @@ function traverseAST(
       }
     }
     
+    // Handle MemberExpression (e.g., SigningActions.createSigningStepStart)
     if (node.type === AST_NODE_TYPES.MemberExpression) {
       const memberExpr = node as TSESTree.MemberExpression;
       if (memberExpr.property.type === AST_NODE_TYPES.Identifier && memberExpr.property.loc) {
         const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
+        
+        // Only add reference if this is NOT a method/property declaration
+        // (MemberExpression is always a usage, not a declaration)
         references.push({
           symbolName: memberExpr.property.name,
           location: {
@@ -513,11 +547,11 @@ function traverseAST(
           if (Array.isArray(child)) {
             for (const item of child) {
               if (item && typeof item === 'object' && item.type) {
-                traverseAST(item, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker);
+                traverseAST(item, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node);
               }
             }
           } else if (child.type) {
-            traverseAST(child, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker);
+            traverseAST(child, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node);
           }
         }
       }
@@ -532,11 +566,11 @@ function traverseAST(
           if (Array.isArray(child)) {
             for (const item of child) {
               if (item && typeof item === 'object' && item.type) {
-                traverseAST(item, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker);
+                traverseAST(item, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node);
               }
             }
           } else if (child.type) {
-            traverseAST(child, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker);
+            traverseAST(child, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node);
           }
         }
       }

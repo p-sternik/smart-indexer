@@ -186,6 +186,7 @@
   },
   "dependencies": {
     "@typescript-eslint/typescript-estree": "^8.48.0",
+    "chokidar": "^3.6.0",
     "minimatch": "^10.1.1",
     "simple-git": "^3.30.0",
     "sql.js": "^1.10.3",

@@ -2,6 +2,14 @@
 
 All notable changes to the "smart-indexer" extension will be documented in this file.
 
+## [0.0.4] - 2025-11-27
+
+### Fixed
+- **Critical**: Resolved crash on startup due to missing `vscode-languageserver` dependency in packaged extension
+  - Created server-specific `package.json` with required dependencies
+  - Implemented esbuild bundling for server code to create self-contained `server.js`
+  - Server dependencies now properly bundled into production `.vsix` package
+
 ## [0.0.4] - 2025-11-26
 
 ### Major Improvements - Stability & Dead Code Detection

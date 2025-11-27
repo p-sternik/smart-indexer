@@ -99,11 +99,28 @@ private fileIndex: Map<string, IndexedSymbol[]>
 ```
 .smart-index/
   ├── index/
-  │   ├── a3f2b1c4.json    # Shard for file1.ts
-  │   ├── d9e4c8f7.json    # Shard for file2.ts
+  │   ├── a2/
+  │   │   ├── f5/
+  │   │   │   └── a2f5b1c4...json    # Shard for file1.ts
+  │   │   └── 3d/
+  │   │       └── a23db8e9...json    # Shard for file2.ts
+  │   ├── b7/
+  │   │   └── 4c/
+  │   │       └── b74c9f2a...json    # Shard for file3.ts
   │   └── ...
+  ├── index.sqlite         # SQLite cache for fast queries
   └── metadata.json        # Git hash, folder hashes, timestamps
 ```
+
+**Hashed Directory Structure (Performance Optimization)**:
+- Uses 2-level nested directories based on hash prefixes
+- First directory: first 2 characters of SHA-256 hash
+- Second directory: next 2 characters of SHA-256 hash
+- Filename: full hash + `.json` extension
+- Example: URI hash `a2f5c8d1e...` → `.smart-index/index/a2/f5/a2f5c8d1e...json`
+- **Why**: Prevents filesystem slowdowns from 50,000+ files in a single directory
+- Most filesystems perform poorly with >10,000 files per directory
+- This structure caps each directory at ~256 items (16^2)
 
 **Shard Format**:
 ```json

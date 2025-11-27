@@ -2,6 +2,15 @@
 
 All notable changes to the "smart-indexer" extension will be documented in this file.
 
+## [Unreleased]
+
+### Performance
+- **Hashed Directory Structure**: Implemented nested directory structure for index shards (`.smart-index/index/<prefix1>/<prefix2>/<hash>.json`) to improve filesystem performance on large repositories with thousands of files
+- Storage now uses 2-character hash prefixes for directory organization, preventing issues with flat directory structures containing 50,000+ files
+
+### Safety
+- **Automatic .gitignore Configuration**: Cache directory is now automatically added to `.gitignore` on extension activation to prevent accidental commits of index files
+
 ## [0.0.4] - 2025-11-27
 
 ### Fixed

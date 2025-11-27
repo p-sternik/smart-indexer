@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import {
   LanguageClient,
   LanguageClientOptions,
@@ -11,6 +12,48 @@ import {
 let client: LanguageClient;
 let statusBarItem: vscode.StatusBarItem;
 let logChannel: vscode.LogOutputChannel;
+
+/**
+ * Ensure cache directory is in .gitignore to prevent accidental commits.
+ */
+async function ensureGitIgnoreEntry(workspaceRoot: string, cacheDir: string): Promise<void> {
+  try {
+    const gitignorePath = path.join(workspaceRoot, '.gitignore');
+    const gitignoreEntry = `${cacheDir}/`;
+    
+    let gitignoreContent = '';
+    let needsUpdate = false;
+    
+    if (fs.existsSync(gitignorePath)) {
+      gitignoreContent = fs.readFileSync(gitignorePath, 'utf-8');
+      
+      // Check if entry already exists (with or without trailing slash)
+      const lines = gitignoreContent.split('\n');
+      const hasEntry = lines.some(line => {
+        const trimmed = line.trim();
+        return trimmed === cacheDir || trimmed === gitignoreEntry || trimmed === `/${cacheDir}/` || trimmed === `/${cacheDir}`;
+      });
+      
+      if (!hasEntry) {
+        needsUpdate = true;
+      }
+    } else {
+      // .gitignore doesn't exist, create it
+      needsUpdate = true;
+    }
+    
+    if (needsUpdate) {
+      const appendContent = gitignoreContent.endsWith('\n') || gitignoreContent === '' 
+        ? `${gitignoreEntry}\n`
+        : `\n${gitignoreEntry}\n`;
+      
+      fs.appendFileSync(gitignorePath, appendContent, 'utf-8');
+      logChannel.info(`[Client] Added '${gitignoreEntry}' to .gitignore`);
+    }
+  } catch (error) {
+    logChannel.warn(`[Client] Failed to update .gitignore: ${error}`);
+  }
+}
 
 export async function activate(context: vscode.ExtensionContext) {
   logChannel = vscode.window.createOutputChannel('Smart Indexer', { log: true });
@@ -46,9 +89,15 @@ export async function activate(context: vscode.ExtensionContext) {
   const config = vscode.workspace.getConfiguration('smartIndexer');
   const mode = config.get<string>('mode', 'standalone');
   const hybridTimeout = config.get<number>('hybridTimeoutMs', 100);
+  const cacheDirectory = config.get<string>('cacheDirectory', '.smart-index');
+  
+  // Ensure cache directory is in .gitignore
+  if (workspaceFolders && workspaceFolders.length > 0) {
+    await ensureGitIgnoreEntry(workspaceFolders[0].uri.fsPath, cacheDirectory);
+  }
   
   const initializationOptions = {
-    cacheDirectory: config.get('cacheDirectory', '.smart-index'),
+    cacheDirectory,
     enableGitIntegration: config.get('enableGitIntegration', true),
     excludePatterns: config.get('excludePatterns', []),
     maxIndexedFileSize: config.get('maxIndexedFileSize', 1048576),

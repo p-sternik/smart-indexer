@@ -85,17 +85,12 @@ export class BackgroundIndex implements ISymbolIndex {
         return;
       }
 
-      const shardFiles = fs.readdirSync(this.shardsDirectory);
+      const shardFiles = this.collectShardFiles(this.shardsDirectory);
       let loadedShards = 0;
 
       for (const shardFile of shardFiles) {
-        if (!shardFile.endsWith('.json')) {
-          continue;
-        }
-
         try {
-          const shardPath = path.join(this.shardsDirectory, shardFile);
-          const content = fs.readFileSync(shardPath, 'utf-8');
+          const content = fs.readFileSync(shardFile, 'utf-8');
           const shard: FileShard = JSON.parse(content);
 
           this.fileMetadata.set(shard.uri, {
@@ -142,11 +137,40 @@ export class BackgroundIndex implements ISymbolIndex {
   }
 
   /**
+   * Recursively collect all shard files from nested directory structure.
+   */
+  private collectShardFiles(dir: string): string[] {
+    const results: string[] = [];
+    
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        
+        if (entry.isDirectory()) {
+          results.push(...this.collectShardFiles(fullPath));
+        } else if (entry.isFile() && entry.name.endsWith('.json')) {
+          results.push(fullPath);
+        }
+      }
+    } catch (error) {
+      console.error(`[BackgroundIndex] Error reading directory ${dir}: ${error}`);
+    }
+    
+    return results;
+  }
+
+  /**
    * Get shard file path for a given URI.
+   * Uses hashed directory structure for filesystem performance:
+   * .smart-index/index/<prefix1>/<prefix2>/<hash>.json
    */
   private getShardPath(uri: string): string {
     const hash = crypto.createHash('sha256').update(uri).digest('hex');
-    return path.join(this.shardsDirectory, `${hash}.json`);
+    const prefix1 = hash.substring(0, 2);
+    const prefix2 = hash.substring(2, 4);
+    return path.join(this.shardsDirectory, prefix1, prefix2, `${hash}.json`);
   }
 
   /**
@@ -173,6 +197,13 @@ export class BackgroundIndex implements ISymbolIndex {
   private async saveShard(shard: FileShard): Promise<void> {
     try {
       const shardPath = this.getShardPath(shard.uri);
+      const shardDir = path.dirname(shardPath);
+      
+      // Ensure directory exists (nested structure)
+      if (!fs.existsSync(shardDir)) {
+        fs.mkdirSync(shardDir, { recursive: true });
+      }
+      
       const content = JSON.stringify(shard, null, 2);
       fs.writeFileSync(shardPath, content, 'utf-8');
     } catch (error) {
@@ -595,12 +626,7 @@ export class BackgroundIndex implements ISymbolIndex {
   async clear(): Promise<void> {
     try {
       if (fs.existsSync(this.shardsDirectory)) {
-        const shardFiles = fs.readdirSync(this.shardsDirectory);
-        for (const file of shardFiles) {
-          if (file.endsWith('.json')) {
-            fs.unlinkSync(path.join(this.shardsDirectory, file));
-          }
-        }
+        this.clearDirectory(this.shardsDirectory);
       }
 
       this.fileMetadata.clear();
@@ -610,6 +636,28 @@ export class BackgroundIndex implements ISymbolIndex {
     } catch (error) {
       console.error(`[BackgroundIndex] Error clearing shards: ${error}`);
       throw error;
+    }
+  }
+
+  /**
+   * Recursively clear directory contents.
+   */
+  private clearDirectory(dir: string): void {
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        
+        if (entry.isDirectory()) {
+          this.clearDirectory(fullPath);
+          fs.rmdirSync(fullPath);
+        } else if (entry.isFile() && entry.name.endsWith('.json')) {
+          fs.unlinkSync(fullPath);
+        }
+      }
+    } catch (error) {
+      console.error(`[BackgroundIndex] Error clearing directory ${dir}: ${error}`);
     }
   }
 

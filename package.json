@@ -124,7 +124,10 @@
         },
         "smartIndexer.mode": {
           "type": "string",
-          "enum": ["standalone", "hybrid"],
+          "enum": [
+            "standalone",
+            "hybrid"
+          ],
           "default": "hybrid",
           "description": "Operation mode: 'standalone' uses only Smart Indexer, 'hybrid' delegates to VS Code's built-in TypeScript service when available"
         },
@@ -158,6 +161,12 @@
     "vsix": "npm run clean && npm run package && npx vsce package"
   },
   "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/commit-analyzer": "^11.1.0",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^9.2.6",
+    "@semantic-release/npm": "^11.0.3",
+    "@semantic-release/release-notes-generator": "^12.1.0",
     "@types/minimatch": "^5.1.2",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
@@ -169,6 +178,8 @@
     "esbuild": "^0.27.0",
     "eslint": "^9.39.1",
     "npm-run-all": "^4.1.5",
+    "semantic-release": "^23.1.1",
+    "semantic-release-vsce": "^5.7.4",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.3"
   },

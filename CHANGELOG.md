@@ -2,7 +2,7 @@
 
 All notable changes to the "smart-indexer" extension will be documented in this file.
 
-## [Unreleased]
+## [0.0.5] - 2025-11-27
 
 ### Performance
 - **Hashed Directory Structure**: Implemented nested directory structure for index shards (`.smart-index/index/<prefix1>/<prefix2>/<hash>.json`) to improve filesystem performance on large repositories with thousands of files

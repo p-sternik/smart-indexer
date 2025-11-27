@@ -5,18 +5,12 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0](https://github.com/p-sternik/smart-indexer/compare/v1.0.0...v1.1.0) (2025-11-27)
 
-### Performance
 
-* **worker-pool:** Implement multi-threaded worker pool for parallel file parsing
-  - 6-12x performance improvement on multi-core systems
-  - Queue-based task distribution eliminates artificial batching sync points
-  - Minimal IPC data transfer (pass URI only, not file content)
-  - Automatic worker restart on crash for fault tolerance
-  - Pool size automatically scales with CPU count (os.cpus().length - 1)
-  - Comprehensive performance logging and metrics
-  - Documentation: `docs/WORKER_POOL_*.md`
+### Features
+
+* implement worker pool and integrate with background indexing for improved performance ([ef57176](https://github.com/p-sternik/smart-indexer/commit/ef57176572483653d1eb917a7251b18cf1e7a09a))
 
 ## 1.0.0 (2025-11-27)
 

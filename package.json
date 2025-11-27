@@ -2,7 +2,7 @@
   "name": "smart-indexer",
   "displayName": "Smart Indexer",
   "description": "Fast IntelliSense with persistent cache and Git-aware incremental indexing",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "psternik",
   "readme": "./docs/MARKETPLACE_README.md",
   "repository": {

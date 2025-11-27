@@ -1,3 +1,34 @@
+# Changelog
+
+All notable changes to the "smart-indexer" extension will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## 1.0.0 (2025-11-27)
+
+
+### Features
+
+* update release notes generator and configure Git date format ([82be80e](https://github.com/p-sternik/smart-indexer/commit/82be80ef35400cc0eb7b2233c9c271dd870d5b91))
+* Implement Generic Symbol Resolution Engine for enhanced "Go to Definition" functionality ([e532de0](https://github.com/p-sternik/smart-indexer/commit/e532de0c0d07b2b0c053fb89273e396a58e4dbd9))
+* update version to 0.0.5 and enhance semantic release with debug option ([cac77fb](https://github.com/p-sternik/smart-indexer/commit/cac77fb2bdee3b303a0893d791ba6541850be27c))
+* implement hashed directory structure for shard storage ([aec13a5](https://github.com/p-sternik/smart-indexer/commit/aec13a5d88b1303c8383359deb49228ebf98b319))
+* resolve startup crash by bundling server dependencies and updating README ([b039444](https://github.com/p-sternik/smart-indexer/commit/b039444b7d60bf118d24d5cddad4366bc8120a41))
+* add semantic release configuration and setup documentation ([dacd1f2](https://github.com/p-sternik/smart-indexer/commit/dacd1f2fbc2355b9759f255d6302b008fa01b3b9))
+* **dead-code:** add dead code detection feature with analysis and reporting ([2883d60](https://github.com/p-sternik/smart-indexer/commit/2883d60cd669a8bff33e7259df2bf415834edc86))
+* Implement symbol disambiguation and fuzzy search utilities ([a53a88c](https://github.com/p-sternik/smart-indexer/commit/a53a88c2a781a73cf8a40f53f577bf17350d51b7))
+
+
+### Bug Fixes
+
+* downgrade conventional-changelog-conventionalcommits to 7.0.2 to resolve RangeError ([f043e0f](https://github.com/p-sternik/smart-indexer/commit/f043e0f7f84db06c499652e1ce9060e0673a51e5))
+* disable commit sorting in release notes generator ([4314474](https://github.com/p-sternik/smart-indexer/commit/431447454f080d42ff6fe231b152c507067bba59))
+* correct key name for VSIX publishing configuration ([d175c54](https://github.com/p-sternik/smart-indexer/commit/d175c54b553f2d16e8addc56266c752d832a0f22))
+* disable VSIX publishing in release configuration ([385f39a](https://github.com/p-sternik/smart-indexer/commit/385f39a3e2348b84c90f224721da446121884295))
+* update branch name from main to master in configuration files ([1df8887](https://github.com/p-sternik/smart-indexer/commit/1df8887a0a5acae6696f041f9aea16686a8d3da0))
+* update branch name from main to master in release workflow ([d0a8909](https://github.com/p-sternik/smart-indexer/commit/d0a890941d0509153f6d2b5a9f699f9e73eaf7d5))
+
 # Change Log
 
 All notable changes to the "smart-indexer" extension will be documented in this file.

@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2](https://github.com/p-sternik/smart-indexer/compare/v1.6.1...v1.6.2) (2025-11-27)
+
+
+### Bug Fixes
+
+* Correct readme path in package.json ([3e59b73](https://github.com/p-sternik/smart-indexer/commit/3e59b73c49f7a6d11a208776526fc4013d3da4db))
+
 ## [1.6.1](https://github.com/p-sternik/smart-indexer/compare/v1.6.0...v1.6.1) (2025-11-27)
 
 

@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0](https://github.com/p-sternik/smart-indexer/compare/v1.0.0...v1.1.0) (2025-11-27)
+
+
+### Features
+
+* implement worker pool and integrate with background indexing for improved performance ([ef57176](https://github.com/p-sternik/smart-indexer/commit/ef57176572483653d1eb917a7251b18cf1e7a09a))
+
 ## 1.0.0 (2025-11-27)
 
 

@@ -703,6 +703,12 @@ export interface IndexedSymbol {
   filePath: string;        // Absolute file path
   isStatic?: boolean;      // For class members
   parametersCount?: number; // For functions/methods (overload disambiguation)
+  ngrxMetadata?: NgRxMetadata; // NgRx-specific information (see section 3.6)
+}
+
+export interface NgRxMetadata {
+  type: string;            // Action type string or effect name
+  role: 'action' | 'effect' | 'reducer'; // NgRx role
 }
 ```
 
@@ -857,6 +863,104 @@ interface IndexedFileResult {
 
 ---
 
+### 3.6 NgRx Pattern Recognition
+
+**Status:** ✅ **IMPLEMENTED** (2025-11-27)
+
+**Purpose:** Specialized detection and linking of Angular/NgRx Actions, Effects, and Reducers.
+
+#### Modern NgRx Actions
+
+```typescript
+// Source code
+export const loadProducts = createAction('[Products] Load');
+
+// Indexed as
+{
+  id: 'sym_abc123',
+  name: 'loadProducts',
+  kind: 'constant',
+  ngrxMetadata: {
+    type: '[Products] Load',
+    role: 'action'
+  }
+}
+```
+
+**Detection Logic (worker.ts:455-477):**
+```typescript
+if (decl.init && decl.init.type === CallExpression) {
+  if (isNgRxCreateActionCall(decl.init)) {
+    const actionType = extractActionTypeString(decl.init);
+    ngrxMetadata = { type: actionType, role: 'action' };
+  }
+}
+```
+
+#### Modern NgRx Effects
+
+```typescript
+// Source code
+export class ProductsEffects {
+  loadProducts$ = createEffect(() => this.actions$.pipe(
+    ofType(loadProducts)  // ← Reference detection
+  ));
+}
+
+// Property indexed as
+{
+  id: 'sym_def456',
+  name: 'loadProducts$',
+  kind: 'property',
+  ngrxMetadata: {
+    type: 'loadProducts$',
+    role: 'effect'
+  }
+}
+```
+
+**Detection Logic (worker.ts:606-627):**
+```typescript
+if (propNode.value && isNgRxCreateEffectCall(propNode.value)) {
+  ngrxMetadata = { type: propName, role: 'effect' };
+}
+```
+
+#### NgRx Reference Detection
+
+**ofType() in Effects:**
+```typescript
+ofType(loadProducts)  // ← Creates reference to 'loadProducts' symbol
+ofType(Actions.load)  // ← Creates reference to 'load' property
+```
+
+**on() in Reducers:**
+```typescript
+on(loadProducts, state => ({ ...state, loading: true }))
+// ↑ Creates reference to 'loadProducts' symbol
+```
+
+#### Legacy NgRx Support
+
+**Action Classes:**
+```typescript
+export class LoadUsers implements Action {
+  readonly type = UserActionTypes.Load;
+}
+// Indexed with ngrxMetadata: { type: 'Load', role: 'action' }
+```
+
+**@Effect Decorator:**
+```typescript
+@Effect()
+loadUsers$ = this.actions$.pipe(ofType('[Users] Load'));
+// Indexed with ngrxMetadata: { type: 'loadUsers$', role: 'effect' }
+```
+
+**Documentation:** See `NGRX_PATTERN_RECOGNITION.md` for full implementation guide.
+
+---
+
 ## 4. Current Features Status
 
 ### ✅ IMPLEMENTED Features
@@ -873,6 +977,7 @@ interface IndexedFileResult {
 | **Import Resolution** | ✅ IMPLEMENTED | `server/src/indexer/importResolver.ts` | Resolves relative/absolute imports |
 | **Re-Export Resolution** | ✅ IMPLEMENTED | `server/src/server.ts` | Depth-limited barrel file traversal |
 | **Hybrid Mode** | ✅ IMPLEMENTED | `src/extension.ts` | Merges native TS + Smart Indexer results |
+| **NgRx Pattern Recognition** | ✅ IMPLEMENTED | `server/src/indexer/worker.ts` | Detects Actions, Effects, Reducers (modern & legacy) |
 
 ---
 
@@ -890,7 +995,7 @@ interface IndexedFileResult {
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| **NgRx Special Handling** | ❌ MISSING | No pattern-specific logic for Actions/Effects/Reducers |
+| **NgRx Type String Indexing** | ❌ MISSING | Type strings like `'[Products] Load'` not indexed as virtual symbols |
 | **Type-Aware Resolution** | ❌ MISSING | No generic type parameter tracking |
 | **Cross-File Type Inference** | ❌ MISSING | No type flow analysis |
 | **Monorepo Support** | ❌ MISSING | No multi-root workspace handling |
@@ -982,10 +1087,10 @@ interface IndexedFileResult {
 ## 8. Future Enhancement Opportunities
 
 ### High Priority
-1. **NgRx Pattern Recognition**
-   - Detect Action creators (`createAction()`)
-   - Link Actions → Effects → Reducers
-   - Smart navigation for NgRx patterns
+1. **NgRx Virtual Symbol Indexing** ⚠️ **NEXT PHASE**
+   - Index type strings as virtual symbols
+   - Link `case '[Products] Load':` to action creator
+   - Enable cross-file type string navigation
 
 2. **Monorepo Support**
    - Multi-root workspace handling
@@ -1055,6 +1160,16 @@ interface IndexedFileResult {
 ## 10. Changelog
 
 **Recent Changes (2025-11-27):**
+
+- ✅ **NgRx Pattern Recognition** - Specialized detection for Angular/NgRx patterns
+  - Detects modern `createAction()` and extracts action type strings
+  - Detects modern `createEffect()` in class properties
+  - Detects legacy Action classes with `implements Action`
+  - Detects legacy `@Effect()` decorators
+  - Links `ofType()` and `on()` references to action creators
+  - Added `NgRxMetadata` interface with role and type information
+  - See: `NGRX_PATTERN_RECOGNITION.md`, `NGRX_QUICK_REF.md`, `test-files/ngrx-patterns-test.ts`
+
 - ✅ **Declaration vs Usage Detection** - Fixed false positives in reference search
   - Added `isDeclarationContext()` to properly identify declarations
   - Updated `traverseAST()` to pass parent node
@@ -1075,6 +1190,8 @@ interface IndexedFileResult {
 - **Storage Optimization:** `STORAGE_IMPLEMENTATION_SUMMARY.md`
 - **AST Parser Improvements:** `AST_PARSER_IMPROVEMENTS.md`
 - **Hybrid Deduplication:** `HYBRID_DEDUPLICATION_IMPLEMENTATION.md`
+- **NgRx Pattern Recognition:** `NGRX_PATTERN_RECOGNITION.md` ✨ **NEW**
+- **NgRx Quick Reference:** `NGRX_QUICK_REF.md` ✨ **NEW**
 
 ---
 

@@ -11,6 +11,11 @@ export interface SymbolRange {
   endCharacter: number;
 }
 
+export interface NgRxMetadata {
+  type: string; // The NgRx type string, e.g., '[Products Page] Load'
+  role: 'action' | 'effect' | 'reducer';
+}
+
 export interface IndexedSymbol {
   id: string; // stable symbol identifier
   name: string;
@@ -23,6 +28,7 @@ export interface IndexedSymbol {
   filePath: string;
   isStatic?: boolean;
   parametersCount?: number;
+  ngrxMetadata?: NgRxMetadata; // NgRx-specific information
 }
 
 export interface IndexedReference {

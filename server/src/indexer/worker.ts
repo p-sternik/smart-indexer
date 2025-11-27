@@ -1,7 +1,7 @@
 import { parentPort } from 'worker_threads';
 import { parse } from '@typescript-eslint/typescript-estree';
 import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
-import { IndexedFileResult, IndexedSymbol, IndexedReference, ImportInfo, ReExportInfo, SHARD_VERSION } from '../types.js';
+import { IndexedFileResult, IndexedSymbol, IndexedReference, ImportInfo, ReExportInfo, SHARD_VERSION, NgRxMetadata } from '../types.js';
 import { createSymbolId } from './symbolResolver.js';
 import * as crypto from 'crypto';
 import * as path from 'path';
@@ -46,6 +46,75 @@ class ScopeTracker {
     const scopeId = this.getCurrentScopeId();
     return this.localVariables.get(scopeId)?.has(varName) || false;
   }
+}
+
+function isNgRxCreateActionCall(node: TSESTree.CallExpression): boolean {
+  if (node.callee.type === AST_NODE_TYPES.Identifier) {
+    return node.callee.name === 'createAction';
+  }
+  return false;
+}
+
+function isNgRxCreateEffectCall(node: TSESTree.CallExpression): boolean {
+  if (node.callee.type === AST_NODE_TYPES.Identifier) {
+    return node.callee.name === 'createEffect';
+  }
+  return false;
+}
+
+function isNgRxOnCall(node: TSESTree.CallExpression): boolean {
+  if (node.callee.type === AST_NODE_TYPES.Identifier) {
+    return node.callee.name === 'on';
+  }
+  return false;
+}
+
+function isNgRxOfTypeCall(node: TSESTree.CallExpression): boolean {
+  if (node.callee.type === AST_NODE_TYPES.Identifier) {
+    return node.callee.name === 'ofType';
+  }
+  return false;
+}
+
+function extractActionTypeString(node: TSESTree.CallExpression): string | null {
+  if (node.arguments.length > 0) {
+    const firstArg = node.arguments[0];
+    if (firstArg.type === AST_NODE_TYPES.Literal && typeof firstArg.value === 'string') {
+      return firstArg.value;
+    }
+  }
+  return null;
+}
+
+function hasActionInterface(node: TSESTree.ClassDeclaration): boolean {
+  if (!node.implements || node.implements.length === 0) {
+    return false;
+  }
+  
+  for (const impl of node.implements) {
+    if (impl.expression.type === AST_NODE_TYPES.Identifier && impl.expression.name === 'Action') {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasEffectDecorator(node: TSESTree.PropertyDefinition): boolean {
+  if (!node.decorators || node.decorators.length === 0) {
+    return false;
+  }
+  
+  for (const decorator of node.decorators) {
+    if (decorator.expression.type === AST_NODE_TYPES.Identifier && decorator.expression.name === 'Effect') {
+      return true;
+    }
+    if (decorator.expression.type === AST_NODE_TYPES.CallExpression &&
+        decorator.expression.callee.type === AST_NODE_TYPES.Identifier &&
+        decorator.expression.callee.name === 'Effect') {
+      return true;
+    }
+  }
+  return false;
 }
 
 function computeHash(content: string): string {
@@ -237,7 +306,8 @@ function traverseAST(
   containerPath: string[] = [],
   imports: ImportInfo[] = [],
   scopeTracker?: ScopeTracker,
-  parent: TSESTree.Node | null = null
+  parent: TSESTree.Node | null = null,
+  pendingNgRxMetadata?: NgRxMetadata
 ): void {
   if (!node || !node.loc) {return;}
 
@@ -298,6 +368,86 @@ function traverseAST(
         });
       }
     }
+    
+    // Handle NgRx-specific CallExpressions: on(), ofType()
+    if (node.type === AST_NODE_TYPES.CallExpression) {
+      const callExpr = node as TSESTree.CallExpression;
+      
+      // Check for on(ActionCreator, ...) in reducers
+      if (isNgRxOnCall(callExpr) && callExpr.arguments.length > 0) {
+        const firstArg = callExpr.arguments[0];
+        // The first argument is the action creator reference
+        if (firstArg.type === AST_NODE_TYPES.Identifier && firstArg.loc) {
+          const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
+          references.push({
+            symbolName: firstArg.name,
+            location: {
+              uri,
+              line: firstArg.loc.start.line - 1,
+              character: firstArg.loc.start.column
+            },
+            range: {
+              startLine: firstArg.loc.start.line - 1,
+              startCharacter: firstArg.loc.start.column,
+              endLine: firstArg.loc.end.line - 1,
+              endCharacter: firstArg.loc.end.column
+            },
+            containerName,
+            scopeId,
+            isLocal: false
+          });
+        }
+      }
+      
+      // Check for ofType(ActionCreator) in effects
+      if (isNgRxOfTypeCall(callExpr) && callExpr.arguments.length > 0) {
+        for (const arg of callExpr.arguments) {
+          if (arg.type === AST_NODE_TYPES.Identifier && arg.loc) {
+            const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
+            references.push({
+              symbolName: arg.name,
+              location: {
+                uri,
+                line: arg.loc.start.line - 1,
+                character: arg.loc.start.column
+              },
+              range: {
+                startLine: arg.loc.start.line - 1,
+                startCharacter: arg.loc.start.column,
+                endLine: arg.loc.end.line - 1,
+                endCharacter: arg.loc.end.column
+              },
+              containerName,
+              scopeId,
+              isLocal: false
+            });
+          } else if (arg.type === AST_NODE_TYPES.MemberExpression && arg.loc) {
+            // Handle ofType(Actions.someAction)
+            const memberExpr = arg as TSESTree.MemberExpression;
+            if (memberExpr.property.type === AST_NODE_TYPES.Identifier && memberExpr.property.loc) {
+              const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
+              references.push({
+                symbolName: memberExpr.property.name,
+                location: {
+                  uri,
+                  line: memberExpr.property.loc.start.line - 1,
+                  character: memberExpr.property.loc.start.column
+                },
+                range: {
+                  startLine: memberExpr.property.loc.start.line - 1,
+                  startCharacter: memberExpr.property.loc.start.column,
+                  endLine: memberExpr.property.loc.end.line - 1,
+                  endCharacter: memberExpr.property.loc.end.column
+                },
+                containerName,
+                scopeId,
+                isLocal: false
+              });
+            }
+          }
+        }
+      }
+    }
 
     let symbolName: string | undefined;
     let symbolKind: string | undefined;
@@ -319,6 +469,42 @@ function traverseAST(
         if ((node as TSESTree.ClassDeclaration).id?.name) {
           symbolName = (node as TSESTree.ClassDeclaration).id!.name;
           symbolKind = 'class';
+          
+          // Check if this class implements Action interface (legacy NgRx)
+          const classNode = node as TSESTree.ClassDeclaration;
+          if (hasActionInterface(classNode)) {
+            // Look for 'readonly type' property in class body
+            for (const member of classNode.body.body) {
+              if (member.type === AST_NODE_TYPES.PropertyDefinition) {
+                const prop = member as TSESTree.PropertyDefinition;
+                if (prop.key.type === AST_NODE_TYPES.Identifier && 
+                    prop.key.name === 'type' && 
+                    prop.readonly) {
+                  // Try to extract the type value
+                  let actionType: string | null = null;
+                  if (prop.value) {
+                    if (prop.value.type === AST_NODE_TYPES.Literal && typeof prop.value.value === 'string') {
+                      actionType = prop.value.value;
+                    } else if (prop.value.type === AST_NODE_TYPES.MemberExpression) {
+                      // Handle enum case: ActionTypes.Load
+                      const memberExpr = prop.value as TSESTree.MemberExpression;
+                      if (memberExpr.property.type === AST_NODE_TYPES.Identifier) {
+                        actionType = memberExpr.property.name;
+                      }
+                    }
+                  }
+                  
+                  if (actionType) {
+                    pendingNgRxMetadata = {
+                      type: actionType,
+                      role: 'action'
+                    };
+                  }
+                  break;
+                }
+              }
+            }
+          }
         }
         break;
 
@@ -349,6 +535,32 @@ function traverseAST(
             const varKind = (node as TSESTree.VariableDeclaration).kind === 'const' ? 'constant' : 'variable';
             const varName = decl.id.name;
             const fullContainerPath = containerPath.length > 0 ? containerPath.join('.') : undefined;
+            
+            // Check if this is an NgRx createAction call
+            let ngrxMetadata: NgRxMetadata | undefined;
+            if (decl.init && decl.init.type === AST_NODE_TYPES.CallExpression) {
+              const callExpr = decl.init as TSESTree.CallExpression;
+              
+              // Modern NgRx: createAction
+              if (isNgRxCreateActionCall(callExpr)) {
+                const actionType = extractActionTypeString(callExpr);
+                if (actionType) {
+                  ngrxMetadata = {
+                    type: actionType,
+                    role: 'action'
+                  };
+                }
+              }
+              
+              // Modern NgRx: createEffect
+              if (isNgRxCreateEffectCall(callExpr)) {
+                ngrxMetadata = {
+                  type: varName,
+                  role: 'effect'
+                };
+              }
+            }
+            
             const id = createSymbolId(
               uri,
               varName,
@@ -378,7 +590,8 @@ function traverseAST(
               containerName,
               containerKind,
               fullContainerPath,
-              filePath: uri
+              filePath: uri,
+              ngrxMetadata
             });
             
             if (decl.init && decl.init.type === AST_NODE_TYPES.ObjectExpression) {
@@ -442,6 +655,23 @@ function traverseAST(
           const propName = (propNode.key as TSESTree.Identifier).name;
           const propStatic = propNode.static;
           const fullContainerPath = containerPath.length > 0 ? containerPath.join('.') : undefined;
+          
+          // Check for NgRx legacy @Effect decorator or modern createEffect
+          let ngrxMetadata: NgRxMetadata | undefined;
+          if (hasEffectDecorator(propNode)) {
+            ngrxMetadata = {
+              type: propName,
+              role: 'effect'
+            };
+          } else if (propNode.value && 
+                     propNode.value.type === AST_NODE_TYPES.CallExpression &&
+                     isNgRxCreateEffectCall(propNode.value as TSESTree.CallExpression)) {
+            ngrxMetadata = {
+              type: propName,
+              role: 'effect'
+            };
+          }
+          
           const id = createSymbolId(
             uri,
             propName,
@@ -472,7 +702,8 @@ function traverseAST(
             containerKind,
             fullContainerPath,
             isStatic: propStatic,
-            filePath: uri
+            filePath: uri,
+            ngrxMetadata
           });
         }
         break;
@@ -511,7 +742,8 @@ function traverseAST(
         fullContainerPath,
         isStatic,
         parametersCount,
-        filePath: uri
+        filePath: uri,
+        ngrxMetadata: pendingNgRxMetadata
       });
 
       const newContainer = symbolName;
@@ -547,11 +779,11 @@ function traverseAST(
           if (Array.isArray(child)) {
             for (const item of child) {
               if (item && typeof item === 'object' && item.type) {
-                traverseAST(item, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node);
+                traverseAST(item, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node, undefined);
               }
             }
           } else if (child.type) {
-            traverseAST(child, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node);
+            traverseAST(child, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node, undefined);
           }
         }
       }
@@ -566,11 +798,11 @@ function traverseAST(
           if (Array.isArray(child)) {
             for (const item of child) {
               if (item && typeof item === 'object' && item.type) {
-                traverseAST(item, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node);
+                traverseAST(item, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node, undefined);
               }
             }
           } else if (child.type) {
-            traverseAST(child, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node);
+            traverseAST(child, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node, undefined);
           }
         }
       }
@@ -605,7 +837,7 @@ function extractCodeSymbolsAndReferences(uri: string, content: string): {
     extractReExports(ast, reExports);
 
     const scopeTracker = new ScopeTracker();
-    traverseAST(ast, symbols, references, uri, undefined, undefined, [], imports, scopeTracker);
+    traverseAST(ast, symbols, references, uri, undefined, undefined, [], imports, scopeTracker, null, undefined);
   } catch (error) {
     console.error(`[Worker] Error parsing code file ${uri}: ${error}`);
   }

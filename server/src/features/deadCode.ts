@@ -1,6 +1,8 @@
 import { BackgroundIndex } from '../index/backgroundIndex.js';
 import { IndexedSymbol, IndexedReference } from '../types.js';
+import { ConfigurationManager } from '../config/configurationManager.js';
 import * as fs from 'fs';
+import { minimatch } from 'minimatch';
 
 export interface DeadCodeCandidate {
   symbol: IndexedSymbol;
@@ -14,26 +16,161 @@ export interface DeadCodeAnalysisResult {
   analyzedFiles: number;
 }
 
+export interface DeadCodeOptions {
+  excludePatterns?: string[];
+  includeTests?: boolean;
+  entryPoints?: string[];
+  checkBarrierFiles?: boolean;
+}
+
 /**
- * Dead Code Detector - Beta Feature
+ * Angular lifecycle hooks that should never be flagged as unused
+ * (called by the framework, not directly referenced in code)
+ */
+const ANGULAR_LIFECYCLE_HOOKS = new Set([
+  'ngOnInit',
+  'ngOnChanges',
+  'ngDoCheck',
+  'ngAfterContentInit',
+  'ngAfterContentChecked',
+  'ngAfterViewInit',
+  'ngAfterViewChecked',
+  'ngOnDestroy',
+  'OnInit',
+  'OnChanges',
+  'DoCheck',
+  'AfterContentInit',
+  'AfterContentChecked',
+  'AfterViewInit',
+  'AfterViewChecked',
+  'OnDestroy'
+]);
+
+/**
+ * Framework-specific patterns that should not be flagged as dead
+ */
+const FRAMEWORK_PATTERNS = new Set([
+  'Component',
+  'Directive',
+  'Injectable',
+  'NgModule',
+  'Pipe'
+]);
+
+/**
+ * Dead Code Detector - Production Feature
  * 
  * Identifies potentially unused exports by analyzing reference counts.
  * Leverages the background index to find symbols with zero cross-file references.
+ * 
+ * Key Features:
+ * - Entry point awareness (don't flag public APIs)
+ * - Angular lifecycle hook detection
+ * - Barrier file analysis (recursive check for re-exports)
+ * - Framework pattern recognition
+ * - Configurable exclusion patterns
  */
 export class DeadCodeDetector {
+  private configManager: ConfigurationManager | null = null;
+  private defaultEntryPoints: string[] = [
+    '**/main.ts',
+    '**/public-api.ts',
+    '**/index.ts',
+    '**/*.stories.ts',
+    '**/*.spec.ts',
+    '**/*.test.ts',
+    '**/test/**',
+    '**/tests/**'
+  ];
+
   constructor(private backgroundIndex: BackgroundIndex) {}
 
   /**
+   * Set the configuration manager for accessing user settings
+   */
+  setConfigurationManager(configManager: ConfigurationManager): void {
+    this.configManager = configManager;
+  }
+
+  /**
+   * Analyze a single file for dead code
+   * (Performance-optimized for real-time analysis)
+   */
+  async analyzeFile(fileUri: string, options?: DeadCodeOptions): Promise<DeadCodeCandidate[]> {
+    const candidates: DeadCodeCandidate[] = [];
+    
+    // Check if file should be analyzed
+    if (this.isEntryPoint(fileUri, options?.entryPoints)) {
+      return candidates; // Entry points are never dead
+    }
+
+    const fileResult = await this.backgroundIndex.getFileResult(fileUri);
+    if (!fileResult) {
+      return candidates;
+    }
+
+    // Check each symbol in the file
+    for (const symbol of fileResult.symbols) {
+      if (!this.isExportedSymbol(symbol, fileResult.imports)) {
+        continue; // Only check exported symbols
+      }
+
+      // Skip framework lifecycle hooks
+      if (this.isFrameworkMethod(symbol)) {
+        continue;
+      }
+
+      // Skip symbols with @public/@api markers
+      if (await this.hasPublicMarker(symbol, fileUri)) {
+        continue;
+      }
+
+      // Find references to this symbol
+      const references = await this.backgroundIndex.findReferencesByName(symbol.name);
+      
+      // Filter out references in the same file
+      const crossFileReferences = references.filter(
+        ref => ref.location.uri !== fileUri
+      );
+
+      // Check if symbol is dead
+      if (crossFileReferences.length === 0) {
+        // Advanced: Check if all references come from barrier files
+        if (options?.checkBarrierFiles && references.length > 0) {
+          const allReferencesAreBarriers = await this.areAllReferencesFromBarriers(
+            references,
+            fileUri
+          );
+          
+          if (allReferencesAreBarriers) {
+            candidates.push({
+              symbol,
+              reason: 'Only referenced from unused re-export files',
+              confidence: 'medium'
+            });
+          }
+        } else {
+          candidates.push({
+            symbol,
+            reason: 'No cross-file references found',
+            confidence: this.calculateConfidence(symbol, references.length)
+          });
+        }
+      }
+    }
+
+    return candidates;
+  }
+
+  /**
    * Find unused exports across the workspace.
+   * (Batch analysis - used for workspace-wide reports)
    * 
    * @param options Analysis options
    * @returns List of dead code candidates
    */
-  async findDeadCode(options?: {
-    excludePatterns?: string[];
-    includeTests?: boolean;
-  }): Promise<DeadCodeAnalysisResult> {
-    const excludePatterns = options?.excludePatterns || ['node_modules', '.test.', '.spec.', 'test/', 'tests/'];
+  async findDeadCode(options?: DeadCodeOptions): Promise<DeadCodeAnalysisResult> {
+    const excludePatterns = options?.excludePatterns || [];
     const includeTests = options?.includeTests || false;
     
     const candidates: DeadCodeCandidate[] = [];
@@ -49,41 +186,23 @@ export class DeadCodeDetector {
         continue;
       }
 
-      analyzedFiles++;
-      const fileResult = await this.backgroundIndex.getFileResult(fileUri);
-      
-      if (!fileResult) {
+      // Skip entry points
+      if (this.isEntryPoint(fileUri, options?.entryPoints)) {
         continue;
       }
 
-      // Check each exported symbol
-      for (const symbol of fileResult.symbols) {
-        if (!this.isExportedSymbol(symbol, fileResult.imports)) {
-          continue;
-        }
-
-        totalExports++;
-
-        // Check if symbol has JSDoc @public tag or similar markers
-        if (await this.hasPublicMarker(symbol, fileUri)) {
-          continue;
-        }
-
-        // Find references to this symbol
-        const references = await this.backgroundIndex.findReferences(symbol.name);
-        
-        // Filter out references in the same file
-        const crossFileReferences = references.filter(
-          ref => ref.location.uri !== fileUri
-        );
-
-        if (crossFileReferences.length === 0) {
-          candidates.push({
-            symbol,
-            reason: 'No cross-file references found',
-            confidence: this.calculateConfidence(symbol, references.length)
-          });
-        }
+      analyzedFiles++;
+      
+      // Analyze this file
+      const fileCandidates = await this.analyzeFile(fileUri, options);
+      candidates.push(...fileCandidates);
+      
+      // Count exports for statistics
+      const fileResult = await this.backgroundIndex.getFileResult(fileUri);
+      if (fileResult) {
+        totalExports += fileResult.symbols.filter(s => 
+          this.isExportedSymbol(s, fileResult.imports)
+        ).length;
       }
     }
 
@@ -92,6 +211,95 @@ export class DeadCodeDetector {
       totalExports,
       analyzedFiles
     };
+  }
+
+  /**
+   * Check if a file is an entry point (public API boundary)
+   */
+  private isEntryPoint(fileUri: string, customEntryPoints?: string[]): boolean {
+    const entryPoints = customEntryPoints || this.defaultEntryPoints;
+    const normalizedUri = fileUri.replace(/\\/g, '/');
+    
+    for (const pattern of entryPoints) {
+      if (minimatch(normalizedUri, pattern, { matchBase: true })) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  /**
+   * Check if symbol is a framework lifecycle method or decorated element
+   */
+  private isFrameworkMethod(symbol: IndexedSymbol): boolean {
+    // Angular lifecycle hooks
+    if (ANGULAR_LIFECYCLE_HOOKS.has(symbol.name)) {
+      return true;
+    }
+
+    // Framework decorators (e.g., @Component, @Injectable)
+    if (FRAMEWORK_PATTERNS.has(symbol.name)) {
+      return true;
+    }
+
+    // NgRx-specific patterns (already have metadata)
+    if (symbol.ngrxMetadata) {
+      // Actions and Effects are part of the framework pattern
+      // Only flag if truly unused
+      return false; // Let the reference check handle NgRx
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if all references come from barrier files (re-export files with no usage)
+   * This is a recursive check to find truly dead code hidden behind re-exports.
+   */
+  private async areAllReferencesFromBarriers(
+    references: IndexedReference[],
+    originalFile: string
+  ): Promise<boolean> {
+    const barrierPattern = /\/(index|public-api|barrel)\.ts$/i;
+    
+    for (const ref of references) {
+      const refFile = ref.location.uri;
+      
+      // Skip self-references
+      if (refFile === originalFile) {
+        continue;
+      }
+
+      // Check if this is a barrier file
+      if (!barrierPattern.test(refFile)) {
+        return false; // Found a non-barrier reference
+      }
+
+      // Check if the barrier file itself has any external references
+      // (If the re-export is also unused, it's still dead code)
+      const barrierResult = await this.backgroundIndex.getFileResult(refFile);
+      if (!barrierResult) {
+        continue;
+      }
+
+      // Find symbols in the barrier that re-export our symbol
+      for (const barrierSymbol of barrierResult.symbols) {
+        if (barrierSymbol.name === ref.symbolName) {
+          // Check if this re-exported symbol has external references
+          const barrierRefs = await this.backgroundIndex.findReferencesByName(barrierSymbol.name);
+          const externalBarrierRefs = barrierRefs.filter(
+            r => r.location.uri !== refFile && r.location.uri !== originalFile
+          );
+          
+          if (externalBarrierRefs.length > 0) {
+            return false; // The re-export is actually used
+          }
+        }
+      }
+    }
+
+    return true; // All references are from unused barriers
   }
 
   /**
@@ -104,13 +312,29 @@ export class DeadCodeDetector {
   ): boolean {
     const normalizedUri = fileUri.replace(/\\/g, '/');
     
+    // Always exclude node_modules and build artifacts
+    const defaultExclusions = ['node_modules', 'dist/', 'out/', 'build/', '.angular/', '.nx/'];
+    
+    for (const pattern of defaultExclusions) {
+      if (normalizedUri.includes(pattern)) {
+        return true;
+      }
+    }
+    
+    // Check user-defined exclusions
     for (const pattern of excludePatterns) {
-      if (!includeTests && (pattern.includes('test') || pattern.includes('spec'))) {
+      if (minimatch(normalizedUri, pattern, { matchBase: true })) {
+        return true;
+      }
+    }
+    
+    // Optionally exclude test files
+    if (!includeTests) {
+      const testPatterns = ['.test.', '.spec.', '/test/', '/tests/', '/__tests__/'];
+      for (const pattern of testPatterns) {
         if (normalizedUri.includes(pattern)) {
           return true;
         }
-      } else if (normalizedUri.includes(pattern)) {
-        return true;
       }
     }
     
@@ -119,7 +343,7 @@ export class DeadCodeDetector {
 
   /**
    * Determine if a symbol is exported.
-   * Heuristic: class, interface, function, type, enum at top level.
+   * Enhanced heuristic: class, interface, function, type, enum at top level.
    */
   private isExportedSymbol(symbol: IndexedSymbol, imports: any[]): boolean {
     // Only consider top-level symbols (no container)
@@ -128,12 +352,21 @@ export class DeadCodeDetector {
     }
 
     // Consider these kinds as potentially exported
-    const exportableKinds = ['class', 'interface', 'function', 'type', 'enum', 'constant'];
+    const exportableKinds = [
+      'class', 
+      'interface', 
+      'function', 
+      'type', 
+      'enum', 
+      'constant',
+      'variable' // Some exported variables are intentional APIs
+    ];
+    
     return exportableKinds.includes(symbol.kind);
   }
 
   /**
-   * Check if symbol has @public marker in JSDoc or comments.
+   * Check if symbol has @public, @api, or @export marker in JSDoc or comments.
    */
   private async hasPublicMarker(symbol: IndexedSymbol, fileUri: string): Promise<boolean> {
     try {
@@ -146,8 +379,21 @@ export class DeadCodeDetector {
       
       for (let i = startLine; i < symbolLine; i++) {
         const line = lines[i];
-        if (line.includes('@public') || line.includes('@api')) {
+        
+        // Check for JSDoc tags
+        if (line.includes('@public') || 
+            line.includes('@api') ||
+            line.includes('@export') ||
+            line.includes('@publicApi')) {
           return true;
+        }
+        
+        // Check for explicit 'export' keyword (more reliable)
+        if (i === symbolLine || i === symbolLine - 1) {
+          if (line.trim().startsWith('export ')) {
+            // This is definitely exported, but we still want to check usage
+            // Don't return true here, let the reference check proceed
+          }
         }
       }
       
@@ -165,17 +411,18 @@ export class DeadCodeDetector {
     symbol: IndexedSymbol,
     sameFileReferences: number
   ): 'high' | 'medium' | 'low' {
-    // High confidence: no references at all
+    // High confidence: no references at all (truly unused)
     if (sameFileReferences === 0) {
       return 'high';
     }
 
-    // Medium confidence: only used in same file
+    // Medium confidence: only used in same file (might be utility function)
     if (sameFileReferences < 3) {
       return 'medium';
     }
 
-    // Low confidence: used multiple times in same file (might be intentional)
+    // Low confidence: used multiple times in same file
+    // (Could be intentional internal API)
     return 'low';
   }
 }

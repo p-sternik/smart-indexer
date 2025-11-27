@@ -13,7 +13,33 @@ export interface SmartIndexerConfig {
   maxConcurrentWorkers: number;
   batchSize: number;
   useFolderHashing: boolean;
+  deadCode?: DeadCodeConfig;
 }
+
+export interface DeadCodeConfig {
+  enabled: boolean;
+  entryPoints: string[];
+  excludePatterns: string[];
+  checkBarrierFiles: boolean;
+  debounceMs: number;
+}
+
+const DEFAULT_DEAD_CODE_CONFIG: DeadCodeConfig = {
+  enabled: true,
+  entryPoints: [
+    '**/main.ts',
+    '**/public-api.ts',
+    '**/index.ts',
+    '**/*.stories.ts',
+    '**/*.spec.ts',
+    '**/*.test.ts',
+    '**/test/**',
+    '**/tests/**'
+  ],
+  excludePatterns: [],
+  checkBarrierFiles: false, // Expensive, opt-in
+  debounceMs: 1500
+};
 
 const DEFAULT_CONFIG: SmartIndexerConfig = {
   cacheDirectory: '.smart-index',
@@ -39,7 +65,8 @@ const DEFAULT_CONFIG: SmartIndexerConfig = {
   staticIndexPath: '',
   maxConcurrentWorkers: 4,
   batchSize: 50,
-  useFolderHashing: true
+  useFolderHashing: true,
+  deadCode: DEFAULT_DEAD_CODE_CONFIG
 };
 
 export class ConfigurationManager {
@@ -98,6 +125,9 @@ export class ConfigurationManager {
     if (typeof opts.useFolderHashing === 'boolean') {
       this.config.useFolderHashing = opts.useFolderHashing;
     }
+    if (opts.deadCode) {
+      this.config.deadCode = { ...DEFAULT_DEAD_CODE_CONFIG, ...opts.deadCode };
+    }
   }
 
   updateFromSettings(settings: any): void {
@@ -145,6 +175,9 @@ export class ConfigurationManager {
     if (typeof settings.useFolderHashing === 'boolean') {
       this.config.useFolderHashing = settings.useFolderHashing;
     }
+    if (settings.deadCode) {
+      this.config.deadCode = { ...DEFAULT_DEAD_CODE_CONFIG, ...settings.deadCode };
+    }
   }
 
   getMaxFileSizeBytes(): number {
@@ -153,6 +186,14 @@ export class ConfigurationManager {
 
   getMaxCacheSizeBytes(): number {
     return this.config.maxCacheSizeMB * 1024 * 1024;
+  }
+
+  getDeadCodeConfig(): DeadCodeConfig {
+    return this.config.deadCode || DEFAULT_DEAD_CODE_CONFIG;
+  }
+
+  isDeadCodeEnabled(): boolean {
+    return this.config.deadCode?.enabled ?? DEFAULT_DEAD_CODE_CONFIG.enabled;
   }
 
   shouldExcludePath(filePath: string): boolean {

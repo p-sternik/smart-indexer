@@ -5,10 +5,11 @@ import { IndexedFileResult, IndexedSymbol, IndexedReference, ImportInfo, ReExpor
 import { createSymbolId } from './symbolResolver.js';
 import * as crypto from 'crypto';
 import * as path from 'path';
+import * as fs from 'fs';
 
 interface WorkerTaskData {
   uri: string;
-  content: string;
+  content?: string;
 }
 
 interface WorkerResult {
@@ -620,7 +621,8 @@ function extractTextSymbols(uri: string, content: string): IndexedSymbol[] {
 }
 
 function processFile(taskData: WorkerTaskData): IndexedFileResult {
-  const { uri, content } = taskData;
+  const { uri } = taskData;
+  const content = taskData.content ?? fs.readFileSync(uri, 'utf-8');
   const hash = computeHash(content);
   
   const ext = path.extname(uri).toLowerCase();

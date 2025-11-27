@@ -4,7 +4,7 @@ import * as path from 'path';
 
 interface WorkerTaskData {
   uri: string;
-  content: string;
+  content?: string;
 }
 
 interface WorkerResult {
@@ -29,10 +29,13 @@ export class WorkerPool {
   private taskQueue: QueuedTask[] = [];
   private workerScriptPath: string;
   private poolSize: number;
+  private totalTasksProcessed: number = 0;
+  private totalErrors: number = 0;
 
   constructor(workerScriptPath: string, poolSize?: number) {
     this.workerScriptPath = workerScriptPath;
     this.poolSize = poolSize || Math.max(1, os.cpus().length - 1);
+    console.info(`[WorkerPool] Creating pool with ${this.poolSize} workers (${os.cpus().length} CPUs available)`);
     this.initializeWorkers();
   }
 
@@ -107,8 +110,10 @@ export class WorkerPool {
       workerState.idle = true;
 
       if (result.success) {
+        this.totalTasksProcessed++;
         resolve(result.result);
       } else {
+        this.totalErrors++;
         reject(new Error(result.error || 'Worker task failed'));
       }
 
@@ -140,11 +145,19 @@ export class WorkerPool {
     this.taskQueue = [];
   }
 
-  getStats(): { poolSize: number; idleWorkers: number; queuedTasks: number } {
+  getStats(): { 
+    poolSize: number; 
+    idleWorkers: number; 
+    queuedTasks: number;
+    totalProcessed: number;
+    totalErrors: number;
+  } {
     return {
       poolSize: this.workers.length,
       idleWorkers: this.workers.filter(w => w.idle).length,
-      queuedTasks: this.taskQueue.length
+      queuedTasks: this.taskQueue.length,
+      totalProcessed: this.totalTasksProcessed,
+      totalErrors: this.totalErrors
     };
   }
 }

@@ -76,6 +76,8 @@ export class BackgroundIndex implements ISymbolIndex {
 
     const workerScriptPath = path.join(__dirname, 'indexer', 'worker.js');
     this.workerPool = new WorkerPool(workerScriptPath, this.maxConcurrentJobs);
+    
+    console.info(`[BackgroundIndex] Initialized worker pool with ${this.maxConcurrentJobs} workers`);
 
     await this.loadShardMetadata();
     this.isInitialized = true;
@@ -573,6 +575,8 @@ export class BackgroundIndex implements ISymbolIndex {
 
   /**
    * Index multiple files in parallel using a worker pool.
+   * Uses Promise.allSettled to process all files concurrently without artificial batching,
+   * maximizing worker pool utilization.
    */
   private async indexFilesParallel(
     files: string[],
@@ -580,36 +584,47 @@ export class BackgroundIndex implements ISymbolIndex {
   ): Promise<void> {
     let processed = 0;
     const total = files.length;
+    const startTime = Date.now();
 
-    for (let i = 0; i < files.length; i += this.maxConcurrentJobs) {
-      const batch = files.slice(i, i + this.maxConcurrentJobs);
-      const promises = batch.map(async (uri) => {
-        try {
-          let result: IndexedFileResult;
-          
-          if (this.workerPool) {
-            const content = fs.readFileSync(uri, 'utf-8');
-            result = await this.workerPool.runTask({ uri, content });
-          } else {
-            const indexer = this.languageRouter || this.symbolIndexer;
-            result = await indexer.indexFile(uri);
-          }
-          
-          await this.updateFile(uri, result);
-          processed++;
-          if (onProgress) {
-            onProgress(processed);
-          }
-        } catch (error) {
-          console.error(`[BackgroundIndex] Error indexing file ${uri}: ${error}`);
-          processed++;
-          if (onProgress) {
-            onProgress(processed);
-          }
+    const indexFile = async (uri: string): Promise<void> => {
+      try {
+        let result: IndexedFileResult;
+        
+        if (this.workerPool) {
+          // Pass only URI to minimize data transfer between threads
+          result = await this.workerPool.runTask({ uri });
+        } else {
+          const indexer = this.languageRouter || this.symbolIndexer;
+          result = await indexer.indexFile(uri);
         }
-      });
+        
+        await this.updateFile(uri, result);
+        processed++;
+        if (onProgress) {
+          onProgress(processed);
+        }
+      } catch (error) {
+        console.error(`[BackgroundIndex] Error indexing file ${uri}: ${error}`);
+        processed++;
+        if (onProgress) {
+          onProgress(processed);
+        }
+      }
+    };
 
-      await Promise.all(promises);
+    await Promise.allSettled(files.map(indexFile));
+    
+    const duration = Date.now() - startTime;
+    const filesPerSecond = (total / (duration / 1000)).toFixed(2);
+    
+    if (this.workerPool) {
+      const stats = this.workerPool.getStats();
+      console.info(
+        `[BackgroundIndex] Completed indexing ${total} files in ${duration}ms (${filesPerSecond} files/sec) - ` +
+        `Pool stats: ${stats.totalProcessed} processed, ${stats.totalErrors} errors`
+      );
+    } else {
+      console.info(`[BackgroundIndex] Completed indexing ${total} files in ${duration}ms (${filesPerSecond} files/sec)`);
     }
   }
 

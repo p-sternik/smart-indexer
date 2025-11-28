@@ -1180,6 +1180,8 @@ export class BackgroundIndex implements ISymbolIndex {
     );
     
     // STEP 3: Batch write - single load + save per file
+    // CRITICAL FIX: Use shardManager.loadShardNoLock() to avoid nested lock deadlock
+    // Previously: withLock() -> loadShard() -> shardManager.loadShard() -> withLock() = DEADLOCK
     console.info('[Finalize] Step 3: Batch writing updates to disk...');
     
     let shardsModified = 0;
@@ -1188,46 +1190,64 @@ export class BackgroundIndex implements ISymbolIndex {
     
     for (const [uri, update] of updatesByFile) {
       processedCount++;
-      if (processedCount % 50 === 0 || processedCount === totalUpdates) {
-        console.info(`[Finalize] Step 3 progress: ${processedCount}/${totalUpdates} files written`);
-      }
       
-      // Single lock acquisition per file
-      await this.shardManager.withLock(uri, async () => {
-        const shard = await this.loadShard(uri);
-        if (!shard) {
-          return;
+      // Verbose debug logging for every reference to identify hangs
+      console.info(`[Finalize] Step 3 processing ${processedCount}/${totalUpdates}: ${uri}`);
+      
+      try {
+        // Use Promise.race with timeout to prevent infinite hangs
+        const timeoutMs = 5000;
+        const result = await Promise.race([
+          this.shardManager.withLock(uri, async () => {
+            // CRITICAL: Use loadShardNoLock to avoid nested lock acquisition
+            const shard = await this.shardManager.loadShardNoLock(uri);
+            if (!shard) {
+              console.warn(`[Finalize] Step 3: Shard not found for ${uri}`);
+              return false;
+            }
+            
+            // Ensure arrays exist
+            shard.references = shard.references || [];
+            
+            // Build set of existing ref keys for deduplication
+            const existingRefKeys = new Set(
+              shard.references.map(r => `${r.symbolName}:${r.location.line}:${r.location.character}`)
+            );
+            
+            // Add only new references (avoid duplicates)
+            for (const newRef of update.newRefs) {
+              const refKey = `${newRef.symbolName}:${newRef.location.line}:${newRef.location.character}`;
+              if (!existingRefKeys.has(refKey)) {
+                shard.references.push(newRef);
+                existingRefKeys.add(refKey);
+              }
+            }
+            
+            // Remove resolved pending references
+            if (shard.pendingReferences) {
+              shard.pendingReferences = shard.pendingReferences.filter(pr => {
+                const key = `${pr.container}:${pr.member}:${pr.location.line}:${pr.location.character}`;
+                return !update.resolvedKeys.has(key);
+              });
+            }
+            
+            // CRITICAL: Use saveShardNoLock to avoid nested lock
+            await this.shardManager.saveShardNoLock(shard);
+            return true;
+          }),
+          new Promise<boolean>((_, reject) => 
+            setTimeout(() => reject(new Error(`TIMEOUT after ${timeoutMs}ms`)), timeoutMs)
+          )
+        ]);
+        
+        if (result) {
+          shardsModified++;
         }
-        
-        // Ensure arrays exist
-        shard.references = shard.references || [];
-        
-        // Build set of existing ref keys for deduplication
-        const existingRefKeys = new Set(
-          shard.references.map(r => `${r.symbolName}:${r.location.line}:${r.location.character}`)
-        );
-        
-        // Add only new references (avoid duplicates)
-        for (const newRef of update.newRefs) {
-          const refKey = `${newRef.symbolName}:${newRef.location.line}:${newRef.location.character}`;
-          if (!existingRefKeys.has(refKey)) {
-            shard.references.push(newRef);
-            existingRefKeys.add(refKey);
-          }
-        }
-        
-        // Remove resolved pending references
-        if (shard.pendingReferences) {
-          shard.pendingReferences = shard.pendingReferences.filter(pr => {
-            const key = `${pr.container}:${pr.member}:${pr.location.line}:${pr.location.character}`;
-            return !update.resolvedKeys.has(key);
-          });
-        }
-        
-        // Single save per file
-        await this.saveShard(shard);
-        shardsModified++;
-      });
+        console.info(`[Finalize] Step 3 done ${processedCount}/${totalUpdates}: ${uri}`);
+      } catch (error) {
+        console.error(`[Finalize] Step 3 FAILED for ${uri}: ${error}`);
+        // Continue processing other files even if one fails
+      }
     }
     
     const duration = Date.now() - startTime;

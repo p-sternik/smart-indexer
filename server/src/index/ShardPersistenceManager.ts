@@ -220,52 +220,63 @@ export class ShardPersistenceManager {
    */
   async loadShard(uri: string): Promise<FileShard | null> {
     return this.withLock(uri, async () => {
-      try {
-        const binPath = this.getShardPath(uri, 'bin');
-        
-        // Try MessagePack format first (preferred)
-        if (fs.existsSync(binPath)) {
-          const buffer = fs.readFileSync(binPath);
-          const decoded = decode(buffer) as any;
-          
-          // Check if this is compact format (has 'u' field) or legacy format (has 'uri' field)
-          if ('u' in decoded) {
-            // Compact format - hydrate to full FileShard
-            return fromCompactShard(decoded as CompactShard);
-          } else {
-            // Legacy format - return as-is but schedule migration on next save
-            return decoded as FileShard;
-          }
-        }
-        
-        // Migration path: try legacy JSON format
-        const jsonPath = this.getShardPath(uri, 'json');
-        if (fs.existsSync(jsonPath)) {
-          const content = fs.readFileSync(jsonPath, 'utf-8');
-          const shard = JSON.parse(content) as FileShard;
-          
-          // Migrate to compact MessagePack format
-          const shardDir = path.dirname(binPath);
-          if (!fs.existsSync(shardDir)) {
-            fs.mkdirSync(shardDir, { recursive: true });
-          }
-          const compact = toCompactShard(shard);
-          const encoded = encode(compact);
-          fs.writeFileSync(binPath, encoded);
-          
-          // Remove legacy JSON file
-          fs.unlinkSync(jsonPath);
-          console.info(`[ShardPersistenceManager] Migrated shard to compact format: ${uri}`);
-          
-          return shard;
-        }
-        
-        return null;
-      } catch (error) {
-        console.error(`[ShardPersistenceManager] Error loading shard for ${uri}: ${error}`);
-        return null;
-      }
+      return this.loadShardNoLock(uri);
     });
+  }
+
+  /**
+   * Load a shard from disk WITHOUT acquiring a lock.
+   * Use this ONLY when already holding a lock on the URI (e.g., inside withLock callback).
+   * 
+   * @param uri - The file URI to load the shard for
+   * @returns The shard data or null if not found
+   */
+  async loadShardNoLock(uri: string): Promise<FileShard | null> {
+    try {
+      const binPath = this.getShardPath(uri, 'bin');
+      
+      // Try MessagePack format first (preferred)
+      if (fs.existsSync(binPath)) {
+        const buffer = fs.readFileSync(binPath);
+        const decoded = decode(buffer) as any;
+        
+        // Check if this is compact format (has 'u' field) or legacy format (has 'uri' field)
+        if ('u' in decoded) {
+          // Compact format - hydrate to full FileShard
+          return fromCompactShard(decoded as CompactShard);
+        } else {
+          // Legacy format - return as-is but schedule migration on next save
+          return decoded as FileShard;
+        }
+      }
+      
+      // Migration path: try legacy JSON format
+      const jsonPath = this.getShardPath(uri, 'json');
+      if (fs.existsSync(jsonPath)) {
+        const content = fs.readFileSync(jsonPath, 'utf-8');
+        const shard = JSON.parse(content) as FileShard;
+        
+        // Migrate to compact MessagePack format
+        const shardDir = path.dirname(binPath);
+        if (!fs.existsSync(shardDir)) {
+          fs.mkdirSync(shardDir, { recursive: true });
+        }
+        const compact = toCompactShard(shard);
+        const encoded = encode(compact);
+        fs.writeFileSync(binPath, encoded);
+        
+        // Remove legacy JSON file
+        fs.unlinkSync(jsonPath);
+        console.info(`[ShardPersistenceManager] Migrated shard to compact format: ${uri}`);
+        
+        return shard;
+      }
+      
+      return null;
+    } catch (error) {
+      console.error(`[ShardPersistenceManager] Error loading shard for ${uri}: ${error}`);
+      return null;
+    }
   }
 
   /**
@@ -289,24 +300,34 @@ export class ShardPersistenceManager {
    */
   private async saveShardImmediate(shard: FileShard): Promise<void> {
     return this.withLock(shard.uri, async () => {
-      try {
-        const shardPath = this.getShardPath(shard.uri, 'bin');
-        const shardDir = path.dirname(shardPath);
-        
-        // Ensure directory exists (nested structure)
-        if (!fs.existsSync(shardDir)) {
-          fs.mkdirSync(shardDir, { recursive: true });
-        }
-        
-        // Convert to compact format before saving
-        const compact = toCompactShard(shard);
-        const encoded = encode(compact);
-        fs.writeFileSync(shardPath, encoded);
-      } catch (error) {
-        console.error(`[ShardPersistenceManager] Error saving shard for ${shard.uri}: ${error}`);
-        throw error;
-      }
+      await this.saveShardNoLock(shard);
     });
+  }
+
+  /**
+   * Save a shard to disk WITHOUT acquiring a lock.
+   * Use this ONLY when already holding a lock on the URI (e.g., inside withLock callback).
+   * 
+   * @param shard - The shard data to save
+   */
+  async saveShardNoLock(shard: FileShard): Promise<void> {
+    try {
+      const shardPath = this.getShardPath(shard.uri, 'bin');
+      const shardDir = path.dirname(shardPath);
+      
+      // Ensure directory exists (nested structure)
+      if (!fs.existsSync(shardDir)) {
+        fs.mkdirSync(shardDir, { recursive: true });
+      }
+      
+      // Convert to compact format before saving
+      const compact = toCompactShard(shard);
+      const encoded = encode(compact);
+      fs.writeFileSync(shardPath, encoded);
+    } catch (error) {
+      console.error(`[ShardPersistenceManager] Error saving shard for ${shard.uri}: ${error}`);
+      throw error;
+    }
   }
 
   /**

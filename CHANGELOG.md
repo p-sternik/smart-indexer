@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0](https://github.com/p-sternik/smart-indexer/compare/v1.18.0...v1.19.0) (2025-11-28)
+
+
+### Features
+
+* Enhance GitWatcher and BackgroundIndex with path sanitization and file existence checks ([48e36eb](https://github.com/p-sternik/smart-indexer/commit/48e36eb1076796651a158f1629f306e738188fcc))
+
 ## [1.18.0](https://github.com/p-sternik/smart-indexer/compare/v1.17.0...v1.18.0) (2025-11-28)
 
 

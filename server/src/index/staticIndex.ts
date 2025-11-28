@@ -1,5 +1,6 @@
 import { ISymbolIndex } from './ISymbolIndex.js';
 import { IndexedSymbol } from '../types.js';
+import { fuzzyScore } from '../utils/fuzzySearch.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -122,13 +123,20 @@ export class StaticIndex implements ISymbolIndex {
 
   async searchSymbols(query: string, limit: number): Promise<IndexedSymbol[]> {
     const results: IndexedSymbol[] = [];
-    const queryLower = query.toLowerCase();
+    const seen = new Set<string>();
 
+    // Use fuzzy matching for consistent behavior across all indices
     for (const [name, symbols] of this.symbolNameIndex.entries()) {
-      if (name.toLowerCase().includes(queryLower)) {
-        results.push(...symbols);
-        if (results.length >= limit) {
-          return results.slice(0, limit);
+      if (fuzzyScore(name, query)) {
+        for (const symbol of symbols) {
+          const key = `${symbol.name}:${symbol.location.uri}:${symbol.location.line}:${symbol.location.character}`;
+          if (!seen.has(key)) {
+            results.push(symbol);
+            seen.add(key);
+            if (results.length >= limit) {
+              return results;
+            }
+          }
         }
       }
     }

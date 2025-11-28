@@ -1,17 +1,24 @@
-name: Release to VS Code Marketplace
+name: Release Pipeline
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - master  
+
+permissions:
+  contents: write 
+  issues: write
+  pull-requests: write
 
 jobs:
   release:
+    name: Release
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -22,20 +29,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build and package extension
-        run: npm run package
+      - name: Verify Build
+        run: npm run compile && npm run lint
 
-      - name: Install vsce
-        run: npm install -g @vscode/vsce
-      
-      - name: Create VSIX package
-        run: vsce package -o smart-indexer.vsix
-
-      - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: vsix-file
-          path: smart-indexer.vsix
-
-      - name: Publish to VS Code Marketplace
-        run: vsce publish -p ${{ secrets.VSCODE_MARKETPLACE_TOKEN }} --packagePath smart-indexer.vsix
+      - name: Semantic Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VSCE_TOKEN: ${{ secrets.VSCODE_MARKETPLACE_TOKEN }}
+        run: npx semantic-release

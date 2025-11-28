@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.0](https://github.com/p-sternik/smart-indexer/compare/v1.31.0...v1.32.0) (2025-11-28)
+
+
+### Features
+
+* Implement loadShardNoLock and saveShardNoLock methods to prevent nested lock deadlocks ([5a5dcf3](https://github.com/p-sternik/smart-indexer/commit/5a5dcf3e52e636201004692b1a1c9cf4763c317b))
+
 ## [1.31.0](https://github.com/p-sternik/smart-indexer/compare/v1.30.0...v1.31.0) (2025-11-28)
 
 

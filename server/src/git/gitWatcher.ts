@@ -71,14 +71,16 @@ export class GitWatcher {
         };
       }
 
-      const diff = await this.git.diffSummary([lastHash, 'HEAD']);
+      const diff = await this.git.diffSummary(['-c', 'core.quotePath=false', lastHash, 'HEAD']);
 
       const added: string[] = [];
       const modified: string[] = [];
       const deleted: string[] = [];
 
       for (const file of diff.files) {
-        const fullPath = path.join(this.workspaceRoot, file.file);
+        // Sanitize the file path to handle non-ASCII characters
+        const sanitizedPath = this.sanitizeGitPath(file.file);
+        const fullPath = path.join(this.workspaceRoot, sanitizedPath);
         
         if (file.binary) {continue;}
 
@@ -104,16 +106,52 @@ export class GitWatcher {
     if (!this.git) {return [];}
 
     try {
-      const result = await this.git.raw(['ls-files']);
+      // Use -c core.quotePath=false to output raw UTF-8 paths instead of quoted/escaped
+      // This prevents paths like "Wspó\305\202" for "Współwłaściciele.svg"
+      const result = await this.git.raw(['-c', 'core.quotePath=false', 'ls-files']);
       const files = result
         .split('\n')
         .filter(f => f.trim().length > 0)
+        .map(f => this.sanitizeGitPath(f))
         .map(f => path.join(this.workspaceRoot, f));
       return files;
     } catch (error) {
       console.error(`[GitWatcher] Error getting tracked files: ${error}`);
       return [];
     }
+  }
+
+  /**
+   * Sanitize a path returned by git to handle edge cases.
+   * Even with core.quotePath=false, some git versions may still quote paths.
+   */
+  private sanitizeGitPath(filePath: string): string {
+    let sanitized = filePath.trim();
+    
+    // Strip surrounding quotes if present (e.g., "path/to/file")
+    if (sanitized.startsWith('"') && sanitized.endsWith('"')) {
+      sanitized = sanitized.slice(1, -1);
+    }
+    
+    // Decode octal escape sequences if present (e.g., \303\263 -> ó)
+    // This handles legacy git output or misconfigured systems
+    if (sanitized.includes('\\')) {
+      try {
+        sanitized = sanitized.replace(/\\([0-7]{3})/g, (_, octal) => {
+          return String.fromCharCode(parseInt(octal, 8));
+        });
+        // Handle UTF-8 byte sequences: convert bytes to proper UTF-8 string
+        const bytes = [];
+        for (let i = 0; i < sanitized.length; i++) {
+          bytes.push(sanitized.charCodeAt(i));
+        }
+        sanitized = Buffer.from(bytes).toString('utf-8');
+      } catch (error) {
+        console.warn(`[GitWatcher] Failed to decode path: ${filePath}`);
+      }
+    }
+    
+    return sanitized;
   }
 
   async watchForChanges(callback: (changes: GitChanges) => void): Promise<void> {

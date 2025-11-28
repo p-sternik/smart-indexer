@@ -428,6 +428,12 @@ export class BackgroundIndex implements ISymbolIndex {
    */
   async updateSingleFile(filePath: string): Promise<void> {
     try {
+      // PRE-VALIDATION: Check file exists to prevent ENOENT errors
+      if (!fs.existsSync(filePath)) {
+        console.warn(`[BackgroundIndex] Skipping non-existent file: ${filePath}`);
+        return;
+      }
+
       // STEP A: Cleanup - remove existing entries
       // This is already handled by updateFile(), but we call removeFile first
       // to ensure a clean slate and prevent "ghost" references
@@ -853,8 +859,33 @@ export class BackgroundIndex implements ISymbolIndex {
     files: string[],
     onProgress?: (current: number) => void
   ): Promise<void> {
+    // PRE-QUEUE VALIDATION: Filter out non-existent files to prevent dead tasks
+    const validFiles: string[] = [];
+    const skippedFiles: string[] = [];
+    
+    for (const uri of files) {
+      if (fs.existsSync(uri)) {
+        validFiles.push(uri);
+      } else {
+        skippedFiles.push(uri);
+      }
+    }
+    
+    if (skippedFiles.length > 0) {
+      console.warn(
+        `[BackgroundIndex] Skipping ${skippedFiles.length} non-existent files (possible path encoding issue)`
+      );
+      // Log first few for debugging
+      for (const skipped of skippedFiles.slice(0, 5)) {
+        console.warn(`[BackgroundIndex]   - ${skipped}`);
+      }
+      if (skippedFiles.length > 5) {
+        console.warn(`[BackgroundIndex]   ... and ${skippedFiles.length - 5} more`);
+      }
+    }
+
     let processed = 0;
-    const total = files.length;
+    const total = validFiles.length;
     const startTime = Date.now();
     let lastProgressTime = startTime;
 
@@ -867,7 +898,7 @@ export class BackgroundIndex implements ISymbolIndex {
         state: 'busy',
         processed: 0,
         total,
-        currentFile: files[0]
+        currentFile: validFiles[0]
       });
     }
 
@@ -909,7 +940,7 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     };
 
-    await Promise.allSettled(files.map(indexFile));
+    await Promise.allSettled(validFiles.map(indexFile));
 
     // Disable bulk indexing mode
     this.isBulkIndexing = false;

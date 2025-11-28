@@ -510,48 +510,54 @@ function traverseAST(
       if (memberExpr.property.type === AST_NODE_TYPES.Identifier && memberExpr.property.loc) {
         const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
         
-        // Only add reference if this is NOT a method/property declaration
-        // (MemberExpression is always a usage, not a declaration)
-        references.push({
-          symbolName: memberExpr.property.name,
-          location: {
-            uri,
-            line: memberExpr.property.loc.start.line - 1,
-            character: memberExpr.property.loc.start.column
-          },
-          range: {
-            startLine: memberExpr.property.loc.start.line - 1,
-            startCharacter: memberExpr.property.loc.start.column,
-            endLine: memberExpr.property.loc.end.line - 1,
-            endCharacter: memberExpr.property.loc.end.column
-          },
-          containerName,
-          scopeId,
-          isLocal: false
-        });
+        // Check if this is an imported symbol access (will become pending reference)
+        // This prevents duplicate references for NgRx action group usages
+        const isImportedAccess = pendingReferences && 
+          memberExpr.object.type === AST_NODE_TYPES.Identifier &&
+          imports.some(imp => imp.localName === (memberExpr.object as TSESTree.Identifier).name);
+        
+        // Only add to regular references if NOT an imported symbol access
+        // (imported accesses are handled via pendingReferences for cross-file resolution)
+        if (!isImportedAccess) {
+          references.push({
+            symbolName: memberExpr.property.name,
+            location: {
+              uri,
+              line: memberExpr.property.loc.start.line - 1,
+              character: memberExpr.property.loc.start.column
+            },
+            range: {
+              startLine: memberExpr.property.loc.start.line - 1,
+              startCharacter: memberExpr.property.loc.start.column,
+              endLine: memberExpr.property.loc.end.line - 1,
+              endCharacter: memberExpr.property.loc.end.column
+            },
+            containerName,
+            scopeId,
+            isLocal: false
+          });
+        }
         
         // Capture pending references for cross-file resolution (NgRx action groups)
         // Pattern: ImportedSymbol.member() where ImportedSymbol is an import
-        if (pendingReferences && memberExpr.object.type === AST_NODE_TYPES.Identifier) {
+        if (isImportedAccess && memberExpr.object.type === AST_NODE_TYPES.Identifier) {
           const objectIdentifier = memberExpr.object as TSESTree.Identifier;
-          if (imports.some(imp => imp.localName === objectIdentifier.name)) {
-            pendingReferences.push({
-              container: objectIdentifier.name,
-              member: memberExpr.property.name,
-              location: {
-                uri,
-                line: memberExpr.property.loc.start.line - 1,
-                character: memberExpr.property.loc.start.column
-              },
-              range: {
-                startLine: memberExpr.property.loc.start.line - 1,
-                startCharacter: memberExpr.property.loc.start.column,
-                endLine: memberExpr.property.loc.end.line - 1,
-                endCharacter: memberExpr.property.loc.end.column
-              },
-              containerName
-            });
-          }
+          pendingReferences!.push({
+            container: objectIdentifier.name,
+            member: memberExpr.property.name,
+            location: {
+              uri,
+              line: memberExpr.property.loc.start.line - 1,
+              character: memberExpr.property.loc.start.column
+            },
+            range: {
+              startLine: memberExpr.property.loc.start.line - 1,
+              startCharacter: memberExpr.property.loc.start.column,
+              endLine: memberExpr.property.loc.end.line - 1,
+              endCharacter: memberExpr.property.loc.end.column
+            },
+            containerName
+          });
         }
       }
     }
@@ -611,6 +617,17 @@ function traverseAST(
             // Handle ofType(Actions.someAction)
             const memberExpr = arg as TSESTree.MemberExpression;
             if (memberExpr.property.type === AST_NODE_TYPES.Identifier && memberExpr.property.loc) {
+              // Check if this is an imported symbol access (will be handled via pendingReferences)
+              // This prevents duplicate references for NgRx action group usages
+              const isImportedAccess = pendingReferences && 
+                memberExpr.object.type === AST_NODE_TYPES.Identifier &&
+                imports.some(imp => imp.localName === (memberExpr.object as TSESTree.Identifier).name);
+              
+              // Skip if already handled via pendingReferences
+              if (isImportedAccess) {
+                continue;
+              }
+              
               const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
               references.push({
                 symbolName: memberExpr.property.name,

@@ -3,7 +3,7 @@ import { IndexedSymbol, IndexedFileResult, IndexedReference, ImportInfo, ReExpor
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { fuzzyScore } from '../utils/fuzzySearch.js';
-import { toPascalCase } from '../utils/stringUtils.js';
+import { toCamelCase, toPascalCase } from '../utils/stringUtils.js';
 import { WorkerPool } from '../utils/workerPool.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
 import * as crypto from 'crypto';
@@ -55,6 +55,7 @@ export class BackgroundIndex implements ISymbolIndex {
   private fileMetadata: Map<string, { hash: string; lastIndexedAt: number; symbolCount: number; mtime?: number }> = new Map();
   private symbolNameIndex: Map<string, Set<string>> = new Map(); // name -> Set of URIs
   private symbolIdIndex: Map<string, string> = new Map(); // symbolId -> URI
+  private fileToSymbolIds: Map<string, Set<string>> = new Map(); // uri -> Set of symbolIds (reverse index for O(1) cleanup)
   private referenceMap: Map<string, Set<string>> = new Map(); // symbolName -> Set of URIs containing references
   private isInitialized: boolean = false;
   private maxConcurrentJobs: number = 4;
@@ -138,7 +139,8 @@ export class BackgroundIndex implements ISymbolIndex {
             mtime: shard.mtime
           });
 
-          // Build symbol name index
+          // Build symbol name index and reverse index for O(1) cleanup
+          const symbolIds = new Set<string>();
           for (const symbol of shard.symbols) {
             let uriSet = this.symbolNameIndex.get(symbol.name);
             if (!uriSet) {
@@ -149,7 +151,10 @@ export class BackgroundIndex implements ISymbolIndex {
 
             // Build symbol ID index
             this.symbolIdIndex.set(symbol.id, shard.uri);
+            symbolIds.add(symbol.id);
           }
+          // Store reverse mapping for O(1) cleanup
+          this.fileToSymbolIds.set(shard.uri, symbolIds);
 
           // Build reference map
           if (shard.references) {
@@ -308,9 +313,10 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     }
 
-    // Remove old symbol IDs for this URI
-    for (const [symbolId, storedUri] of this.symbolIdIndex) {
-      if (storedUri === uri) {
+    // Remove old symbol IDs for this URI using reverse index (O(1) lookup)
+    const oldSymbolIds = this.fileToSymbolIds.get(uri);
+    if (oldSymbolIds) {
+      for (const symbolId of oldSymbolIds) {
         this.symbolIdIndex.delete(symbolId);
       }
     }
@@ -323,7 +329,8 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     }
 
-    // Add new symbols
+    // Add new symbols and build reverse index
+    const newSymbolIds = new Set<string>();
     for (const symbol of result.symbols) {
       let uriSet = this.symbolNameIndex.get(symbol.name);
       if (!uriSet) {
@@ -334,7 +341,10 @@ export class BackgroundIndex implements ISymbolIndex {
 
       // Add to symbol ID index
       this.symbolIdIndex.set(symbol.id, uri);
+      newSymbolIds.add(symbol.id);
     }
+    // Update reverse index for O(1) cleanup
+    this.fileToSymbolIds.set(uri, newSymbolIds);
 
     // Add new references
     if (result.references) {
@@ -398,18 +408,25 @@ export class BackgroundIndex implements ISymbolIndex {
         }
 
         // Check if the member exists in the events map
-        // Try exact match first, then PascalCase fallback
+        // Try exact match first, then camelCase, then PascalCase fallback
         const events = containerSymbol.ngrxMetadata.events;
         let matchedMember: string | null = null;
         
         if (pending.member in events) {
           matchedMember = pending.member;
         } else {
-          // Fallback: Try PascalCase version (e.g., 'load' -> 'Load')
-          const pascalMember = toPascalCase(pending.member);
-          if (pascalMember in events) {
-            matchedMember = pascalMember;
-            console.info(`[BackgroundIndex] NgRx PascalCase fallback: ${pending.member} -> ${pascalMember}`);
+          // Fallback 1: Try camelCase version (e.g., 'Load' -> 'load')
+          const camelMember = toCamelCase(pending.member);
+          if (camelMember in events) {
+            matchedMember = camelMember;
+            console.info(`[BackgroundIndex] NgRx camelCase fallback: ${pending.member} -> ${camelMember}`);
+          } else {
+            // Fallback 2: Try PascalCase version (e.g., 'load' -> 'Load')
+            const pascalMember = toPascalCase(pending.member);
+            if (pascalMember in events) {
+              matchedMember = pascalMember;
+              console.info(`[BackgroundIndex] NgRx PascalCase fallback: ${pending.member} -> ${pascalMember}`);
+            }
           }
         }
         
@@ -429,13 +446,41 @@ export class BackgroundIndex implements ISymbolIndex {
           isLocal: false
         };
 
-        // Add to referenceMap so FindReferences works
+        // Add to referenceMap so FindReferences works (in-memory)
         let refUriSet = this.referenceMap.get(pending.member);
         if (!refUriSet) {
           refUriSet = new Set();
           this.referenceMap.set(pending.member, refUriSet);
         }
         refUriSet.add(sourceUri);
+
+        // Persist synthetic reference to source shard (survives restart)
+        const sourceShard = await this.loadShard(sourceUri);
+        if (sourceShard) {
+          if (!sourceShard.references) {
+            sourceShard.references = [];
+          }
+          // Avoid duplicates
+          const refKey = `${syntheticRef.symbolName}:${syntheticRef.location.line}:${syntheticRef.location.character}`;
+          const exists = sourceShard.references.some(
+            r => `${r.symbolName}:${r.location.line}:${r.location.character}` === refKey
+          );
+          if (!exists) {
+            sourceShard.references.push(syntheticRef);
+          }
+          
+          // Clear this resolved pending reference from the shard to prevent reprocessing on restart
+          if (sourceShard.pendingReferences) {
+            sourceShard.pendingReferences = sourceShard.pendingReferences.filter(
+              pr => !(pr.container === pending.container && 
+                      pr.member === pending.member &&
+                      pr.location.line === pending.location.line && 
+                      pr.location.character === pending.location.character)
+            );
+          }
+          
+          await this.saveShard(sourceShard);
+        }
 
         resolvedCount++;
         break; // Found a match, no need to check other containers
@@ -508,11 +553,13 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     }
 
-    // Remove from symbol ID index
-    for (const [symbolId, storedUri] of this.symbolIdIndex) {
-      if (storedUri === uri) {
+    // Remove from symbol ID index using reverse index (O(1) lookup)
+    const oldSymbolIds = this.fileToSymbolIds.get(uri);
+    if (oldSymbolIds) {
+      for (const symbolId of oldSymbolIds) {
         this.symbolIdIndex.delete(symbolId);
       }
+      this.fileToSymbolIds.delete(uri);
     }
 
     // Remove from reference map
@@ -538,11 +585,13 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     }
 
-    // Remove from symbol ID index
-    for (const [symbolId, storedUri] of this.symbolIdIndex) {
-      if (storedUri === uri) {
+    // Remove from symbol ID index using reverse index (O(1) lookup)
+    const oldSymbolIds = this.fileToSymbolIds.get(uri);
+    if (oldSymbolIds) {
+      for (const symbolId of oldSymbolIds) {
         this.symbolIdIndex.delete(symbolId);
       }
+      this.fileToSymbolIds.delete(uri);
     }
 
     // Remove from reference map
@@ -1035,16 +1084,22 @@ export class BackgroundIndex implements ISymbolIndex {
         }
         
         // Check if the member exists in the events map
-        // Try exact match first, then PascalCase fallback
+        // Try exact match first, then camelCase, then PascalCase fallback
         let matchedMember: string | null = null;
         
         if (pending.member in actionGroup.events) {
           matchedMember = pending.member;
         } else {
-          // Fallback: Try PascalCase version (e.g., 'load' -> 'Load')
-          const pascalMember = toPascalCase(pending.member);
-          if (pascalMember in actionGroup.events) {
-            matchedMember = pascalMember;
+          // Fallback 1: Try camelCase version (e.g., 'Load' -> 'load')
+          const camelMember = toCamelCase(pending.member);
+          if (camelMember in actionGroup.events) {
+            matchedMember = camelMember;
+          } else {
+            // Fallback 2: Try PascalCase version (e.g., 'load' -> 'Load')
+            const pascalMember = toPascalCase(pending.member);
+            if (pascalMember in actionGroup.events) {
+              matchedMember = pascalMember;
+            }
           }
         }
         
@@ -1112,6 +1167,7 @@ export class BackgroundIndex implements ISymbolIndex {
       this.fileMetadata.clear();
       this.symbolNameIndex.clear();
       this.symbolIdIndex.clear();
+      this.fileToSymbolIds.clear();
       this.referenceMap.clear();
     } catch (error) {
       console.error(`[BackgroundIndex] Error clearing shards: ${error}`);

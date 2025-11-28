@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0](https://github.com/p-sternik/smart-indexer/compare/v1.13.0...v1.14.0) (2025-11-28)
+
+
+### Features
+
+* Enhance reference handling for NgRx action groups to prevent duplicates ([33ac1db](https://github.com/p-sternik/smart-indexer/commit/33ac1db247a4f55b2a853db6c6bc42b7261e1a51))
+
 ## [1.13.0](https://github.com/p-sternik/smart-indexer/compare/v1.12.0...v1.13.0) (2025-11-28)
 
 

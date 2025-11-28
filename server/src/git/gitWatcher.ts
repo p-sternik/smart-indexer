@@ -71,26 +71,26 @@ export class GitWatcher {
         };
       }
 
-      const diff = await this.git.diffSummary(['-c', 'core.quotePath=false', lastHash, 'HEAD']);
+      // Use raw() to pass -c core.quotePath=false properly (diffSummary doesn't support -c flag)
+      const rawDiff = await this.git.raw(['-c', 'core.quotePath=false', 'diff', '--name-only', lastHash, 'HEAD']);
+      const changedFiles = rawDiff
+        .split('\n')
+        .filter(f => f.trim().length > 0)
+        .map(f => this.sanitizeGitPath(f));
 
       const added: string[] = [];
       const modified: string[] = [];
       const deleted: string[] = [];
 
-      for (const file of diff.files) {
-        // Sanitize the file path to handle non-ASCII characters
-        const sanitizedPath = this.sanitizeGitPath(file.file);
-        const fullPath = path.join(this.workspaceRoot, sanitizedPath);
-        
-        if (file.binary) {continue;}
+      for (const filePath of changedFiles) {
+        const fullPath = path.join(this.workspaceRoot, filePath);
 
         if (fs.existsSync(fullPath)) {
-          if (file.insertions > 0 && file.deletions === 0) {
-            added.push(fullPath);
-          } else {
-            modified.push(fullPath);
-          }
+          // File exists - treat as added (will be re-indexed; we lose add/modify distinction
+          // with --name-only but that's fine since both trigger re-indexing)
+          added.push(fullPath);
         } else {
+          // File doesn't exist - it was deleted
           deleted.push(fullPath);
         }
       }

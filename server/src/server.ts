@@ -1278,11 +1278,25 @@ connection.onReferences(
           );
         }
 
-        connection.console.log(`[Server] Filtered to ${filtered.length} references`);
+        // Get definitions to filter out self-references (definition locations showing up as references)
+        const definitions = await mergedIndex.findDefinitions(symbolAtCursor.name);
+        const definitionLocations = new Set<string>();
+        for (const def of definitions) {
+          // Add all definition location keys to filter out
+          const key = `${def.location.uri}:${def.range.startLine}:${def.range.startCharacter}`;
+          definitionLocations.add(key);
+        }
+
+        // Filter out references that point to definition locations (self-references)
+        filtered = filtered.filter(ref => {
+          const key = `${ref.location.uri}:${ref.range.startLine}:${ref.range.startCharacter}`;
+          return !definitionLocations.has(key);
+        });
+
+        connection.console.log(`[Server] Filtered to ${filtered.length} references (after removing definitions)`);
 
         // Also include the definition itself if requested
         if (params.context.includeDeclaration) {
-          const definitions = await mergedIndex.findDefinitions(symbolAtCursor.name);
           const matchingDef = definitions.filter(def => {
             const nameMatch = def.name === symbolAtCursor.name;
             const containerMatch = !symbolAtCursor.containerName || 
@@ -1301,7 +1315,20 @@ connection.onReferences(
           }
         }
 
-        const results = filtered.map(ref => ({
+        // Deduplicate results by exact location (uri:line:char)
+        const seen = new Set<string>();
+        const deduplicated = filtered.filter(ref => {
+          const key = `${ref.location.uri}:${ref.range.startLine}:${ref.range.startCharacter}`;
+          if (seen.has(key)) {
+            return false;
+          }
+          seen.add(key);
+          return true;
+        });
+
+        connection.console.log(`[Server] Deduplicated to ${deduplicated.length} unique references`);
+
+        const results = deduplicated.map(ref => ({
           uri: URI.file(ref.location.uri).toString(),
           range: {
             start: { line: ref.range.startLine, character: ref.range.startCharacter },
@@ -1328,7 +1355,18 @@ connection.onReferences(
       const word = text.substring(wordRange.start, wordRange.end);
       const references = await mergedIndex.findReferencesByName(word);
 
-      const results = references.length === 0 ? null : references.map(ref => ({
+      // Deduplicate fallback results
+      const seenFallback = new Set<string>();
+      const dedupedRefs = references.filter(ref => {
+        const key = `${ref.location.uri}:${ref.range.startLine}:${ref.range.startCharacter}`;
+        if (seenFallback.has(key)) {
+          return false;
+        }
+        seenFallback.add(key);
+        return true;
+      });
+
+      const results = dedupedRefs.length === 0 ? null : dedupedRefs.map(ref => ({
         uri: URI.file(ref.location.uri).toString(),
         range: {
           start: { line: ref.range.startLine, character: ref.range.startCharacter },
@@ -1340,7 +1378,7 @@ connection.onReferences(
       profiler.record('references', duration);
       statsManager.updateProfilingMetrics({ avgReferencesTimeMs: profiler.getAverageMs('references') });
 
-      connection.console.log(`[Server] References result (fallback): symbol="${word}", ${references.length} locations in ${duration} ms`);
+      connection.console.log(`[Server] References result (fallback): symbol="${word}", ${dedupedRefs.length} locations in ${duration} ms`);
       return results;
     } catch (error) {
       const duration = Date.now() - start;
@@ -1669,66 +1707,6 @@ connection.onRequest('smart-indexer/findDeadCode', async (options?: {
     };
   } catch (error) {
     connection.console.error(`[Server] Error finding dead code: ${error}`);
-    throw error;
-  }
-});
-
-// Initialize dependency graph service
-import { DependencyGraphService } from './features/dependencyGraph.js';
-let dependencyGraphService: DependencyGraphService;
-
-connection.onRequest('smartIndexer/getDependencyTree', async (params: {
-  filePath: string;
-  direction: 'incoming' | 'outgoing';
-  maxDepth?: number;
-}) => {
-  try {
-    connection.console.info(
-      `[Server] Get dependency tree: ${params.filePath}, direction: ${params.direction}, depth: ${params.maxDepth || 3}`
-    );
-
-    if (!dependencyGraphService) {
-      dependencyGraphService = new DependencyGraphService(mergedIndex);
-    }
-
-    const tree = await dependencyGraphService.buildDependencyTree(
-      params.filePath,
-      params.direction,
-      params.maxDepth || 3
-    );
-
-    connection.console.info(`[Server] Dependency tree built for ${params.filePath}`);
-    return tree;
-  } catch (error) {
-    connection.console.error(`[Server] Error building dependency tree: ${error}`);
-    throw error;
-  }
-});
-
-connection.onRequest('smartIndexer/generateMermaid', async (params: {
-  filePath: string;
-  direction: 'incoming' | 'outgoing';
-  maxDepth?: number;
-}) => {
-  try {
-    connection.console.info(
-      `[Server] Generate Mermaid: ${params.filePath}, direction: ${params.direction}, depth: ${params.maxDepth || 3}`
-    );
-
-    if (!dependencyGraphService) {
-      dependencyGraphService = new DependencyGraphService(mergedIndex);
-    }
-
-    const mermaidString = await dependencyGraphService.generateMermaidString(
-      params.filePath,
-      params.direction,
-      params.maxDepth || 3
-    );
-
-    connection.console.info(`[Server] Mermaid diagram generated for ${params.filePath}`);
-    return { mermaidString };
-  } catch (error) {
-    connection.console.error(`[Server] Error generating Mermaid: ${error}`);
     throw error;
   }
 });

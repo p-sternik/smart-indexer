@@ -10,16 +10,12 @@ import {
 } from 'vscode-languageclient/node';
 import { HybridDefinitionProvider } from './providers/HybridDefinitionProvider';
 import { HybridReferencesProvider } from './providers/HybridReferencesProvider';
-import { DependencyTreeProvider, DependencyDirection } from './providers/DependencyTreeProvider';
-import { MermaidExporter } from './features/mermaidExporter';
 import { SmartIndexerStatusBar, IndexProgress } from './ui/statusBar';
 import { showQuickMenu } from './commands/showMenu';
 
 let client: LanguageClient;
 let smartStatusBar: SmartIndexerStatusBar;
 let logChannel: vscode.LogOutputChannel;
-let dependencyTreeProvider: DependencyTreeProvider;
-let mermaidExporter: MermaidExporter;
 
 /**
  * Ensure cache directory is in .gitignore to prevent accidental commits.
@@ -239,89 +235,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
     logChannel.info('[Client] Hybrid providers registered successfully');
   }
-
-  // Initialize dependency tree view and Mermaid exporter
-  dependencyTreeProvider = new DependencyTreeProvider(client, logChannel);
-  mermaidExporter = new MermaidExporter(client, logChannel);
-
-  // Enable the dependency tree view
-  vscode.commands.executeCommand('setContext', 'smartIndexer.dependencyTreeEnabled', true);
-
-  const treeView = vscode.window.createTreeView('smartIndexer.dependencyTree', {
-    treeDataProvider: dependencyTreeProvider,
-    showCollapseAll: true
-  });
-  context.subscriptions.push(treeView);
-
-  // Command: Show impact analysis for current file
-  context.subscriptions.push(
-    vscode.commands.registerCommand('smart-indexer.showImpact', async (uri?: vscode.Uri) => {
-      const targetUri = uri || vscode.window.activeTextEditor?.document.uri;
-      if (!targetUri) {
-        vscode.window.showWarningMessage('No file selected');
-        return;
-      }
-
-      const direction = await vscode.window.showQuickPick(
-        [
-          { label: 'Incoming (Used By)', value: 'incoming' as const },
-          { label: 'Outgoing (Uses)', value: 'outgoing' as const }
-        ],
-        { placeHolder: 'Select dependency direction' }
-      );
-
-      if (!direction) {
-        return;
-      }
-
-      await dependencyTreeProvider.setRoot(targetUri.fsPath, direction.value);
-      await vscode.commands.executeCommand('smartIndexer.dependencyTree.focus');
-      logChannel.info(`[Client] Impact analysis shown for ${targetUri.fsPath}`);
-    })
-  );
-
-  // Command: Export current tree view to Mermaid
-  context.subscriptions.push(
-    vscode.commands.registerCommand('smart-indexer.exportMermaid', async (arg?: unknown) => {
-      let targetPath: string | undefined;
-      let direction: DependencyDirection = 'incoming'; // Default for context menu
-
-      // Determine target based on invocation source
-      if (arg instanceof vscode.Uri) {
-        // Called from Explorer context menu
-        targetPath = arg.fsPath;
-      } else if (arg && typeof arg === 'object' && 'resourceUri' in arg) {
-        // Called from Tree View item
-        const treeItem = arg as { resourceUri?: vscode.Uri };
-        targetPath = treeItem.resourceUri?.fsPath;
-        direction = dependencyTreeProvider.getDirection();
-      } else {
-        // Called from Command Palette or view/title - use tree root or active editor
-        targetPath = dependencyTreeProvider.getRootFilePath();
-        if (targetPath) {
-          direction = dependencyTreeProvider.getDirection();
-        } else if (vscode.window.activeTextEditor) {
-          targetPath = vscode.window.activeTextEditor.document.uri.fsPath;
-        }
-      }
-
-      if (!targetPath) {
-        vscode.window.showWarningMessage('No file selected. Right-click a file or open one in the editor.');
-        return;
-      }
-
-      await mermaidExporter.exportToMermaid(targetPath, direction);
-    })
-  );
-
-  // Command: Refresh dependency tree
-  context.subscriptions.push(
-    vscode.commands.registerCommand('smart-indexer.refreshDependencyTree', () => {
-      dependencyTreeProvider.refresh();
-    })
-  );
-
-  logChannel.info('[Client] Dependency analysis features registered');
 
   // Command: Show quick menu
   context.subscriptions.push(

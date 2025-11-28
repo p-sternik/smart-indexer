@@ -26,6 +26,16 @@ interface FileShard {
 }
 
 /**
+ * Progress callback for indexing operations.
+ */
+export type ProgressCallback = (progress: {
+  state: 'busy' | 'idle';
+  processed: number;
+  total: number;
+  currentFile?: string;
+}) => void;
+
+/**
  * BackgroundIndex - Persistent sharded index for the entire workspace.
  * Inspired by clangd's background index.
  * 
@@ -48,10 +58,18 @@ export class BackgroundIndex implements ISymbolIndex {
   private isInitialized: boolean = false;
   private maxConcurrentJobs: number = 4;
   private workerPool: WorkerPool | null = null;
+  private progressCallback: ProgressCallback | null = null;
 
   constructor(symbolIndexer: SymbolIndexer, maxConcurrentJobs: number = 4) {
     this.symbolIndexer = symbolIndexer;
     this.maxConcurrentJobs = maxConcurrentJobs;
+  }
+
+  /**
+   * Set the progress callback for indexing operations.
+   */
+  setProgressCallback(callback: ProgressCallback): void {
+    this.progressCallback = callback;
   }
 
   /**
@@ -847,6 +865,17 @@ export class BackgroundIndex implements ISymbolIndex {
     let processed = 0;
     const total = files.length;
     const startTime = Date.now();
+    let lastProgressTime = startTime;
+
+    // Emit initial busy state
+    if (this.progressCallback) {
+      this.progressCallback({
+        state: 'busy',
+        processed: 0,
+        total,
+        currentFile: files[0]
+      });
+    }
 
     const indexFile = async (uri: string): Promise<void> => {
       try {
@@ -865,6 +894,18 @@ export class BackgroundIndex implements ISymbolIndex {
         if (onProgress) {
           onProgress(processed);
         }
+
+        // Emit progress notification (throttled to every 500ms or every 10 files)
+        const now = Date.now();
+        if (this.progressCallback && (now - lastProgressTime >= 500 || processed % 10 === 0)) {
+          lastProgressTime = now;
+          this.progressCallback({
+            state: 'busy',
+            processed,
+            total,
+            currentFile: uri
+          });
+        }
       } catch (error) {
         console.error(`[BackgroundIndex] Error indexing file ${uri}: ${error}`);
         processed++;
@@ -875,6 +916,15 @@ export class BackgroundIndex implements ISymbolIndex {
     };
 
     await Promise.allSettled(files.map(indexFile));
+
+    // Emit idle state when done
+    if (this.progressCallback) {
+      this.progressCallback({
+        state: 'idle',
+        processed: total,
+        total
+      });
+    }
     
     const duration = Date.now() - startTime;
     const filesPerSecond = (total / (duration / 1000)).toFixed(2);

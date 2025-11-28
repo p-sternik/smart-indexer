@@ -3,6 +3,7 @@
   "displayName": "Smart Indexer",
   "description": "Fast IntelliSense with persistent cache and Git-aware incremental indexing",
   "version": "1.8.0",
+  "icon": "icon.png",
   "publisher": "psternik",
   "repository": {
     "type": "git",
@@ -20,6 +21,10 @@
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "smart-indexer.showQuickMenu",
+        "title": "Smart Indexer: Quick Menu"
+      },
       {
         "command": "smart-indexer.rebuildIndex",
         "title": "Smart Indexer: Rebuild Index"
@@ -47,7 +52,7 @@
       },
       {
         "command": "smart-indexer.exportMermaid",
-        "title": "Export to Mermaid",
+        "title": "Copy Dependency Graph (Mermaid)",
         "icon": "$(export)"
       },
       {
@@ -77,6 +82,11 @@
           "command": "smart-indexer.showImpact",
           "when": "resourceExtname =~ /\\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$/",
           "group": "navigation@1"
+        },
+        {
+          "command": "smart-indexer.exportMermaid",
+          "when": "resourceExtname =~ /\\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$/",
+          "group": "navigation@2"
         }
       ],
       "view/title": [

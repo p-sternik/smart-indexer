@@ -10,11 +10,13 @@ import {
 } from 'vscode-languageclient/node';
 import { HybridDefinitionProvider } from './providers/HybridDefinitionProvider';
 import { HybridReferencesProvider } from './providers/HybridReferencesProvider';
-import { DependencyTreeProvider } from './providers/DependencyTreeProvider';
+import { DependencyTreeProvider, DependencyDirection } from './providers/DependencyTreeProvider';
 import { MermaidExporter } from './features/mermaidExporter';
+import { SmartIndexerStatusBar, IndexProgress } from './ui/statusBar';
+import { showQuickMenu } from './commands/showMenu';
 
 let client: LanguageClient;
-let statusBarItem: vscode.StatusBarItem;
+let smartStatusBar: SmartIndexerStatusBar;
 let logChannel: vscode.LogOutputChannel;
 let dependencyTreeProvider: DependencyTreeProvider;
 let mermaidExporter: MermaidExporter;
@@ -75,11 +77,9 @@ export async function activate(context: vscode.ExtensionContext) {
     logChannel.warn('[Client] No workspace folders found');
   }
 
-  statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBarItem.text = '$(database) Smart Indexer';
-  statusBarItem.tooltip = 'Smart Indexer: Ready';
-  statusBarItem.show();
-  context.subscriptions.push(statusBarItem);
+  // Initialize smart status bar
+  smartStatusBar = new SmartIndexerStatusBar(logChannel);
+  context.subscriptions.push(smartStatusBar);
 
   const serverModule = context.asAbsolutePath(path.join('server', 'out', 'server.js'));
 
@@ -147,8 +147,15 @@ export async function activate(context: vscode.ExtensionContext) {
     logChannel.info('[Client] Starting language client...');
     await client.start();
     logChannel.info('[Client] Language client started successfully');
+    
+    // Listen for progress notifications from server
+    client.onNotification('smart-indexer/progress', (progress: IndexProgress) => {
+      smartStatusBar.updateProgress(progress);
+    });
+    logChannel.info('[Client] Registered progress notification listener');
   } catch (error) {
     logChannel.error('[Client] Failed to start language client:', error);
+    smartStatusBar.setError('Failed to start');
     vscode.window.showErrorMessage(`Smart Indexer failed to start: ${error}`);
     throw error;
   }
@@ -275,15 +282,35 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Command: Export current tree view to Mermaid
   context.subscriptions.push(
-    vscode.commands.registerCommand('smart-indexer.exportMermaid', async () => {
-      const rootPath = dependencyTreeProvider.getRootFilePath();
-      if (!rootPath) {
-        vscode.window.showWarningMessage('No dependency tree to export. Run "Show Impact" first.');
+    vscode.commands.registerCommand('smart-indexer.exportMermaid', async (arg?: unknown) => {
+      let targetPath: string | undefined;
+      let direction: DependencyDirection = 'incoming'; // Default for context menu
+
+      // Determine target based on invocation source
+      if (arg instanceof vscode.Uri) {
+        // Called from Explorer context menu
+        targetPath = arg.fsPath;
+      } else if (arg && typeof arg === 'object' && 'resourceUri' in arg) {
+        // Called from Tree View item
+        const treeItem = arg as { resourceUri?: vscode.Uri };
+        targetPath = treeItem.resourceUri?.fsPath;
+        direction = dependencyTreeProvider.getDirection();
+      } else {
+        // Called from Command Palette or view/title - use tree root or active editor
+        targetPath = dependencyTreeProvider.getRootFilePath();
+        if (targetPath) {
+          direction = dependencyTreeProvider.getDirection();
+        } else if (vscode.window.activeTextEditor) {
+          targetPath = vscode.window.activeTextEditor.document.uri.fsPath;
+        }
+      }
+
+      if (!targetPath) {
+        vscode.window.showWarningMessage('No file selected. Right-click a file or open one in the editor.');
         return;
       }
 
-      const direction = dependencyTreeProvider.getDirection();
-      await mermaidExporter.exportToMermaid(rootPath, direction);
+      await mermaidExporter.exportToMermaid(targetPath, direction);
     })
   );
 
@@ -296,11 +323,17 @@ export async function activate(context: vscode.ExtensionContext) {
 
   logChannel.info('[Client] Dependency analysis features registered');
 
+  // Command: Show quick menu
+  context.subscriptions.push(
+    vscode.commands.registerCommand('smart-indexer.showQuickMenu', async () => {
+      await showQuickMenu(client, logChannel);
+    })
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('smart-indexer.rebuildIndex', async () => {
       logChannel.info('[Client] ========== REBUILD INDEX COMMAND ==========');
-      statusBarItem.text = '$(sync~spin) Rebuilding Index...';
-      statusBarItem.tooltip = 'Smart Indexer: Rebuilding index';
+      smartStatusBar.setBusy(0, 'Rebuilding...');
 
       try {
         logChannel.info('[Client] Sending rebuildIndex request to server...');
@@ -309,13 +342,11 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage(
           `Index rebuilt: ${(stats as any).totalFiles} files, ${(stats as any).totalSymbols} symbols`
         );
-        statusBarItem.text = '$(database) Smart Indexer';
-        statusBarItem.tooltip = 'Smart Indexer: Ready';
+        smartStatusBar.setIdle();
       } catch (error) {
         logChannel.error('[Client] Failed to rebuild index:', error);
         vscode.window.showErrorMessage(`Failed to rebuild index: ${error}`);
-        statusBarItem.text = '$(database) Smart Indexer';
-        statusBarItem.tooltip = 'Smart Indexer: Error';
+        smartStatusBar.setError('Rebuild failed');
       }
     })
   );

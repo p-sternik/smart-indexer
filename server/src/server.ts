@@ -463,6 +463,12 @@ async function initializeIndexing(): Promise<void> {
     backgroundIndex.setMaxConcurrentJobs(config.maxConcurrentWorkers || config.maxConcurrentIndexJobs);
     backgroundIndex.setLanguageRouter(languageRouter);
     backgroundIndex.setConfigurationManager(configManager);
+    
+    // Set up progress notifications to the client
+    backgroundIndex.setProgressCallback((progress) => {
+      connection.sendNotification('smart-indexer/progress', progress);
+    });
+    
     connection.console.info(`[Server] Background index initialized with ${config.maxConcurrentWorkers || config.maxConcurrentIndexJobs} concurrent jobs`);
 
     // Initialize dead code detector

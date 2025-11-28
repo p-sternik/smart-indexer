@@ -949,6 +949,16 @@ export class BackgroundIndex implements ISymbolIndex {
         if (onProgress) {
           onProgress(processed);
         }
+        
+        // CRITICAL: Always emit progress callback on error too, so status bar updates correctly
+        if (this.progressCallback) {
+          this.progressCallback({
+            state: 'busy',
+            processed,
+            total,
+            currentFile: uri
+          });
+        }
       }
     };
 

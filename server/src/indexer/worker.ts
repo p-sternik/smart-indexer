@@ -1113,7 +1113,31 @@ function extractTextSymbols(uri: string, content: string): IndexedSymbol[] {
 
 function processFile(taskData: WorkerTaskData): IndexedFileResult {
   const { uri } = taskData;
-  const content = taskData.content ?? fs.readFileSync(uri, 'utf-8');
+  
+  // Read file content with safe error handling
+  // If reading fails, return a valid "skipped" result to ensure the task counter decrements
+  let content: string;
+  try {
+    content = taskData.content ?? fs.readFileSync(uri, 'utf-8');
+  } catch (error: any) {
+    // Return a safe empty result so the main thread counts this task as "done"
+    // This prevents the indexer from hanging on malformed paths or missing files
+    console.warn(`[Worker] File read failed for ${uri}: ${error.message}`);
+    return {
+      uri,
+      hash: '',
+      symbols: [],
+      references: [],
+      imports: [],
+      reExports: [],
+      isSkipped: true,
+      skipReason: error.code === 'ENOENT' 
+        ? `File not found (possible path encoding issue)` 
+        : `Read error: ${error.message}`,
+      shardVersion: SHARD_VERSION
+    };
+  }
+  
   const hash = computeHash(content);
   
   const ext = path.extname(uri).toLowerCase();

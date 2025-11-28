@@ -78,6 +78,8 @@ export interface IndexedFileResult {
   reExports?: ReExportInfo[];
   pendingReferences?: PendingReference[]; // Cross-file references to resolve post-indexing
   shardVersion?: number; // version of the shard format
+  isSkipped?: boolean; // true if file was skipped due to read error or malformed path
+  skipReason?: string; // reason why file was skipped
 }
 
 export interface FileInfo {

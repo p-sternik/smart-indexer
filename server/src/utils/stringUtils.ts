@@ -2,6 +2,8 @@
  * String utilities for symbol name transformations
  */
 
+import * as path from 'path';
+
 /**
  * Convert a string to camelCase
  * Examples:
@@ -79,4 +81,56 @@ export function toSnakeCase(str: string): string {
     .replace(/\s+/g, '_')
     .replace(/-/g, '_')
     .toLowerCase();
+}
+
+/**
+ * Sanitize a file path to handle Git's quoted/escaped output.
+ * Handles:
+ * - Surrounding double quotes: "path/to/file" -> path/to/file
+ * - Embedded quotes (malformed paths): project\"projects -> projects (takes last valid segment)
+ * - Octal escape sequences: \303\263 -> ó (UTF-8 decoding)
+ * - Path normalization for cross-platform compatibility
+ * 
+ * @param filePath The potentially malformed file path
+ * @returns A sanitized, normalized path
+ */
+export function sanitizeFilePath(filePath: string): string {
+  let sanitized = filePath.trim();
+  
+  // Strip surrounding quotes if present (e.g., "path/to/file")
+  if (sanitized.startsWith('"') && sanitized.endsWith('"')) {
+    sanitized = sanitized.slice(1, -1);
+  }
+  
+  // Handle embedded quotes (malformed Git output like: project\"projects\...)
+  // This indicates Git's quoting was applied incorrectly or parsed wrong
+  if (sanitized.includes('"')) {
+    // Log for debugging
+    console.warn(`[sanitizeFilePath] Path contains embedded quotes: ${filePath}`);
+    // Remove all quotes - they shouldn't be in file paths
+    sanitized = sanitized.replace(/"/g, '');
+  }
+  
+  // Decode octal escape sequences if present (e.g., \303\263 -> ó)
+  // This handles Git's core.quotePath=true output
+  if (sanitized.includes('\\') && /\\[0-7]{3}/.test(sanitized)) {
+    try {
+      sanitized = sanitized.replace(/\\([0-7]{3})/g, (_, octal) => {
+        return String.fromCharCode(parseInt(octal, 8));
+      });
+      // Handle UTF-8 byte sequences: convert bytes to proper UTF-8 string
+      const bytes: number[] = [];
+      for (let i = 0; i < sanitized.length; i++) {
+        bytes.push(sanitized.charCodeAt(i));
+      }
+      sanitized = Buffer.from(bytes).toString('utf-8');
+    } catch (error) {
+      console.warn(`[sanitizeFilePath] Failed to decode octal sequences in: ${filePath}`);
+    }
+  }
+  
+  // Normalize path separators for cross-platform compatibility
+  sanitized = path.normalize(sanitized);
+  
+  return sanitized;
 }

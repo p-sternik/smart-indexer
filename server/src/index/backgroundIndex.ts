@@ -3,7 +3,7 @@ import { IndexedSymbol, IndexedFileResult, IndexedReference, ImportInfo, ReExpor
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { fuzzyScore } from '../utils/fuzzySearch.js';
-import { toCamelCase, toPascalCase } from '../utils/stringUtils.js';
+import { toCamelCase, toPascalCase, sanitizeFilePath } from '../utils/stringUtils.js';
 import { WorkerPool } from '../utils/workerPool.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
 import { ShardPersistenceManager, FileShard } from './ShardPersistenceManager.js';
@@ -426,7 +426,10 @@ export class BackgroundIndex implements ISymbolIndex {
    * 
    * @param filePath - Absolute path to the file to re-index
    */
-  async updateSingleFile(filePath: string): Promise<void> {
+  async updateSingleFile(rawFilePath: string): Promise<void> {
+    // Sanitize path to handle Git's quoted/escaped output
+    const filePath = sanitizeFilePath(rawFilePath);
+    
     try {
       // PRE-VALIDATION: Check file exists to prevent ENOENT errors
       if (!fs.existsSync(filePath)) {
@@ -859,15 +862,18 @@ export class BackgroundIndex implements ISymbolIndex {
     files: string[],
     onProgress?: (current: number) => void
   ): Promise<void> {
-    // PRE-QUEUE VALIDATION: Filter out non-existent files to prevent dead tasks
+    // PRE-QUEUE VALIDATION: Sanitize paths and filter out non-existent files
     const validFiles: string[] = [];
     const skippedFiles: string[] = [];
     
-    for (const uri of files) {
+    for (const rawUri of files) {
+      // Sanitize path to handle Git's quoted/escaped output
+      const uri = sanitizeFilePath(rawUri);
+      
       if (fs.existsSync(uri)) {
         validFiles.push(uri);
       } else {
-        skippedFiles.push(uri);
+        skippedFiles.push(rawUri); // Log original for debugging
       }
     }
     
@@ -914,7 +920,13 @@ export class BackgroundIndex implements ISymbolIndex {
           result = await indexer.indexFile(uri);
         }
         
-        await this.updateFile(uri, result);
+        // Skip saving shard for files that failed to read
+        if (result.isSkipped) {
+          console.warn(`[BackgroundIndex] Skipping file (${result.skipReason}): ${uri}`);
+        } else {
+          await this.updateFile(uri, result);
+        }
+        
         processed++;
         if (onProgress) {
           onProgress(processed);

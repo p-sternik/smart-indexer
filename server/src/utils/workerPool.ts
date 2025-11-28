@@ -21,9 +21,17 @@ interface QueuedTask {
   priority: 'high' | 'normal';
 }
 
+interface CurrentTask {
+  resolve: (result: any) => void;
+  reject: (error: Error) => void;
+  taskData: WorkerTaskData;
+  timeoutId: NodeJS.Timeout;
+}
+
 interface WorkerState {
   worker: Worker;
   idle: boolean;
+  currentTask?: CurrentTask;
 }
 
 export class WorkerPool {
@@ -34,6 +42,7 @@ export class WorkerPool {
   private poolSize: number;
   private totalTasksProcessed: number = 0;
   private totalErrors: number = 0;
+  private taskTimeoutMs: number = 60000; // 60 second timeout per task
 
   constructor(workerScriptPath: string, poolSize?: number) {
     this.workerScriptPath = workerScriptPath;
@@ -73,6 +82,17 @@ export class WorkerPool {
   private restartWorker(workerState: WorkerState): void {
     const index = this.workers.indexOf(workerState);
     if (index !== -1) {
+      // CRITICAL: Reject any pending task before terminating worker
+      if (workerState.currentTask) {
+        clearTimeout(workerState.currentTask.timeoutId);
+        this.totalErrors++;
+        const uri = workerState.currentTask.taskData.uri;
+        workerState.currentTask.reject(
+          new Error(`Worker crashed or timed out while processing: ${uri}`)
+        );
+        workerState.currentTask = undefined;
+      }
+
       try {
         workerState.worker.terminate();
       } catch (error) {
@@ -81,6 +101,9 @@ export class WorkerPool {
       
       this.workers.splice(index, 1);
       this.createWorker();
+      
+      // Immediately process next queued task with the new worker
+      this.processNextTask();
     }
   }
 
@@ -115,9 +138,21 @@ export class WorkerPool {
   ): void {
     workerState.idle = false;
 
+    // Set up timeout to prevent tasks from hanging forever
+    const timeoutId = setTimeout(() => {
+      console.error(`[WorkerPool] Task timeout after ${this.taskTimeoutMs}ms: ${taskData.uri}`);
+      this.restartWorker(workerState);
+    }, this.taskTimeoutMs);
+
+    // Track the current task for crash recovery
+    workerState.currentTask = { resolve, reject, taskData, timeoutId };
+
     const messageHandler = (result: WorkerResult) => {
+      // Clear timeout and task tracking on successful completion
+      clearTimeout(timeoutId);
       workerState.worker.off('message', messageHandler);
       workerState.idle = true;
+      workerState.currentTask = undefined;
 
       if (result.success) {
         this.totalTasksProcessed++;
@@ -157,6 +192,23 @@ export class WorkerPool {
   }
 
   async terminate(): Promise<void> {
+    // Reject all pending tasks in queues
+    for (const task of this.highPriorityQueue) {
+      task.reject(new Error('WorkerPool terminated'));
+    }
+    for (const task of this.taskQueue) {
+      task.reject(new Error('WorkerPool terminated'));
+    }
+
+    // Reject all in-flight tasks and clear timeouts
+    for (const workerState of this.workers) {
+      if (workerState.currentTask) {
+        clearTimeout(workerState.currentTask.timeoutId);
+        workerState.currentTask.reject(new Error('WorkerPool terminated'));
+        workerState.currentTask = undefined;
+      }
+    }
+
     const terminationPromises = this.workers.map(workerState =>
       workerState.worker.terminate()
     );

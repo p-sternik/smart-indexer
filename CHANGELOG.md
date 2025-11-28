@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.0](https://github.com/p-sternik/smart-indexer/compare/v1.23.0...v1.24.0) (2025-11-28)
+
+
+### Features
+
+* Ensure progress callback is emitted on error during indexing ([03c118f](https://github.com/p-sternik/smart-indexer/commit/03c118f2cf45043579f91a2cb9b5ba09b011e7c1))
+
 ## [1.23.0](https://github.com/p-sternik/smart-indexer/compare/v1.22.0...v1.23.0) (2025-11-28)
 
 

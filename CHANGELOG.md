@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0](https://github.com/p-sternik/smart-indexer/compare/v1.6.3...v1.7.0) (2025-11-28)
+
+
+### Features
+
+* Implement cross-platform publish script for README management ([301a33c](https://github.com/p-sternik/smart-indexer/commit/301a33c6261b6591ad406522cb04bf0aa916d1c2))
+
 ## [1.6.3](https://github.com/p-sternik/smart-indexer/compare/v1.6.2...v1.6.3) (2025-11-27)
 
 

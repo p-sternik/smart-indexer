@@ -15,11 +15,11 @@
 ### ⚡ Parallel Indexing
 Uses worker threads for blazing-fast initial indexing. Index 5,000 files in ~6 seconds.
 
-### 🧠 NgRx Intelligence
-Navigate **Actions → Effects → Reducers** instantly. Full support for modern `createActionGroup()` pattern!
+### 🧠 NgRx Semantic Linking
+Navigate **Actions → Effects → Reducers** instantly. "Go to Definition" connects Actions to Facades across files. Full support for modern `createActionGroup()` pattern!
 
-### 🔍 Impact Analysis
-Visual Dependency Tree showing what files depend on your code. Export to Mermaid diagrams.
+### ⚡ Smart Fuzzy Search
+Navigate symbols using abbreviations (e.g., `usrSrv` → `UserService`). Find what you need without typing full names.
 
 ### 🧹 Dead Code Detection
 Identify unused exports in real-time. Perfect for cleaning up legacy Angular codebases.
@@ -29,6 +29,12 @@ Index survives VS Code restarts. Cold start in <100ms instead of 10-30 seconds.
 
 ### 🔄 Git-Aware Incremental
 Only re-indexes changed files. Pull 100 commits? Only changed files get reprocessed.
+
+### 🛡️ Robustness
+Atomic saves and self-healing index ensure 100% consistency. No more corrupted caches.
+
+### 📊 Visibility
+Status bar integration shows real-time indexing progress and health statistics.
 
 ---
 
@@ -93,11 +99,14 @@ Tested on Angular monorepo (5,247 TypeScript files):
 
 Access via Command Palette (`Ctrl+Shift+P`):
 
-- **Smart Indexer: Rebuild Index** — Full workspace reindex
-- **Smart Indexer: Clear Cache** — Delete cached index
-- **Smart Indexer: Show Statistics** — View index metrics
-- **Smart Indexer: Find Dead Code (Beta)** — Detect unused exports
-- **Smart Indexer: Show Impact Analysis** — Visualize dependencies
+| Command | Description |
+|---------|-------------|
+| **Smart Indexer: Quick Menu** | Access all commands in one place |
+| **Smart Indexer: Rebuild Index** | Full workspace reindex |
+| **Smart Indexer: Clear Cache** | Delete cached index |
+| **Smart Indexer: Show Statistics** | View index metrics and health |
+| **Smart Indexer: Inspect Index** | Debug symbol resolution |
+| **Smart Indexer: Find Dead Code (Beta)** | Detect unused exports |
 
 ---
 

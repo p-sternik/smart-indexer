@@ -62,10 +62,43 @@ export class BackgroundIndex implements ISymbolIndex {
   private workerPool: WorkerPool | null = null;
   private progressCallback: ProgressCallback | null = null;
   private isBulkIndexing: boolean = false; // Flag to defer NgRx resolution during bulk indexing
+  private shardLocks: Map<string, Promise<void>> = new Map(); // Per-file locks to prevent concurrent shard writes
 
   constructor(symbolIndexer: SymbolIndexer, maxConcurrentJobs: number = 4) {
     this.symbolIndexer = symbolIndexer;
     this.maxConcurrentJobs = maxConcurrentJobs;
+  }
+
+  /**
+   * Execute a task with exclusive access to a shard file.
+   * Prevents race conditions between concurrent load-modify-save operations.
+   */
+  private async withShardLock<T>(uri: string, task: () => Promise<T>): Promise<T> {
+    const currentLock = this.shardLocks.get(uri) || Promise.resolve();
+    
+    let resolveResult: (value: T) => void;
+    let rejectResult: (error: unknown) => void;
+    const resultPromise = new Promise<T>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+    
+    const newLock = currentLock.then(async () => {
+      try {
+        const result = await task();
+        resolveResult!(result);
+      } catch (error) {
+        rejectResult!(error);
+      }
+    }).finally(() => {
+      // Clean up lock entry if this is still the current lock
+      if (this.shardLocks.get(uri) === newLock) {
+        this.shardLocks.delete(uri);
+      }
+    });
+    
+    this.shardLocks.set(uri, newLock);
+    return resultPromise;
   }
 
   /**
@@ -358,8 +391,10 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     }
 
-    // Save shard to disk
-    await this.saveShard(shard);
+    // Save shard to disk with exclusive lock to prevent race conditions
+    await this.withShardLock(uri, async () => {
+      await this.saveShard(shard);
+    });
 
     // Resolve NgRx cross-file references after indexing
     // Skip during bulk indexing - will be done in finalizeIndexing() for O(N+M) performance
@@ -454,33 +489,35 @@ export class BackgroundIndex implements ISymbolIndex {
         }
         refUriSet.add(sourceUri);
 
-        // Persist synthetic reference to source shard (survives restart)
-        const sourceShard = await this.loadShard(sourceUri);
-        if (sourceShard) {
-          if (!sourceShard.references) {
-            sourceShard.references = [];
-          }
-          // Avoid duplicates
-          const refKey = `${syntheticRef.symbolName}:${syntheticRef.location.line}:${syntheticRef.location.character}`;
-          const exists = sourceShard.references.some(
-            r => `${r.symbolName}:${r.location.line}:${r.location.character}` === refKey
-          );
-          if (!exists) {
-            sourceShard.references.push(syntheticRef);
-          }
-          
-          // Clear this resolved pending reference from the shard to prevent reprocessing on restart
-          if (sourceShard.pendingReferences) {
-            sourceShard.pendingReferences = sourceShard.pendingReferences.filter(
-              pr => !(pr.container === pending.container && 
-                      pr.member === pending.member &&
-                      pr.location.line === pending.location.line && 
-                      pr.location.character === pending.location.character)
+        // Persist synthetic reference to source shard (survives restart) with exclusive lock
+        await this.withShardLock(sourceUri, async () => {
+          const sourceShard = await this.loadShard(sourceUri);
+          if (sourceShard) {
+            if (!sourceShard.references) {
+              sourceShard.references = [];
+            }
+            // Avoid duplicates
+            const refKey = `${syntheticRef.symbolName}:${syntheticRef.location.line}:${syntheticRef.location.character}`;
+            const exists = sourceShard.references.some(
+              r => `${r.symbolName}:${r.location.line}:${r.location.character}` === refKey
             );
+            if (!exists) {
+              sourceShard.references.push(syntheticRef);
+            }
+            
+            // Clear this resolved pending reference from the shard to prevent reprocessing on restart
+            if (sourceShard.pendingReferences) {
+              sourceShard.pendingReferences = sourceShard.pendingReferences.filter(
+                pr => !(pr.container === pending.container && 
+                        pr.member === pending.member &&
+                        pr.location.line === pending.location.line && 
+                        pr.location.character === pending.location.character)
+              );
+            }
+            
+            await this.saveShard(sourceShard);
           }
-          
-          await this.saveShard(sourceShard);
-        }
+        });
 
         resolvedCount++;
         break; // Found a match, no need to check other containers
@@ -1087,26 +1124,114 @@ export class BackgroundIndex implements ISymbolIndex {
     let shardsModified = 0;
     
     for (const [uri, pendingRefs] of pendingByFile) {
-      const shard = await this.loadShard(uri);
-      if (!shard) {
-        continue;
-      }
-      
-      // Ensure arrays exist
-      shard.references = shard.references || [];
-      shard.pendingReferences = shard.pendingReferences || [];
-      
-      let modified = false;
-      
-      for (const pending of pendingRefs) {
-        // Build a unique key for deduplication
-        const refKey = `${pending.member}:${pending.location.line}:${pending.location.character}`;
-        const existingRef = shard.references.find(
-          r => `${r.symbolName}:${r.location.line}:${r.location.character}` === refKey
-        );
+      // Use shard lock to prevent race conditions with concurrent updateFile calls
+      await this.withShardLock(uri, async () => {
+        const shard = await this.loadShard(uri);
+        if (!shard) {
+          return;
+        }
         
-        if (existingRef) {
-          // Already resolved in a previous run, just remove from pending
+        // Ensure arrays exist
+        shard.references = shard.references || [];
+        shard.pendingReferences = shard.pendingReferences || [];
+        
+        let modified = false;
+        
+        for (const pending of pendingRefs) {
+          // Build a unique key for deduplication (use qualified name for fallback refs)
+          const qualifiedName = `${pending.container}.${pending.member}`;
+          const refKey = `${pending.member}:${pending.location.line}:${pending.location.character}`;
+          const qualifiedRefKey = `${qualifiedName}:${pending.location.line}:${pending.location.character}`;
+          const existingRef = shard.references.find(
+            r => `${r.symbolName}:${r.location.line}:${r.location.character}` === refKey ||
+                 `${r.symbolName}:${r.location.line}:${r.location.character}` === qualifiedRefKey
+          );
+          
+          if (existingRef) {
+            // Already resolved in a previous run, just remove from pending
+            shard.pendingReferences = shard.pendingReferences.filter(
+              pr => !(pr.container === pending.container && 
+                      pr.member === pending.member &&
+                      pr.location.line === pending.location.line && 
+                      pr.location.character === pending.location.character)
+            );
+            modified = true;
+            continue;
+          }
+          
+          // Try NgRx resolution first
+          const actionGroup = actionGroupLookup.get(pending.container);
+          let resolvedAsNgRx = false;
+          
+          if (actionGroup) {
+            // Check if the member exists in the events map
+            // Try exact match first, then camelCase, then PascalCase fallback
+            let matchedMember: string | null = null;
+            
+            if (pending.member in actionGroup.events) {
+              matchedMember = pending.member;
+            } else {
+              // Fallback 1: Try camelCase version (e.g., 'Load' -> 'load')
+              const camelMember = toCamelCase(pending.member);
+              if (camelMember in actionGroup.events) {
+                matchedMember = camelMember;
+              } else {
+                // Fallback 2: Try PascalCase version (e.g., 'load' -> 'Load')
+                const pascalMember = toPascalCase(pending.member);
+                if (pascalMember in actionGroup.events) {
+                  matchedMember = pascalMember;
+                }
+              }
+            }
+            
+            if (matchedMember) {
+              // NgRx action group member - create linked reference
+              const syntheticRef: IndexedReference = {
+                symbolName: pending.member,
+                location: pending.location,
+                range: pending.range,
+                containerName: pending.containerName,
+                isLocal: false
+              };
+              shard.references.push(syntheticRef);
+              
+              // Update in-memory referenceMap
+              let refUriSet = this.referenceMap.get(pending.member);
+              if (!refUriSet) {
+                refUriSet = new Set();
+                this.referenceMap.set(pending.member, refUriSet);
+              }
+              refUriSet.add(uri);
+              
+              resolvedAsNgRx = true;
+              ngrxResolved++;
+            }
+          }
+          
+          // Fallback: Non-NgRx imported member access (e.g., Utils.format())
+          // Use qualified name (Container.member) to distinguish from other symbols with same name
+          if (!resolvedAsNgRx) {
+            const standardRef: IndexedReference = {
+              symbolName: qualifiedName, // Use qualified name: "Utils.format" instead of just "format"
+              location: pending.location,
+              range: pending.range,
+              containerName: pending.containerName,
+              isLocal: false
+            };
+            shard.references.push(standardRef);
+            
+            // Update in-memory referenceMap with qualified name
+            let refUriSet = this.referenceMap.get(qualifiedName);
+            if (!refUriSet) {
+              refUriSet = new Set();
+              this.referenceMap.set(qualifiedName, refUriSet);
+            }
+            refUriSet.add(uri);
+            
+            fallbackResolved++;
+          }
+          
+          // Remove from pending (processed successfully)
           shard.pendingReferences = shard.pendingReferences.filter(
             pr => !(pr.container === pending.container && 
                     pr.member === pending.member &&
@@ -1114,96 +1239,14 @@ export class BackgroundIndex implements ISymbolIndex {
                     pr.location.character === pending.location.character)
           );
           modified = true;
-          continue;
         }
         
-        // Try NgRx resolution first
-        const actionGroup = actionGroupLookup.get(pending.container);
-        let resolvedAsNgRx = false;
-        
-        if (actionGroup) {
-          // Check if the member exists in the events map
-          // Try exact match first, then camelCase, then PascalCase fallback
-          let matchedMember: string | null = null;
-          
-          if (pending.member in actionGroup.events) {
-            matchedMember = pending.member;
-          } else {
-            // Fallback 1: Try camelCase version (e.g., 'Load' -> 'load')
-            const camelMember = toCamelCase(pending.member);
-            if (camelMember in actionGroup.events) {
-              matchedMember = camelMember;
-            } else {
-              // Fallback 2: Try PascalCase version (e.g., 'load' -> 'Load')
-              const pascalMember = toPascalCase(pending.member);
-              if (pascalMember in actionGroup.events) {
-                matchedMember = pascalMember;
-              }
-            }
-          }
-          
-          if (matchedMember) {
-            // NgRx action group member - create linked reference
-            const syntheticRef: IndexedReference = {
-              symbolName: pending.member,
-              location: pending.location,
-              range: pending.range,
-              containerName: pending.containerName,
-              isLocal: false
-            };
-            shard.references.push(syntheticRef);
-            
-            // Update in-memory referenceMap
-            let refUriSet = this.referenceMap.get(pending.member);
-            if (!refUriSet) {
-              refUriSet = new Set();
-              this.referenceMap.set(pending.member, refUriSet);
-            }
-            refUriSet.add(uri);
-            
-            resolvedAsNgRx = true;
-            ngrxResolved++;
-          }
+        // Persist modified shard to disk
+        if (modified) {
+          await this.saveShard(shard);
+          shardsModified++;
         }
-        
-        // Fallback: Non-NgRx imported member access (e.g., Utils.format())
-        // Convert to a standard reference so it appears in Find References
-        if (!resolvedAsNgRx) {
-          const standardRef: IndexedReference = {
-            symbolName: pending.member,
-            location: pending.location,
-            range: pending.range,
-            containerName: pending.containerName,
-            isLocal: false
-          };
-          shard.references.push(standardRef);
-          
-          // Update in-memory referenceMap
-          let refUriSet = this.referenceMap.get(pending.member);
-          if (!refUriSet) {
-            refUriSet = new Set();
-            this.referenceMap.set(pending.member, refUriSet);
-          }
-          refUriSet.add(uri);
-          
-          fallbackResolved++;
-        }
-        
-        // Remove from pending (processed successfully)
-        shard.pendingReferences = shard.pendingReferences.filter(
-          pr => !(pr.container === pending.container && 
-                  pr.member === pending.member &&
-                  pr.location.line === pending.location.line && 
-                  pr.location.character === pending.location.character)
-        );
-        modified = true;
-      }
-      
-      // Persist modified shard to disk
-      if (modified) {
-        await this.saveShard(shard);
-        shardsModified++;
-      }
+      });
     }
     
     const duration = Date.now() - startTime;

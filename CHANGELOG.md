@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.0](https://github.com/p-sternik/smart-indexer/compare/v1.22.0...v1.23.0) (2025-11-28)
+
+
+### Features
+
+* Add error handling and reporting for code parsing in extractCodeSymbolsAndReferences ([842d363](https://github.com/p-sternik/smart-indexer/commit/842d36338dbe357a917f532d1a8a319cbb521484))
+
 ## [1.22.0](https://github.com/p-sternik/smart-indexer/compare/v1.21.0...v1.22.0) (2025-11-28)
 
 

@@ -27,6 +27,15 @@ jobs:
 
       - name: Install vsce
         run: npm install -g @vscode/vsce
+      
+      - name: Create VSIX package
+        run: vsce package -o smart-indexer.vsix
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-file
+          path: smart-indexer.vsix
 
       - name: Publish to VS Code Marketplace
-        run: vsce publish -p ${{ secrets.VSCODE_MARKETPLACE_TOKEN }}
+        run: vsce publish -p ${{ secrets.VSCODE_MARKETPLACE_TOKEN }} --packagePath smart-indexer.vsix

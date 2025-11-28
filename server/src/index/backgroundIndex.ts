@@ -1026,11 +1026,20 @@ export class BackgroundIndex implements ISymbolIndex {
   async finalizeIndexing(): Promise<void> {
     const startTime = Date.now();
     
+    console.info('[Finalize] Starting finalization phase...');
+    
     // STEP 1: Build lookup map of all NgRx Action Groups
     // Key: GroupName -> Value: { uri, events }
+    console.info('[Finalize] Step 1: Building NgRx action group lookup...');
     const actionGroupLookup = new Map<string, { uri: string; events: Record<string, string> }>();
     
+    let step1Count = 0;
+    const step1Total = this.symbolNameIndex.size;
     for (const [name, uriSet] of this.symbolNameIndex) {
+      step1Count++;
+      if (step1Count % 100 === 0) {
+        console.info(`[Finalize] Step 1 progress: ${step1Count}/${step1Total} symbols scanned`);
+      }
       for (const uri of uriSet) {
         const shard = await this.loadShard(uri);
         if (!shard) {
@@ -1051,13 +1060,20 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     }
     
-    console.info(`[BackgroundIndex] finalizeIndexing: Found ${actionGroupLookup.size} NgRx action groups`);
+    console.info(`[Finalize] Step 1 complete: Found ${actionGroupLookup.size} NgRx action groups (scanned ${step1Total} symbols)`);
     
     // STEP 2: Group pending references by source file for efficient shard I/O
+    console.info('[Finalize] Step 2: Collecting pending references...');
     const pendingByFile = new Map<string, PendingReference[]>();
     let totalPending = 0;
     
+    let step2Count = 0;
+    const step2Total = this.fileMetadata.size;
     for (const uri of this.fileMetadata.keys()) {
+      step2Count++;
+      if (step2Count % 100 === 0) {
+        console.info(`[Finalize] Step 2 progress: ${step2Count}/${step2Total} files checked`);
+      }
       const shard = await this.loadShard(uri);
       if (!shard || !shard.pendingReferences || shard.pendingReferences.length === 0) {
         continue;
@@ -1067,17 +1083,28 @@ export class BackgroundIndex implements ISymbolIndex {
       totalPending += shard.pendingReferences.length;
     }
     
+    console.info(`[Finalize] Step 2 complete: Found ${totalPending} pending refs in ${pendingByFile.size} files`);
+    
     if (totalPending === 0) {
-      console.info(`[BackgroundIndex] finalizeIndexing: No pending references to resolve`);
+      console.info(`[Finalize] No pending references to resolve. Done.`);
       return;
     }
     
     // STEP 3: Process each file's pending references and persist to disk
+    console.info('[Finalize] Step 3: Resolving references...');
     let ngrxResolved = 0;
     let fallbackResolved = 0;
     let shardsModified = 0;
     
+    let processedCount = 0;
+    const totalPendingFiles = pendingByFile.size;
+    
     for (const [uri, pendingRefs] of pendingByFile) {
+      processedCount++;
+      // Log every 10 files to avoid spam, but prove movement
+      if (processedCount % 10 === 0 || processedCount === totalPendingFiles) {
+        console.info(`[Finalize] Step 3 progress: ${processedCount}/${totalPendingFiles} files processed`);
+      }
       // Use shard lock via ShardPersistenceManager to prevent race conditions
       await this.shardManager.withLock(uri, async () => {
         const shard = await this.loadShard(uri);
@@ -1205,7 +1232,7 @@ export class BackgroundIndex implements ISymbolIndex {
     
     const duration = Date.now() - startTime;
     console.info(
-      `[BackgroundIndex] finalizeIndexing complete: ` +
+      `[Finalize] Complete: ` +
       `NgRx=${ngrxResolved}, Fallback=${fallbackResolved}, Total=${totalPending} ` +
       `(${shardsModified} shards modified) in ${duration}ms`
     );

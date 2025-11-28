@@ -5,6 +5,7 @@ import * as path from 'path';
 interface WorkerTaskData {
   uri: string;
   content?: string;
+  priority?: 'high' | 'normal'; // High priority for self-healing repairs
 }
 
 interface WorkerResult {
@@ -17,6 +18,7 @@ interface QueuedTask {
   taskData: WorkerTaskData;
   resolve: (result: any) => void;
   reject: (error: Error) => void;
+  priority: 'high' | 'normal';
 }
 
 interface WorkerState {
@@ -27,6 +29,7 @@ interface WorkerState {
 export class WorkerPool {
   private workers: WorkerState[] = [];
   private taskQueue: QueuedTask[] = [];
+  private highPriorityQueue: QueuedTask[] = []; // Separate queue for high-priority tasks
   private workerScriptPath: string;
   private poolSize: number;
   private totalTasksProcessed: number = 0;
@@ -88,11 +91,18 @@ export class WorkerPool {
   async runTask(taskData: WorkerTaskData): Promise<any> {
     return new Promise((resolve, reject) => {
       const idleWorker = this.getIdleWorker();
+      const priority = taskData.priority || 'normal';
 
       if (idleWorker) {
         this.executeTask(idleWorker, taskData, resolve, reject);
       } else {
-        this.taskQueue.push({ taskData, resolve, reject });
+        // Add to appropriate queue based on priority
+        const queuedTask = { taskData, resolve, reject, priority };
+        if (priority === 'high') {
+          this.highPriorityQueue.push(queuedTask);
+        } else {
+          this.taskQueue.push(queuedTask);
+        }
       }
     });
   }
@@ -125,6 +135,16 @@ export class WorkerPool {
   }
 
   private processNextTask(): void {
+    // Always prioritize high-priority queue (for self-healing repairs)
+    if (this.highPriorityQueue.length > 0) {
+      const idleWorker = this.getIdleWorker();
+      if (idleWorker) {
+        const task = this.highPriorityQueue.shift()!;
+        this.executeTask(idleWorker, task.taskData, task.resolve, task.reject);
+        return;
+      }
+    }
+
     if (this.taskQueue.length === 0) {
       return;
     }
@@ -143,12 +163,14 @@ export class WorkerPool {
     await Promise.all(terminationPromises);
     this.workers = [];
     this.taskQueue = [];
+    this.highPriorityQueue = [];
   }
 
   getStats(): { 
     poolSize: number; 
     idleWorkers: number; 
     queuedTasks: number;
+    highPriorityQueuedTasks: number;
     totalProcessed: number;
     totalErrors: number;
   } {
@@ -156,6 +178,7 @@ export class WorkerPool {
       poolSize: this.workers.length,
       idleWorkers: this.workers.filter(w => w.idle).length,
       queuedTasks: this.taskQueue.length,
+      highPriorityQueuedTasks: this.highPriorityQueue.length,
       totalProcessed: this.totalTasksProcessed,
       totalErrors: this.totalErrors
     };

@@ -3,6 +3,7 @@ import { IndexedSymbol, IndexedFileResult, IndexedReference, ImportInfo, ReExpor
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { fuzzyScore } from '../utils/fuzzySearch.js';
+import * as crypto from 'crypto';
 
 /**
  * DynamicIndex - In-memory index for currently open/edited files.
@@ -15,6 +16,7 @@ import { fuzzyScore } from '../utils/fuzzySearch.js';
  */
 export class DynamicIndex implements ISymbolIndex {
   private fileSymbols: Map<string, IndexedFileResult> = new Map();
+  private fileHashes: Map<string, string> = new Map(); // uri -> content hash for self-healing
   private symbolIndexer: SymbolIndexer;
   private languageRouter: LanguageRouter | null = null;
 
@@ -38,6 +40,12 @@ export class DynamicIndex implements ISymbolIndex {
       const indexer = this.languageRouter || this.symbolIndexer;
       const result = await indexer.indexFile(uri, content);
       this.fileSymbols.set(uri, result);
+      
+      // Store content hash for self-healing validation
+      if (content !== undefined) {
+        const hash = crypto.createHash('md5').update(content).digest('hex');
+        this.fileHashes.set(uri, hash);
+      }
     } catch (error) {
       console.error(`[DynamicIndex] Error updating file ${uri}: ${error}`);
     }
@@ -48,6 +56,7 @@ export class DynamicIndex implements ISymbolIndex {
    */
   removeFile(uri: string): void {
     this.fileSymbols.delete(uri);
+    this.fileHashes.delete(uri);
   }
 
   /**
@@ -55,6 +64,47 @@ export class DynamicIndex implements ISymbolIndex {
    */
   hasFile(uri: string): boolean {
     return this.fileSymbols.has(uri);
+  }
+
+  /**
+   * Self-healing mechanism: Validate index consistency and repair if stale.
+   * 
+   * This is triggered on file open/change to ensure the index is always
+   * consistent with the actual file content, even if file watchers missed events
+   * (e.g., during rapid Git branch switching).
+   * 
+   * @param filePath - Absolute path to the file
+   * @param content - Current file content
+   * @returns true if repair was needed, false if index was already healthy
+   */
+  async validateAndRepair(filePath: string, content: string): Promise<boolean> {
+    try {
+      // Calculate hash of current content
+      const currentHash = crypto.createHash('md5').update(content).digest('hex');
+      const storedHash = this.fileHashes.get(filePath);
+
+      // If hashes match, index is healthy - no repair needed
+      if (storedHash === currentHash) {
+        return false;
+      }
+
+      // Hash mismatch or missing - index is stale, trigger immediate re-parsing
+      console.info(`[DynamicIndex] Self-healing: Hash mismatch for ${filePath}, repairing index`);
+      
+      // Use the indexer directly for immediate, synchronous parsing (high priority)
+      const indexer = this.languageRouter || this.symbolIndexer;
+      const result = await indexer.indexFile(filePath, content);
+      
+      // Update the index with fresh symbols
+      this.fileSymbols.set(filePath, result);
+      this.fileHashes.set(filePath, currentHash);
+
+      console.info(`[DynamicIndex] Self-healing complete: ${result.symbols.length} symbols indexed for ${filePath}`);
+      return true;
+    } catch (error) {
+      console.error(`[DynamicIndex] Self-healing error for ${filePath}: ${error}`);
+      return false;
+    }
   }
 
   async findDefinitions(name: string): Promise<IndexedSymbol[]> {

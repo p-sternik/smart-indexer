@@ -904,7 +904,15 @@ documents.onDidOpen(async (change) => {
     currentActiveDocumentUri = uri;
     
     const content = change.document.getText();
-    await dynamicIndex.updateFile(uri, content);
+    
+    // Self-healing: Validate and repair index if stale (e.g., missed file watcher events)
+    const wasRepaired = await dynamicIndex.validateAndRepair(uri, content);
+    if (wasRepaired) {
+      connection.console.info(`[Server] Self-healing triggered for ${uri}`);
+    } else {
+      // No repair needed, but still update to ensure freshness
+      await dynamicIndex.updateFile(uri, content);
+    }
     
     // Update TypeScript service for semantic intelligence
     if (typeScriptService.isInitialized()) {
@@ -942,7 +950,13 @@ documents.onDidChangeContent(change => {
         currentActiveDocumentUri = uri;
         
         const content = change.document.getText();
-        await dynamicIndex.updateFile(uri, content);
+        
+        // Self-healing: Validate and repair index if stale
+        const wasRepaired = await dynamicIndex.validateAndRepair(uri, content);
+        if (!wasRepaired) {
+          // No repair needed, perform normal update
+          await dynamicIndex.updateFile(uri, content);
+        }
         
         // Update TypeScript service for semantic intelligence
         if (typeScriptService.isInitialized()) {

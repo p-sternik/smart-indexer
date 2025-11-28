@@ -1041,6 +1041,7 @@ function extractCodeSymbolsAndReferences(uri: string, content: string): {
   imports: ImportInfo[];
   reExports: ReExportInfo[];
   pendingReferences: PendingReference[];
+  parseError?: string;
 } {
   const symbols: IndexedSymbol[] = [];
   const references: IndexedReference[] = [];
@@ -1064,7 +1065,10 @@ function extractCodeSymbolsAndReferences(uri: string, content: string): {
     const scopeTracker = new ScopeTracker();
     traverseAST(ast, symbols, references, uri, undefined, undefined, [], imports, scopeTracker, null, undefined, pendingReferences);
   } catch (error) {
-    console.error(`[Worker] Error parsing code file ${uri}: ${error}`);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`[Worker] Error parsing code file ${uri}: ${errorMessage}`);
+    // Return the error so processFile can mark the result appropriately
+    return { symbols, references, imports, reExports, pendingReferences, parseError: errorMessage };
   }
 
   return { symbols, references, imports, reExports, pendingReferences };
@@ -1145,6 +1149,23 @@ function processFile(taskData: WorkerTaskData): IndexedFileResult {
   
   if (isCodeFile) {
     const result = extractCodeSymbolsAndReferences(uri, content);
+    
+    // If parsing failed, mark as skipped so the task counter decrements properly
+    if (result.parseError) {
+      return {
+        uri,
+        hash,
+        symbols: result.symbols,
+        references: result.references,
+        imports: result.imports,
+        reExports: result.reExports,
+        pendingReferences: result.pendingReferences.length > 0 ? result.pendingReferences : undefined,
+        isSkipped: true,
+        skipReason: `Parse error: ${result.parseError}`,
+        shardVersion: SHARD_VERSION
+      };
+    }
+    
     return {
       uri,
       hash,

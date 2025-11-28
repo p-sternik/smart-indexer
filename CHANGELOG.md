@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0](https://github.com/p-sternik/smart-indexer/compare/v1.16.0...v1.17.0) (2025-11-28)
+
+
+### Features
+
+* Enhance WorkerPool with task timeout management and crash recovery ([8449a9c](https://github.com/p-sternik/smart-indexer/commit/8449a9c4e8014f42c1829bebfb94daa7ac38c344))
+
 ## [1.16.0](https://github.com/p-sternik/smart-indexer/compare/v1.15.0...v1.16.0) (2025-11-28)
 
 

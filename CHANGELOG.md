@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.0](https://github.com/p-sternik/smart-indexer/compare/v1.27.0...v1.28.0) (2025-11-28)
+
+
+### Features
+
+* Optimize NgRx action group lookup by iterating over files instead of symbols ([94e8e18](https://github.com/p-sternik/smart-indexer/commit/94e8e182311eddcf0558752483a61ad70dfce78b))
+
 ## [1.27.0](https://github.com/p-sternik/smart-indexer/compare/v1.26.0...v1.27.0) (2025-11-28)
 
 

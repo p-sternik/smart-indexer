@@ -1030,37 +1030,37 @@ export class BackgroundIndex implements ISymbolIndex {
     
     // STEP 1: Build lookup map of all NgRx Action Groups
     // Key: GroupName -> Value: { uri, events }
+    // Optimized: Iterate by file (single I/O per file) instead of by symbol name
     console.info('[Finalize] Step 1: Building NgRx action group lookup...');
     const actionGroupLookup = new Map<string, { uri: string; events: Record<string, string> }>();
     
-    let step1Count = 0;
-    const step1Total = this.symbolNameIndex.size;
-    for (const [name, uriSet] of this.symbolNameIndex) {
-      step1Count++;
-      if (step1Count % 100 === 0) {
-        console.info(`[Finalize] Step 1 progress: ${step1Count}/${step1Total} symbols scanned`);
+    const files = Array.from(this.fileMetadata.keys());
+    const step1Total = files.length;
+    let symbolsScanned = 0;
+    
+    for (let i = 0; i < files.length; i++) {
+      const uri = files[i];
+      if (i % 50 === 0) {
+        console.info(`[Finalize] Step 1 progress: ${i}/${step1Total} files scanned`);
       }
-      for (const uri of uriSet) {
-        const shard = await this.loadShard(uri);
-        if (!shard) {
-          continue;
-        }
-        
-        for (const symbol of shard.symbols) {
-          if (symbol.name === name && 
-              symbol.ngrxMetadata?.isGroup === true && 
-              symbol.ngrxMetadata?.events) {
-            actionGroupLookup.set(name, {
-              uri,
-              events: symbol.ngrxMetadata.events
-            });
-            break; // Found the action group, no need to check other symbols
-          }
+      
+      const shard = await this.loadShard(uri);
+      if (!shard) {
+        continue;
+      }
+      
+      for (const symbol of shard.symbols) {
+        symbolsScanned++;
+        if (symbol.ngrxMetadata?.isGroup === true && symbol.ngrxMetadata?.events) {
+          actionGroupLookup.set(symbol.name, {
+            uri,
+            events: symbol.ngrxMetadata.events
+          });
         }
       }
     }
     
-    console.info(`[Finalize] Step 1 complete: Found ${actionGroupLookup.size} NgRx action groups (scanned ${step1Total} symbols)`);
+    console.info(`[Finalize] Step 1 complete: Found ${actionGroupLookup.size} NgRx action groups (scanned ${symbolsScanned} symbols in ${step1Total} files)`);
     
     // STEP 2: Group pending references by source file for efficient shard I/O
     console.info('[Finalize] Step 2: Collecting pending references...');

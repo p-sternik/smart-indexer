@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0](https://github.com/p-sternik/smart-indexer/compare/v1.17.0...v1.18.0) (2025-11-28)
+
+
+### Features
+
+* Implement ShardPersistenceManager for centralized shard I/O management and buffering ([09625c2](https://github.com/p-sternik/smart-indexer/commit/09625c20ffaf2c1194924da48f087440d44966f3))
+
 ## [1.17.0](https://github.com/p-sternik/smart-indexer/compare/v1.16.0...v1.17.0) (2025-11-28)
 
 

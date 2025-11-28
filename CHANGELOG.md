@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.0](https://github.com/p-sternik/smart-indexer/compare/v1.21.0...v1.22.0) (2025-11-28)
+
+
+### Features
+
+* Enhance file handling by adding path sanitization and error management ([d2bd64f](https://github.com/p-sternik/smart-indexer/commit/d2bd64fbc4e71b0b5ff907abc7f9f5a6912b48df))
+
 ## [1.21.0](https://github.com/p-sternik/smart-indexer/compare/v1.20.0...v1.21.0) (2025-11-28)
 
 

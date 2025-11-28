@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0](https://github.com/p-sternik/smart-indexer/compare/v1.11.0...v1.12.0) (2025-11-28)
+
+
+### Features
+
+* Enhance searchSymbols with fuzzy matching and duplicate prevention ([959c4f9](https://github.com/p-sternik/smart-indexer/commit/959c4f9977fd73e9174db0b3f6d86a00a8b569b8))
+
 ## [1.11.0](https://github.com/p-sternik/smart-indexer/compare/v1.10.0...v1.11.0) (2025-11-28)
 
 

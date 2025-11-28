@@ -6,25 +6,15 @@ import { fuzzyScore } from '../utils/fuzzySearch.js';
 import { toCamelCase, toPascalCase } from '../utils/stringUtils.js';
 import { WorkerPool } from '../utils/workerPool.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
-import * as crypto from 'crypto';
+import { ShardPersistenceManager, FileShard } from './ShardPersistenceManager.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
 /**
  * Represents a single shard (per-file index) on disk.
+ * Re-exported from ShardPersistenceManager for backward compatibility.
  */
-interface FileShard {
-  uri: string;
-  hash: string;
-  symbols: IndexedSymbol[];
-  references: IndexedReference[];
-  imports: ImportInfo[];
-  reExports?: ReExportInfo[];
-  pendingReferences?: PendingReference[];
-  lastIndexedAt: number;
-  shardVersion?: number;
-  mtime?: number; // File modification time in milliseconds
-}
+export { FileShard } from './ShardPersistenceManager.js';
 
 /**
  * Progress callback for indexing operations.
@@ -51,7 +41,7 @@ export class BackgroundIndex implements ISymbolIndex {
   private symbolIndexer: SymbolIndexer;
   private languageRouter: LanguageRouter | null = null;
   private configManager: ConfigurationManager | null = null;
-  private shardsDirectory: string = '';
+  private shardManager: ShardPersistenceManager;
   private fileMetadata: Map<string, { hash: string; lastIndexedAt: number; symbolCount: number; mtime?: number }> = new Map();
   private symbolNameIndex: Map<string, Set<string>> = new Map(); // name -> Set of URIs
   private symbolIdIndex: Map<string, string> = new Map(); // symbolId -> URI
@@ -62,43 +52,11 @@ export class BackgroundIndex implements ISymbolIndex {
   private workerPool: WorkerPool | null = null;
   private progressCallback: ProgressCallback | null = null;
   private isBulkIndexing: boolean = false; // Flag to defer NgRx resolution during bulk indexing
-  private shardLocks: Map<string, Promise<void>> = new Map(); // Per-file locks to prevent concurrent shard writes
 
   constructor(symbolIndexer: SymbolIndexer, maxConcurrentJobs: number = 4) {
     this.symbolIndexer = symbolIndexer;
     this.maxConcurrentJobs = maxConcurrentJobs;
-  }
-
-  /**
-   * Execute a task with exclusive access to a shard file.
-   * Prevents race conditions between concurrent load-modify-save operations.
-   */
-  private async withShardLock<T>(uri: string, task: () => Promise<T>): Promise<T> {
-    const currentLock = this.shardLocks.get(uri) || Promise.resolve();
-    
-    let resolveResult: (value: T) => void;
-    let rejectResult: (error: unknown) => void;
-    const resultPromise = new Promise<T>((resolve, reject) => {
-      resolveResult = resolve;
-      rejectResult = reject;
-    });
-    
-    const newLock = currentLock.then(async () => {
-      try {
-        const result = await task();
-        resolveResult!(result);
-      } catch (error) {
-        rejectResult!(error);
-      }
-    }).finally(() => {
-      // Clean up lock entry if this is still the current lock
-      if (this.shardLocks.get(uri) === newLock) {
-        this.shardLocks.delete(uri);
-      }
-    });
-    
-    this.shardLocks.set(uri, newLock);
-    return resultPromise;
+    this.shardManager = new ShardPersistenceManager(true, 100); // Enable buffering with 100ms coalescing
   }
 
   /**
@@ -133,11 +91,8 @@ export class BackgroundIndex implements ISymbolIndex {
    * Initialize the background index.
    */
   async init(workspaceRoot: string, cacheDirectory: string): Promise<void> {
-    this.shardsDirectory = path.join(workspaceRoot, cacheDirectory, 'index');
-    
-    if (!fs.existsSync(this.shardsDirectory)) {
-      fs.mkdirSync(this.shardsDirectory, { recursive: true });
-    }
+    // Initialize the centralized shard persistence manager
+    this.shardManager.init(workspaceRoot, cacheDirectory);
 
     const workerScriptPath = path.join(__dirname, 'indexer', 'worker.js');
     this.workerPool = new WorkerPool(workerScriptPath, this.maxConcurrentJobs);
@@ -153,11 +108,12 @@ export class BackgroundIndex implements ISymbolIndex {
    */
   private async loadShardMetadata(): Promise<void> {
     try {
-      if (!fs.existsSync(this.shardsDirectory)) {
+      const shardsDirectory = this.shardManager.getShardsDirectory();
+      if (!fs.existsSync(shardsDirectory)) {
         return;
       }
 
-      const shardFiles = this.collectShardFiles(this.shardsDirectory);
+      const shardFiles = this.shardManager.collectShardFiles();
       let loadedShards = 0;
 
       for (const shardFile of shardFiles) {
@@ -214,93 +170,24 @@ export class BackgroundIndex implements ISymbolIndex {
   }
 
   /**
-   * Recursively collect all shard files from nested directory structure.
-   */
-  private collectShardFiles(dir: string): string[] {
-    const results: string[] = [];
-    
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        
-        if (entry.isDirectory()) {
-          results.push(...this.collectShardFiles(fullPath));
-        } else if (entry.isFile() && entry.name.endsWith('.json')) {
-          results.push(fullPath);
-        }
-      }
-    } catch (error) {
-      console.error(`[BackgroundIndex] Error reading directory ${dir}: ${error}`);
-    }
-    
-    return results;
-  }
-
-  /**
-   * Get shard file path for a given URI.
-   * Uses hashed directory structure for filesystem performance:
-   * .smart-index/index/<prefix1>/<prefix2>/<hash>.json
-   */
-  private getShardPath(uri: string): string {
-    const hash = crypto.createHash('sha256').update(uri).digest('hex');
-    const prefix1 = hash.substring(0, 2);
-    const prefix2 = hash.substring(2, 4);
-    return path.join(this.shardsDirectory, prefix1, prefix2, `${hash}.json`);
-  }
-
-  /**
-   * Load a shard from disk.
+   * Load a shard from disk via ShardPersistenceManager.
    */
   private async loadShard(uri: string): Promise<FileShard | null> {
-    try {
-      const shardPath = this.getShardPath(uri);
-      if (!fs.existsSync(shardPath)) {
-        return null;
-      }
-
-      const content = fs.readFileSync(shardPath, 'utf-8');
-      return JSON.parse(content);
-    } catch (error) {
-      console.error(`[BackgroundIndex] Error loading shard for ${uri}: ${error}`);
-      return null;
-    }
+    return this.shardManager.loadShard(uri);
   }
 
   /**
-   * Save a shard to disk.
+   * Save a shard to disk via ShardPersistenceManager.
    */
   private async saveShard(shard: FileShard): Promise<void> {
-    try {
-      const shardPath = this.getShardPath(shard.uri);
-      const shardDir = path.dirname(shardPath);
-      
-      // Ensure directory exists (nested structure)
-      if (!fs.existsSync(shardDir)) {
-        fs.mkdirSync(shardDir, { recursive: true });
-      }
-      
-      const content = JSON.stringify(shard, null, 2);
-      fs.writeFileSync(shardPath, content, 'utf-8');
-    } catch (error) {
-      console.error(`[BackgroundIndex] Error saving shard for ${shard.uri}: ${error}`);
-      throw error;
-    }
+    return this.shardManager.saveShard(shard);
   }
 
   /**
-   * Delete a shard from disk.
+   * Delete a shard from disk via ShardPersistenceManager.
    */
   private async deleteShard(uri: string): Promise<void> {
-    try {
-      const shardPath = this.getShardPath(uri);
-      if (fs.existsSync(shardPath)) {
-        fs.unlinkSync(shardPath);
-      }
-    } catch (error) {
-      console.error(`[BackgroundIndex] Error deleting shard for ${uri}: ${error}`);
-    }
+    return this.shardManager.deleteShard(uri);
   }
 
   /**
@@ -391,10 +278,8 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     }
 
-    // Save shard to disk with exclusive lock to prevent race conditions
-    await this.withShardLock(uri, async () => {
-      await this.saveShard(shard);
-    });
+    // Save shard to disk - ShardPersistenceManager handles locking internally
+    await this.saveShard(shard);
 
     // Resolve NgRx cross-file references after indexing
     // Skip during bulk indexing - will be done in finalizeIndexing() for O(N+M) performance
@@ -489,8 +374,9 @@ export class BackgroundIndex implements ISymbolIndex {
         }
         refUriSet.add(sourceUri);
 
-        // Persist synthetic reference to source shard (survives restart) with exclusive lock
-        await this.withShardLock(sourceUri, async () => {
+        // Persist synthetic reference to source shard (survives restart)
+        // ShardPersistenceManager handles locking internally
+        await this.shardManager.withLock(sourceUri, async () => {
           const sourceShard = await this.loadShard(sourceUri);
           if (sourceShard) {
             if (!sourceShard.references) {
@@ -1031,11 +917,21 @@ export class BackgroundIndex implements ISymbolIndex {
     // Finalize: batch-resolve all deferred NgRx references (O(N+M) instead of O(N*M))
     await this.finalizeIndexing();
 
-    // Emit idle state when done
+    // SAFETY NET: Validate and reset worker pool counters after all tasks complete
+    // This ensures the status bar reaches "Ready" even if counters got desynchronized
+    if (this.workerPool) {
+      this.workerPool.validateCounters();
+      // If processed count matches total, force reset to ensure clean state
+      if (processed === total) {
+        this.workerPool.reset();
+      }
+    }
+
+    // Emit idle state when done - use actual processed count, not pool counter
     if (this.progressCallback) {
       this.progressCallback({
         state: 'idle',
-        processed: total,
+        processed: total, // Always report total to ensure "Ready" state
         total
       });
     }
@@ -1047,7 +943,7 @@ export class BackgroundIndex implements ISymbolIndex {
       const stats = this.workerPool.getStats();
       console.info(
         `[BackgroundIndex] Completed indexing ${total} files in ${duration}ms (${filesPerSecond} files/sec) - ` +
-        `Pool stats: ${stats.totalProcessed} processed, ${stats.totalErrors} errors`
+        `Pool stats: ${stats.totalProcessed} processed, ${stats.totalErrors} errors, active=${stats.activeTasks}`
       );
     } else {
       console.info(`[BackgroundIndex] Completed indexing ${total} files in ${duration}ms (${filesPerSecond} files/sec)`);
@@ -1124,8 +1020,8 @@ export class BackgroundIndex implements ISymbolIndex {
     let shardsModified = 0;
     
     for (const [uri, pendingRefs] of pendingByFile) {
-      // Use shard lock to prevent race conditions with concurrent updateFile calls
-      await this.withShardLock(uri, async () => {
+      // Use shard lock via ShardPersistenceManager to prevent race conditions
+      await this.shardManager.withLock(uri, async () => {
         const shard = await this.loadShard(uri);
         if (!shard) {
           return;
@@ -1280,9 +1176,7 @@ export class BackgroundIndex implements ISymbolIndex {
    */
   async clear(): Promise<void> {
     try {
-      if (fs.existsSync(this.shardsDirectory)) {
-        this.clearDirectory(this.shardsDirectory);
-      }
+      await this.shardManager.clearAll();
 
       this.fileMetadata.clear();
       this.symbolNameIndex.clear();
@@ -1296,35 +1190,14 @@ export class BackgroundIndex implements ISymbolIndex {
   }
 
   /**
-   * Cleanup resources including worker pool.
+   * Cleanup resources including worker pool and shard manager.
    */
   async dispose(): Promise<void> {
     if (this.workerPool) {
       await this.workerPool.terminate();
       this.workerPool = null;
     }
-  }
-
-  /**
-   * Recursively clear directory contents.
-   */
-  private clearDirectory(dir: string): void {
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        
-        if (entry.isDirectory()) {
-          this.clearDirectory(fullPath);
-          fs.rmdirSync(fullPath);
-        } else if (entry.isFile() && entry.name.endsWith('.json')) {
-          fs.unlinkSync(fullPath);
-        }
-      }
-    } catch (error) {
-      console.error(`[BackgroundIndex] Error clearing directory ${dir}: ${error}`);
-    }
+    await this.shardManager.dispose();
   }
 
   /**

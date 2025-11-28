@@ -43,6 +43,7 @@ export class WorkerPool {
   private totalTasksProcessed: number = 0;
   private totalErrors: number = 0;
   private taskTimeoutMs: number = 60000; // 60 second timeout per task
+  private activeTasks: number = 0; // Track in-flight tasks for counter validation
 
   constructor(workerScriptPath: string, poolSize?: number) {
     this.workerScriptPath = workerScriptPath;
@@ -112,15 +113,28 @@ export class WorkerPool {
   }
 
   async runTask(taskData: WorkerTaskData): Promise<any> {
+    // Increment active tasks counter IMMEDIATELY when task is submitted
+    this.activeTasks++;
+    
     return new Promise((resolve, reject) => {
+      // Wrap resolve/reject to decrement counter on completion
+      const wrappedResolve = (result: any) => {
+        this.activeTasks--;
+        resolve(result);
+      };
+      const wrappedReject = (error: Error) => {
+        this.activeTasks--;
+        reject(error);
+      };
+
       const idleWorker = this.getIdleWorker();
       const priority = taskData.priority || 'normal';
 
       if (idleWorker) {
-        this.executeTask(idleWorker, taskData, resolve, reject);
+        this.executeTask(idleWorker, taskData, wrappedResolve, wrappedReject);
       } else {
         // Add to appropriate queue based on priority
-        const queuedTask = { taskData, resolve, reject, priority };
+        const queuedTask = { taskData, resolve: wrappedResolve, reject: wrappedReject, priority };
         if (priority === 'high') {
           this.highPriorityQueue.push(queuedTask);
         } else {
@@ -192,7 +206,7 @@ export class WorkerPool {
   }
 
   async terminate(): Promise<void> {
-    // Reject all pending tasks in queues
+    // Reject all pending tasks in queues (activeTasks already decremented by wrapped reject)
     for (const task of this.highPriorityQueue) {
       task.reject(new Error('WorkerPool terminated'));
     }
@@ -216,6 +230,9 @@ export class WorkerPool {
     this.workers = [];
     this.taskQueue = [];
     this.highPriorityQueue = [];
+    
+    // Safety net: reset counter after termination
+    this.activeTasks = 0;
   }
 
   getStats(): { 
@@ -225,6 +242,7 @@ export class WorkerPool {
     highPriorityQueuedTasks: number;
     totalProcessed: number;
     totalErrors: number;
+    activeTasks: number;
   } {
     return {
       poolSize: this.workers.length,
@@ -232,7 +250,47 @@ export class WorkerPool {
       queuedTasks: this.taskQueue.length,
       highPriorityQueuedTasks: this.highPriorityQueue.length,
       totalProcessed: this.totalTasksProcessed,
-      totalErrors: this.totalErrors
+      totalErrors: this.totalErrors,
+      activeTasks: this.activeTasks
     };
+  }
+
+  /**
+   * Get the number of currently active (in-flight + queued) tasks.
+   * Use this for accurate status bar updates.
+   */
+  getActiveTasks(): number {
+    return this.activeTasks;
+  }
+
+  /**
+   * Validate and reset counters if they become desynchronized.
+   * Returns true if a reset was performed.
+   */
+  validateCounters(): boolean {
+    const inFlightCount = this.workers.filter(w => !w.idle).length;
+    const queuedCount = this.taskQueue.length + this.highPriorityQueue.length;
+    const expectedActive = inFlightCount + queuedCount;
+
+    if (this.activeTasks !== expectedActive) {
+      console.warn(
+        `[WorkerPool] Counter desync detected: activeTasks=${this.activeTasks}, ` +
+        `expected=${expectedActive} (inFlight=${inFlightCount}, queued=${queuedCount}). Resetting.`
+      );
+      this.activeTasks = expectedActive;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Force reset the active tasks counter to 0.
+   * Use this as a safety net when all known tasks have completed.
+   */
+  reset(): void {
+    if (this.activeTasks !== 0) {
+      console.warn(`[WorkerPool] Force reset: activeTasks was ${this.activeTasks}, setting to 0`);
+    }
+    this.activeTasks = 0;
   }
 }

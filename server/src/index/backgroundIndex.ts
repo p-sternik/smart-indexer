@@ -20,7 +20,7 @@ export { FileShard } from './ShardPersistenceManager.js';
  * Progress callback for indexing operations.
  */
 export type ProgressCallback = (progress: {
-  state: 'busy' | 'idle';
+  state: 'busy' | 'idle' | 'finalizing';
   processed: number;
   total: number;
   currentFile?: string;
@@ -959,8 +959,20 @@ export class BackgroundIndex implements ISymbolIndex {
     // Disable bulk indexing mode
     this.isBulkIndexing = false;
 
+    // FIX: Update UI to show finalization phase (prevents "0 remaining" hang)
+    if (this.progressCallback) {
+      this.progressCallback({
+        state: 'finalizing',
+        processed: total,
+        total
+      });
+    }
+    console.info('[BackgroundIndex] Starting finalization phase...');
+
     // Finalize: batch-resolve all deferred NgRx references (O(N+M) instead of O(N*M))
+    console.time('Finalize');
     await this.finalizeIndexing();
+    console.timeEnd('Finalize');
 
     // SAFETY NET: Validate and reset worker pool counters after all tasks complete
     // This ensures the status bar reaches "Ready" even if counters got desynchronized
@@ -972,7 +984,7 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     }
 
-    // Emit idle state when done - use actual processed count, not pool counter
+    // FIX: Emit idle state AFTER finalization completes - explicit "Ready" signal
     if (this.progressCallback) {
       this.progressCallback({
         state: 'idle',
@@ -980,6 +992,7 @@ export class BackgroundIndex implements ISymbolIndex {
         total
       });
     }
+    console.info('[BackgroundIndex] Background indexing completed successfully.');
     
     const duration = Date.now() - startTime;
     const filesPerSecond = (total / (duration / 1000)).toFixed(2);

@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
  * Progress payload sent from the server via LSP notification.
  */
 export interface IndexProgress {
-  state: 'busy' | 'idle' | 'error';
+  state: 'busy' | 'idle' | 'error' | 'finalizing';
   processed: number;
   total: number;
   currentFile?: string;
@@ -44,6 +44,9 @@ export class SmartIndexerStatusBar {
       case 'busy':
         this.setBusy(progress.total - progress.processed, progress.currentFile);
         break;
+      case 'finalizing':
+        this.setFinalizing();
+        break;
       case 'idle':
         this.setIdle();
         break;
@@ -79,6 +82,16 @@ export class SmartIndexerStatusBar {
     tooltip += '\nClick for options';
     
     this.statusBarItem.tooltip = tooltip;
+    this.statusBarItem.backgroundColor = undefined;
+  }
+
+  /**
+   * Set status bar to finalizing (linking references) state.
+   */
+  setFinalizing(): void {
+    this.state = 'busy';
+    this.statusBarItem.text = '$(sync~spin) Finalizing index...';
+    this.statusBarItem.tooltip = 'Smart Indexer: Linking references...\nClick for options';
     this.statusBarItem.backgroundColor = undefined;
   }
 

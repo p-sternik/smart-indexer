@@ -164,12 +164,26 @@ export class MergedIndex implements ISymbolIndex {
 
   /**
    * Find all references to a symbol by name (actual usages).
+   * Optionally filters out the definition location to avoid showing the declaration as a reference.
    */
-  async findReferencesByName(name: string): Promise<IndexedReference[]> {
+  async findReferencesByName(name: string, definitionLocations?: Array<{ uri: string; line: number; character: number }>): Promise<IndexedReference[]> {
     const dynamicRefs = await this.dynamicIndex.findReferencesByName(name);
     const backgroundRefs = await this.backgroundIndex.findReferencesByName(name);
     
-    return this.mergeReferences(dynamicRefs, backgroundRefs);
+    let merged = this.mergeReferences(dynamicRefs, backgroundRefs);
+    
+    // Filter out definition locations if provided (prevents self-references)
+    if (definitionLocations && definitionLocations.length > 0) {
+      const defLocationKeys = new Set(
+        definitionLocations.map(loc => `${loc.uri}:${loc.line}:${loc.character}`)
+      );
+      merged = merged.filter(ref => {
+        const refKey = `${ref.location.uri}:${ref.location.line}:${ref.location.character}`;
+        return !defLocationKeys.has(refKey);
+      });
+    }
+    
+    return merged;
   }
 
   /**

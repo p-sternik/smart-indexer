@@ -3,6 +3,7 @@ import { IndexedSymbol, IndexedFileResult, IndexedReference, ImportInfo, ReExpor
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { fuzzyScore } from '../utils/fuzzySearch.js';
+import { toPascalCase } from '../utils/stringUtils.js';
 import { WorkerPool } from '../utils/workerPool.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
 import * as crypto from 'crypto';
@@ -59,6 +60,7 @@ export class BackgroundIndex implements ISymbolIndex {
   private maxConcurrentJobs: number = 4;
   private workerPool: WorkerPool | null = null;
   private progressCallback: ProgressCallback | null = null;
+  private isBulkIndexing: boolean = false; // Flag to defer NgRx resolution during bulk indexing
 
   constructor(symbolIndexer: SymbolIndexer, maxConcurrentJobs: number = 4) {
     this.symbolIndexer = symbolIndexer;
@@ -350,7 +352,8 @@ export class BackgroundIndex implements ISymbolIndex {
     await this.saveShard(shard);
 
     // Resolve NgRx cross-file references after indexing
-    if (result.pendingReferences && result.pendingReferences.length > 0) {
+    // Skip during bulk indexing - will be done in finalizeIndexing() for O(N+M) performance
+    if (!this.isBulkIndexing && result.pendingReferences && result.pendingReferences.length > 0) {
       await this.resolveNgRxReferences(uri, result.pendingReferences);
     }
   }
@@ -395,15 +398,31 @@ export class BackgroundIndex implements ISymbolIndex {
         }
 
         // Check if the member exists in the events map
+        // Try exact match first, then PascalCase fallback
         const events = containerSymbol.ngrxMetadata.events;
-        if (!(pending.member in events)) {
+        let matchedMember: string | null = null;
+        
+        if (pending.member in events) {
+          matchedMember = pending.member;
+        } else {
+          // Fallback: Try PascalCase version (e.g., 'load' -> 'Load')
+          const pascalMember = toPascalCase(pending.member);
+          if (pascalMember in events) {
+            matchedMember = pascalMember;
+            console.info(`[BackgroundIndex] NgRx PascalCase fallback: ${pending.member} -> ${pascalMember}`);
+          }
+        }
+        
+        if (!matchedMember) {
+          // Debug logging when match fails
+          console.log(`[BackgroundIndex] NgRx link failed: ${pending.container}.${pending.member} not found in events:`, Object.keys(events));
           continue;
         }
 
         // Found a match! Create a synthetic reference linking usage to the action definition
         // The member name (e.g., 'load') maps to the virtual symbol created in worker.ts
         const syntheticRef: IndexedReference = {
-          symbolName: pending.member,
+          symbolName: pending.member, // Use original member name for consistency
           location: pending.location,
           range: pending.range,
           containerName: pending.containerName,
@@ -867,6 +886,9 @@ export class BackgroundIndex implements ISymbolIndex {
     const startTime = Date.now();
     let lastProgressTime = startTime;
 
+    // Enable bulk indexing mode to defer NgRx resolution
+    this.isBulkIndexing = true;
+
     // Emit initial busy state
     if (this.progressCallback) {
       this.progressCallback({
@@ -917,6 +939,12 @@ export class BackgroundIndex implements ISymbolIndex {
 
     await Promise.allSettled(files.map(indexFile));
 
+    // Disable bulk indexing mode
+    this.isBulkIndexing = false;
+
+    // Finalize: batch-resolve all deferred NgRx references (O(N+M) instead of O(N*M))
+    await this.finalizeIndexing();
+
     // Emit idle state when done
     if (this.progressCallback) {
       this.progressCallback({
@@ -938,6 +966,120 @@ export class BackgroundIndex implements ISymbolIndex {
     } else {
       console.info(`[BackgroundIndex] Completed indexing ${total} files in ${duration}ms (${filesPerSecond} files/sec)`);
     }
+  }
+
+  /**
+   * Finalize indexing by resolving all deferred cross-file references in batch.
+   * 
+   * This implements a Deferred Batch Strategy for NgRx resolution:
+   * 1. Collect ALL pendingReferences from all indexed files
+   * 2. Build a quick lookup map of all known NgRx Action Groups
+   * 3. Iterate through pending references ONCE and link them
+   * 4. Bulk update the referenceMap
+   * 
+   * This turns O(N * M) operations into O(N + M) for significant performance gains.
+   */
+  async finalizeIndexing(): Promise<void> {
+    const startTime = Date.now();
+    
+    // STEP 1: Build lookup map of all NgRx Action Groups
+    // Key: GroupName -> Value: { uri, events }
+    const actionGroupLookup = new Map<string, { uri: string; events: Record<string, string> }>();
+    
+    for (const [name, uriSet] of this.symbolNameIndex) {
+      for (const uri of uriSet) {
+        const shard = await this.loadShard(uri);
+        if (!shard) {
+          continue;
+        }
+        
+        for (const symbol of shard.symbols) {
+          if (symbol.name === name && 
+              symbol.ngrxMetadata?.isGroup === true && 
+              symbol.ngrxMetadata?.events) {
+            actionGroupLookup.set(name, {
+              uri,
+              events: symbol.ngrxMetadata.events
+            });
+            break; // Found the action group, no need to check other symbols
+          }
+        }
+      }
+    }
+    
+    if (actionGroupLookup.size === 0) {
+      console.info(`[BackgroundIndex] finalizeIndexing: No NgRx action groups found, skipping batch resolution`);
+      return;
+    }
+    
+    console.info(`[BackgroundIndex] finalizeIndexing: Found ${actionGroupLookup.size} NgRx action groups`);
+    
+    // STEP 2: Collect all pending references and resolve them in batch
+    let totalPending = 0;
+    let resolvedCount = 0;
+    const referenceUpdates = new Map<string, Set<string>>(); // symbolName -> Set of URIs
+    
+    for (const uri of this.fileMetadata.keys()) {
+      const shard = await this.loadShard(uri);
+      if (!shard || !shard.pendingReferences || shard.pendingReferences.length === 0) {
+        continue;
+      }
+      
+      totalPending += shard.pendingReferences.length;
+      
+      for (const pending of shard.pendingReferences) {
+        // Look up the container in our pre-built map (O(1) lookup)
+        const actionGroup = actionGroupLookup.get(pending.container);
+        if (!actionGroup) {
+          continue;
+        }
+        
+        // Check if the member exists in the events map
+        // Try exact match first, then PascalCase fallback
+        let matchedMember: string | null = null;
+        
+        if (pending.member in actionGroup.events) {
+          matchedMember = pending.member;
+        } else {
+          // Fallback: Try PascalCase version (e.g., 'load' -> 'Load')
+          const pascalMember = toPascalCase(pending.member);
+          if (pascalMember in actionGroup.events) {
+            matchedMember = pascalMember;
+          }
+        }
+        
+        if (!matchedMember) {
+          continue;
+        }
+        
+        // Found a match! Queue the reference update
+        let refUriSet = referenceUpdates.get(pending.member);
+        if (!refUriSet) {
+          refUriSet = new Set();
+          referenceUpdates.set(pending.member, refUriSet);
+        }
+        refUriSet.add(uri);
+        resolvedCount++;
+      }
+    }
+    
+    // STEP 3: Bulk update the referenceMap
+    for (const [symbolName, uriSet] of referenceUpdates) {
+      let existingSet = this.referenceMap.get(symbolName);
+      if (!existingSet) {
+        existingSet = new Set();
+        this.referenceMap.set(symbolName, existingSet);
+      }
+      for (const uri of uriSet) {
+        existingSet.add(uri);
+      }
+    }
+    
+    const duration = Date.now() - startTime;
+    console.info(
+      `[BackgroundIndex] finalizeIndexing complete: Resolved ${resolvedCount}/${totalPending} ` +
+      `NgRx references in ${duration}ms`
+    );
   }
 
   /**

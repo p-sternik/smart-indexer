@@ -361,6 +361,12 @@ function isDeclarationContext(node: TSESTree.Node, parent: TSESTree.Node | null)
     case AST_NODE_TYPES.PropertyDefinition:
       return (parent as TSESTree.PropertyDefinition).key === node;
     
+    case AST_NODE_TYPES.TSMethodSignature:
+      return (parent as TSESTree.TSMethodSignature).key === node;
+    
+    case AST_NODE_TYPES.TSPropertySignature:
+      return (parent as TSESTree.TSPropertySignature).key === node;
+    
     case AST_NODE_TYPES.TSInterfaceDeclaration:
       return (parent as TSESTree.TSInterfaceDeclaration).id === node;
     

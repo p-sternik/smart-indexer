@@ -909,6 +909,7 @@ export class BackgroundIndex implements ISymbolIndex {
     }
 
     const indexFile = async (uri: string): Promise<void> => {
+      console.info(`[Debug] Starting task for: ${uri}`);
       try {
         let result: IndexedFileResult;
         
@@ -922,36 +923,27 @@ export class BackgroundIndex implements ISymbolIndex {
         
         // Skip saving shard for files that failed to read
         if (result.isSkipped) {
+          console.info(`[Debug] Task skipped for: ${uri} with reason: ${result.skipReason}`);
           console.warn(`[BackgroundIndex] Skipping file (${result.skipReason}): ${uri}`);
         } else {
+          console.info(`[Debug] Task success for: ${uri}`);
           await this.updateFile(uri, result);
         }
-        
+      } catch (error) {
+        console.error(`[Debug] Task CRASHED for: ${uri}: ${error}`);
+        console.error(`[BackgroundIndex] Error indexing file ${uri}: ${error}`);
+      } finally {
+        // CRITICAL FIX: This MUST happen no matter what - moved to finally block
         processed++;
+        console.info(`[Debug] Counter incremented: ${processed}/${total}`);
         if (onProgress) {
           onProgress(processed);
         }
 
         // Emit progress notification (throttled to every 500ms or every 10 files)
         const now = Date.now();
-        if (this.progressCallback && (now - lastProgressTime >= 500 || processed % 10 === 0)) {
+        if (this.progressCallback && (now - lastProgressTime >= 500 || processed % 10 === 0 || processed === total)) {
           lastProgressTime = now;
-          this.progressCallback({
-            state: 'busy',
-            processed,
-            total,
-            currentFile: uri
-          });
-        }
-      } catch (error) {
-        console.error(`[BackgroundIndex] Error indexing file ${uri}: ${error}`);
-        processed++;
-        if (onProgress) {
-          onProgress(processed);
-        }
-        
-        // CRITICAL: Always emit progress callback on error too, so status bar updates correctly
-        if (this.progressCallback) {
           this.progressCallback({
             state: 'busy',
             processed,

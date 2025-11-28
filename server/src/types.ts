@@ -14,6 +14,8 @@ export interface SymbolRange {
 export interface NgRxMetadata {
   type: string; // The NgRx type string, e.g., '[Products Page] Load'
   role: 'action' | 'effect' | 'reducer';
+  isGroup?: boolean; // true if this is a createActionGroup container
+  events?: Record<string, string>; // For action groups: camelCase method -> 'Event String'
 }
 
 export interface IndexedSymbol {
@@ -41,6 +43,18 @@ export interface IndexedReference {
   isLocal?: boolean; // true if reference is to a local variable/parameter
 }
 
+/**
+ * Pending reference for cross-file resolution (e.g., NgRx action group usages).
+ * These are captured during parsing and resolved after indexing when global context is available.
+ */
+export interface PendingReference {
+  container: string; // The container being accessed (e.g., 'PageActions')
+  member: string; // The member being called (e.g., 'load')
+  location: SymbolLocation;
+  range: SymbolRange;
+  containerName?: string; // Lexical scope context
+}
+
 export interface ImportInfo {
   localName: string;
   moduleSpecifier: string; // e.g., './bar', '@angular/core'
@@ -62,6 +76,7 @@ export interface IndexedFileResult {
   references: IndexedReference[];
   imports: ImportInfo[];
   reExports?: ReExportInfo[];
+  pendingReferences?: PendingReference[]; // Cross-file references to resolve post-indexing
   shardVersion?: number; // version of the shard format
 }
 

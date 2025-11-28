@@ -1,7 +1,7 @@
 import { parentPort } from 'worker_threads';
 import { parse } from '@typescript-eslint/typescript-estree';
 import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
-import { IndexedFileResult, IndexedSymbol, IndexedReference, ImportInfo, ReExportInfo, SHARD_VERSION, NgRxMetadata } from '../types.js';
+import { IndexedFileResult, IndexedSymbol, IndexedReference, ImportInfo, ReExportInfo, PendingReference, SHARD_VERSION, NgRxMetadata } from '../types.js';
 import { createSymbolId } from './symbolResolver.js';
 import { toCamelCase } from '../utils/stringUtils.js';
 import * as crypto from 'crypto';
@@ -122,6 +122,8 @@ function hasActionInterface(node: TSESTree.ClassDeclaration): boolean {
  * This generates virtual symbols:
  *   - loadData (method) for 'Load Data'
  *   - load (method) for 'Load'
+ * 
+ * Returns the events mapping (camelCase -> 'Event String') for the container's ngrxMetadata.
  */
 function processCreateActionGroup(
   callExpr: TSESTree.CallExpression,
@@ -129,15 +131,17 @@ function processCreateActionGroup(
   uri: string,
   symbols: IndexedSymbol[],
   containerPath: string[]
-): void {
+): Record<string, string> | undefined {
+  const eventsMap: Record<string, string> = {};
+  
   // createActionGroup expects a config object as first argument
   if (callExpr.arguments.length === 0) {
-    return;
+    return undefined;
   }
 
   const configArg = callExpr.arguments[0];
   if (configArg.type !== AST_NODE_TYPES.ObjectExpression) {
-    return;
+    return undefined;
   }
 
   // Find the 'events' property in the config object
@@ -152,7 +156,7 @@ function processCreateActionGroup(
   }
 
   if (!eventsProperty || eventsProperty.value.type !== AST_NODE_TYPES.ObjectExpression) {
-    return;
+    return undefined;
   }
 
   const eventsObject = eventsProperty.value as TSESTree.ObjectExpression;
@@ -210,6 +214,9 @@ function processCreateActionGroup(
       continue;
     }
 
+    // Store in events map for container's ngrxMetadata
+    eventsMap[camelCaseName] = eventKey;
+
     // Create a virtual symbol for the generated action method
     const id = createSymbolId(
       uri,
@@ -244,6 +251,8 @@ function processCreateActionGroup(
       }
     });
   }
+
+  return Object.keys(eventsMap).length > 0 ? eventsMap : undefined;
 }
 
 function hasEffectDecorator(node: TSESTree.PropertyDefinition): boolean {
@@ -454,7 +463,8 @@ function traverseAST(
   imports: ImportInfo[] = [],
   scopeTracker?: ScopeTracker,
   parent: TSESTree.Node | null = null,
-  pendingNgRxMetadata?: NgRxMetadata
+  pendingNgRxMetadata?: NgRxMetadata,
+  pendingReferences?: PendingReference[]
 ): void {
   if (!node || !node.loc) {return;}
 
@@ -513,9 +523,32 @@ function traverseAST(
           scopeId,
           isLocal: false
         });
+        
+        // Capture pending references for cross-file resolution (NgRx action groups)
+        // Pattern: ImportedSymbol.member() where ImportedSymbol is an import
+        if (pendingReferences && memberExpr.object.type === AST_NODE_TYPES.Identifier) {
+          const objectIdentifier = memberExpr.object as TSESTree.Identifier;
+          if (imports.some(imp => imp.localName === objectIdentifier.name)) {
+            pendingReferences.push({
+              container: objectIdentifier.name,
+              member: memberExpr.property.name,
+              location: {
+                uri,
+                line: memberExpr.property.loc.start.line - 1,
+                character: memberExpr.property.loc.start.column
+              },
+              range: {
+                startLine: memberExpr.property.loc.start.line - 1,
+                startCharacter: memberExpr.property.loc.start.column,
+                endLine: memberExpr.property.loc.end.line - 1,
+                endCharacter: memberExpr.property.loc.end.column
+              },
+              containerName
+            });
+          }
+        }
       }
     }
-    
     // Handle NgRx-specific CallExpressions: on(), ofType()
     if (node.type === AST_NODE_TYPES.CallExpression) {
       const callExpr = node as TSESTree.CallExpression;
@@ -702,7 +735,7 @@ function traverseAST(
               // Modern NgRx: createActionGroup
               // Process this BEFORE creating the main symbol, so virtual symbols are added first
               if (isNgRxCreateActionGroupCall(callExpr)) {
-                processCreateActionGroup(
+                const eventsMap = processCreateActionGroup(
                   callExpr,
                   varName,
                   uri,
@@ -710,10 +743,12 @@ function traverseAST(
                   [...containerPath, varName]
                 );
                 
-                // Add metadata to the container variable itself
+                // Add metadata to the container variable with isGroup flag and events map
                 ngrxMetadata = {
                   type: varName,
-                  role: 'action'
+                  role: 'action',
+                  isGroup: true,
+                  events: eventsMap
                 };
               }
               
@@ -944,11 +979,11 @@ function traverseAST(
           if (Array.isArray(child)) {
             for (const item of child) {
               if (item && typeof item === 'object' && item.type) {
-                traverseAST(item, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node, undefined);
+                traverseAST(item, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node, undefined, pendingReferences);
               }
             }
           } else if (child.type) {
-            traverseAST(child, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node, undefined);
+            traverseAST(child, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node, undefined, pendingReferences);
           }
         }
       }
@@ -963,11 +998,11 @@ function traverseAST(
           if (Array.isArray(child)) {
             for (const item of child) {
               if (item && typeof item === 'object' && item.type) {
-                traverseAST(item, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node, undefined);
+                traverseAST(item, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node, undefined, pendingReferences);
               }
             }
           } else if (child.type) {
-            traverseAST(child, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node, undefined);
+            traverseAST(child, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node, undefined, pendingReferences);
           }
         }
       }
@@ -982,11 +1017,13 @@ function extractCodeSymbolsAndReferences(uri: string, content: string): {
   references: IndexedReference[];
   imports: ImportInfo[];
   reExports: ReExportInfo[];
+  pendingReferences: PendingReference[];
 } {
   const symbols: IndexedSymbol[] = [];
   const references: IndexedReference[] = [];
   const imports: ImportInfo[] = [];
   const reExports: ReExportInfo[] = [];
+  const pendingReferences: PendingReference[] = [];
 
   try {
     const ast = parse(content, {
@@ -1002,12 +1039,12 @@ function extractCodeSymbolsAndReferences(uri: string, content: string): {
     extractReExports(ast, reExports);
 
     const scopeTracker = new ScopeTracker();
-    traverseAST(ast, symbols, references, uri, undefined, undefined, [], imports, scopeTracker, null, undefined);
+    traverseAST(ast, symbols, references, uri, undefined, undefined, [], imports, scopeTracker, null, undefined, pendingReferences);
   } catch (error) {
     console.error(`[Worker] Error parsing code file ${uri}: ${error}`);
   }
 
-  return { symbols, references, imports, reExports };
+  return { symbols, references, imports, reExports, pendingReferences };
 }
 
 function extractTextSymbols(uri: string, content: string): IndexedSymbol[] {
@@ -1068,6 +1105,7 @@ function processFile(taskData: WorkerTaskData): IndexedFileResult {
       references: result.references,
       imports: result.imports,
       reExports: result.reExports,
+      pendingReferences: result.pendingReferences.length > 0 ? result.pendingReferences : undefined,
       shardVersion: SHARD_VERSION
     };
   } else {

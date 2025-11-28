@@ -1,5 +1,5 @@
 import { ISymbolIndex } from './ISymbolIndex.js';
-import { IndexedSymbol, IndexedFileResult, IndexedReference, ImportInfo, ReExportInfo, SHARD_VERSION } from '../types.js';
+import { IndexedSymbol, IndexedFileResult, IndexedReference, ImportInfo, ReExportInfo, PendingReference, SHARD_VERSION } from '../types.js';
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { fuzzyScore } from '../utils/fuzzySearch.js';
@@ -19,6 +19,7 @@ interface FileShard {
   references: IndexedReference[];
   imports: ImportInfo[];
   reExports?: ReExportInfo[];
+  pendingReferences?: PendingReference[];
   lastIndexedAt: number;
   shardVersion?: number;
   mtime?: number; // File modification time in milliseconds
@@ -264,6 +265,7 @@ export class BackgroundIndex implements ISymbolIndex {
       references: result.references || [],
       imports: result.imports || [],
       reExports: result.reExports || [],
+      pendingReferences: result.pendingReferences,
       lastIndexedAt: Date.now(),
       shardVersion: SHARD_VERSION,
       mtime
@@ -328,6 +330,84 @@ export class BackgroundIndex implements ISymbolIndex {
 
     // Save shard to disk
     await this.saveShard(shard);
+
+    // Resolve NgRx cross-file references after indexing
+    if (result.pendingReferences && result.pendingReferences.length > 0) {
+      await this.resolveNgRxReferences(uri, result.pendingReferences);
+    }
+  }
+
+  /**
+   * Resolve NgRx cross-file references using the global index.
+   * 
+   * This method resolves pending references like `PageActions.load()` by:
+   * 1. Looking up the container symbol (e.g., `PageActions`) in the global index
+   * 2. Checking if it's an NgRx action group with `ngrxMetadata.isGroup`
+   * 3. If the member (e.g., `load`) exists in the events map, creating a synthetic reference
+   * 
+   * @param sourceUri - The file containing the pending references
+   * @param pendingRefs - Array of pending references to resolve
+   */
+  private async resolveNgRxReferences(sourceUri: string, pendingRefs: PendingReference[]): Promise<void> {
+    let resolvedCount = 0;
+
+    for (const pending of pendingRefs) {
+      // Look up the container symbol in the global index
+      const containerUris = this.symbolNameIndex.get(pending.container);
+      if (!containerUris || containerUris.size === 0) {
+        continue;
+      }
+
+      // Check each potential container symbol
+      for (const containerUri of containerUris) {
+        const shard = await this.loadShard(containerUri);
+        if (!shard) {
+          continue;
+        }
+
+        // Find the container symbol with NgRx action group metadata
+        const containerSymbol = shard.symbols.find(
+          s => s.name === pending.container && 
+               s.ngrxMetadata?.isGroup === true &&
+               s.ngrxMetadata?.events
+        );
+
+        if (!containerSymbol || !containerSymbol.ngrxMetadata?.events) {
+          continue;
+        }
+
+        // Check if the member exists in the events map
+        const events = containerSymbol.ngrxMetadata.events;
+        if (!(pending.member in events)) {
+          continue;
+        }
+
+        // Found a match! Create a synthetic reference linking usage to the action definition
+        // The member name (e.g., 'load') maps to the virtual symbol created in worker.ts
+        const syntheticRef: IndexedReference = {
+          symbolName: pending.member,
+          location: pending.location,
+          range: pending.range,
+          containerName: pending.containerName,
+          isLocal: false
+        };
+
+        // Add to referenceMap so FindReferences works
+        let refUriSet = this.referenceMap.get(pending.member);
+        if (!refUriSet) {
+          refUriSet = new Set();
+          this.referenceMap.set(pending.member, refUriSet);
+        }
+        refUriSet.add(sourceUri);
+
+        resolvedCount++;
+        break; // Found a match, no need to check other containers
+      }
+    }
+
+    if (resolvedCount > 0) {
+      console.info(`[BackgroundIndex] Resolved ${resolvedCount} NgRx cross-file references from ${sourceUri}`);
+    }
   }
 
   /**

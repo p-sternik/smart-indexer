@@ -1020,11 +1020,15 @@ export class BackgroundIndex implements ISymbolIndex {
   /**
    * Finalize indexing by resolving all deferred cross-file references in batch.
    * 
-   * This implements a Deferred Batch Strategy for NgRx resolution:
-   * 1. Collect ALL pendingReferences from all indexed files
-   * 2. Build a quick lookup map of all known NgRx Action Groups
-   * 3. Iterate through pending references ONCE and link them
-   * 4. Bulk update the referenceMap
+   * This implements a Deferred Batch Strategy for reference resolution:
+   * 1. Build a quick lookup map of all known NgRx Action Groups
+   * 2. Group all pendingReferences by source file (for efficient shard I/O)
+   * 3. For each file, resolve pending refs and persist to disk
+   * 4. Bulk update the in-memory referenceMap
+   * 
+   * All pending references are converted to permanent references:
+   * - NgRx action group members -> linked to action definition
+   * - Non-NgRx imports (e.g., Utils.format) -> standard member reference
    * 
    * This turns O(N * M) operations into O(N + M) for significant performance gains.
    */
@@ -1056,17 +1060,11 @@ export class BackgroundIndex implements ISymbolIndex {
       }
     }
     
-    if (actionGroupLookup.size === 0) {
-      console.info(`[BackgroundIndex] finalizeIndexing: No NgRx action groups found, skipping batch resolution`);
-      return;
-    }
-    
     console.info(`[BackgroundIndex] finalizeIndexing: Found ${actionGroupLookup.size} NgRx action groups`);
     
-    // STEP 2: Collect all pending references and resolve them in batch
+    // STEP 2: Group pending references by source file for efficient shard I/O
+    const pendingByFile = new Map<string, PendingReference[]>();
     let totalPending = 0;
-    let resolvedCount = 0;
-    const referenceUpdates = new Map<string, Set<string>>(); // symbolName -> Set of URIs
     
     for (const uri of this.fileMetadata.keys()) {
       const shard = await this.loadShard(uri);
@@ -1074,66 +1072,145 @@ export class BackgroundIndex implements ISymbolIndex {
         continue;
       }
       
+      pendingByFile.set(uri, [...shard.pendingReferences]);
       totalPending += shard.pendingReferences.length;
+    }
+    
+    if (totalPending === 0) {
+      console.info(`[BackgroundIndex] finalizeIndexing: No pending references to resolve`);
+      return;
+    }
+    
+    // STEP 3: Process each file's pending references and persist to disk
+    let ngrxResolved = 0;
+    let fallbackResolved = 0;
+    let shardsModified = 0;
+    
+    for (const [uri, pendingRefs] of pendingByFile) {
+      const shard = await this.loadShard(uri);
+      if (!shard) {
+        continue;
+      }
       
-      for (const pending of shard.pendingReferences) {
-        // Look up the container in our pre-built map (O(1) lookup)
-        const actionGroup = actionGroupLookup.get(pending.container);
-        if (!actionGroup) {
+      // Ensure arrays exist
+      shard.references = shard.references || [];
+      shard.pendingReferences = shard.pendingReferences || [];
+      
+      let modified = false;
+      
+      for (const pending of pendingRefs) {
+        // Build a unique key for deduplication
+        const refKey = `${pending.member}:${pending.location.line}:${pending.location.character}`;
+        const existingRef = shard.references.find(
+          r => `${r.symbolName}:${r.location.line}:${r.location.character}` === refKey
+        );
+        
+        if (existingRef) {
+          // Already resolved in a previous run, just remove from pending
+          shard.pendingReferences = shard.pendingReferences.filter(
+            pr => !(pr.container === pending.container && 
+                    pr.member === pending.member &&
+                    pr.location.line === pending.location.line && 
+                    pr.location.character === pending.location.character)
+          );
+          modified = true;
           continue;
         }
         
-        // Check if the member exists in the events map
-        // Try exact match first, then camelCase, then PascalCase fallback
-        let matchedMember: string | null = null;
+        // Try NgRx resolution first
+        const actionGroup = actionGroupLookup.get(pending.container);
+        let resolvedAsNgRx = false;
         
-        if (pending.member in actionGroup.events) {
-          matchedMember = pending.member;
-        } else {
-          // Fallback 1: Try camelCase version (e.g., 'Load' -> 'load')
-          const camelMember = toCamelCase(pending.member);
-          if (camelMember in actionGroup.events) {
-            matchedMember = camelMember;
+        if (actionGroup) {
+          // Check if the member exists in the events map
+          // Try exact match first, then camelCase, then PascalCase fallback
+          let matchedMember: string | null = null;
+          
+          if (pending.member in actionGroup.events) {
+            matchedMember = pending.member;
           } else {
-            // Fallback 2: Try PascalCase version (e.g., 'load' -> 'Load')
-            const pascalMember = toPascalCase(pending.member);
-            if (pascalMember in actionGroup.events) {
-              matchedMember = pascalMember;
+            // Fallback 1: Try camelCase version (e.g., 'Load' -> 'load')
+            const camelMember = toCamelCase(pending.member);
+            if (camelMember in actionGroup.events) {
+              matchedMember = camelMember;
+            } else {
+              // Fallback 2: Try PascalCase version (e.g., 'load' -> 'Load')
+              const pascalMember = toPascalCase(pending.member);
+              if (pascalMember in actionGroup.events) {
+                matchedMember = pascalMember;
+              }
             }
+          }
+          
+          if (matchedMember) {
+            // NgRx action group member - create linked reference
+            const syntheticRef: IndexedReference = {
+              symbolName: pending.member,
+              location: pending.location,
+              range: pending.range,
+              containerName: pending.containerName,
+              isLocal: false
+            };
+            shard.references.push(syntheticRef);
+            
+            // Update in-memory referenceMap
+            let refUriSet = this.referenceMap.get(pending.member);
+            if (!refUriSet) {
+              refUriSet = new Set();
+              this.referenceMap.set(pending.member, refUriSet);
+            }
+            refUriSet.add(uri);
+            
+            resolvedAsNgRx = true;
+            ngrxResolved++;
           }
         }
         
-        if (!matchedMember) {
-          continue;
+        // Fallback: Non-NgRx imported member access (e.g., Utils.format())
+        // Convert to a standard reference so it appears in Find References
+        if (!resolvedAsNgRx) {
+          const standardRef: IndexedReference = {
+            symbolName: pending.member,
+            location: pending.location,
+            range: pending.range,
+            containerName: pending.containerName,
+            isLocal: false
+          };
+          shard.references.push(standardRef);
+          
+          // Update in-memory referenceMap
+          let refUriSet = this.referenceMap.get(pending.member);
+          if (!refUriSet) {
+            refUriSet = new Set();
+            this.referenceMap.set(pending.member, refUriSet);
+          }
+          refUriSet.add(uri);
+          
+          fallbackResolved++;
         }
         
-        // Found a match! Queue the reference update
-        let refUriSet = referenceUpdates.get(pending.member);
-        if (!refUriSet) {
-          refUriSet = new Set();
-          referenceUpdates.set(pending.member, refUriSet);
-        }
-        refUriSet.add(uri);
-        resolvedCount++;
+        // Remove from pending (processed successfully)
+        shard.pendingReferences = shard.pendingReferences.filter(
+          pr => !(pr.container === pending.container && 
+                  pr.member === pending.member &&
+                  pr.location.line === pending.location.line && 
+                  pr.location.character === pending.location.character)
+        );
+        modified = true;
       }
-    }
-    
-    // STEP 3: Bulk update the referenceMap
-    for (const [symbolName, uriSet] of referenceUpdates) {
-      let existingSet = this.referenceMap.get(symbolName);
-      if (!existingSet) {
-        existingSet = new Set();
-        this.referenceMap.set(symbolName, existingSet);
-      }
-      for (const uri of uriSet) {
-        existingSet.add(uri);
+      
+      // Persist modified shard to disk
+      if (modified) {
+        await this.saveShard(shard);
+        shardsModified++;
       }
     }
     
     const duration = Date.now() - startTime;
     console.info(
-      `[BackgroundIndex] finalizeIndexing complete: Resolved ${resolvedCount}/${totalPending} ` +
-      `NgRx references in ${duration}ms`
+      `[BackgroundIndex] finalizeIndexing complete: ` +
+      `NgRx=${ngrxResolved}, Fallback=${fallbackResolved}, Total=${totalPending} ` +
+      `(${shardsModified} shards modified) in ${duration}ms`
     );
   }
 

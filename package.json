@@ -209,8 +209,8 @@
     "test": "vscode-test",
     "build": "npm run compile",
     "rebuild": "npm run clean && npm run build",
-    "vsix": "npm run clean && npm run package && npx vsce package --readme MARKETPLACE_README.md",
-    "publish": "npx vsce publish --readme MARKETPLACE_README.md"
+    "vsix": "npm run clean && npm run package && node scripts/publish.js package",
+    "publish": "node scripts/publish.js publish"
   },
   "devDependencies": {
     "@semantic-release/changelog": "^6.0.3",

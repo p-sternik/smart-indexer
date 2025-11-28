@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.0](https://github.com/p-sternik/smart-indexer/compare/v1.14.0...v1.15.0) (2025-11-28)
+
+
+### Features
+
+* Refine deferred reference resolution strategy for NgRx action groups ([98165b2](https://github.com/p-sternik/smart-indexer/commit/98165b2462f1c39bb8d977fe1b2651ee69542919))
+
 ## [1.14.0](https://github.com/p-sternik/smart-indexer/compare/v1.13.0...v1.14.0) (2025-11-28)
 
 

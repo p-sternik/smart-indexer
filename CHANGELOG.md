@@ -5,6 +5,20 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.0](https://github.com/p-sternik/smart-indexer/compare/v1.19.0...v1.20.0) (2025-11-28)
+
+
+### Features
+
+* Update release workflow to publish VSIX package to VS Code Marketplace ([6153e2d](https://github.com/p-sternik/smart-indexer/commit/6153e2d928e4c2585ff878144d3dccc4163890e8))
+* Update release workflow to create and upload VSIX package for VS Code Marketplace ([ec5328b](https://github.com/p-sternik/smart-indexer/commit/ec5328ba8860a72a57d4686da7acc2590ee7031e))
+* Update release workflow for VS Code Marketplace with improved Node.js version and removed unnecessary steps ([1335f2a](https://github.com/p-sternik/smart-indexer/commit/1335f2a33a6548e13e4aac85e072f0a117d77094))
+
+
+### Bug Fixes
+
+* Correct environment variable name for VS Code Marketplace token in release workflow ([abd470e](https://github.com/p-sternik/smart-indexer/commit/abd470e5ba6aeb7b93cff45bcb2e23eedaf296e9))
+
 ## [1.19.0](https://github.com/p-sternik/smart-indexer/compare/v1.18.0...v1.19.0) (2025-11-28)
 
 

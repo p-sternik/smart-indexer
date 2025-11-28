@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.0](https://github.com/p-sternik/smart-indexer/compare/v1.26.0...v1.27.0) (2025-11-28)
+
+
+### Features
+
+* Enhance finalization logging and progress tracking in indexing process ([f6cdac7](https://github.com/p-sternik/smart-indexer/commit/f6cdac7edb7a0e93eaa02c21d9ca762e3c94299e))
+
 ## [1.26.0](https://github.com/p-sternik/smart-indexer/compare/v1.25.0...v1.26.0) (2025-11-28)
 
 

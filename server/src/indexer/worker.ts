@@ -8,6 +8,31 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
 
+/**
+ * StringInterner - Deduplicates repeated strings to save memory.
+ * Common strings like 'Component', 'Injectable', import names, etc. are interned
+ * so only one instance exists per unique string value.
+ */
+class StringInterner {
+  private pool = new Map<string, string>();
+
+  intern(s: string): string {
+    let cached = this.pool.get(s);
+    if (!cached) {
+      cached = s;
+      this.pool.set(s, s);
+    }
+    return cached;
+  }
+
+  clear(): void {
+    this.pool.clear();
+  }
+}
+
+// Global interner instance per worker - reused across all file processing
+const interner = new StringInterner();
+
 interface WorkerTaskData {
   uri: string;
   content?: string;
@@ -174,6 +199,7 @@ function processCreateActionGroup(
 
     // Extract the event key (can be Identifier or StringLiteral)
     if (eventProp.key.type === AST_NODE_TYPES.Identifier && eventProp.key.loc) {
+      // Use .name directly (string property)
       eventKey = eventProp.key.name;
       keyLocation = {
         line: eventProp.key.loc.start.line - 1,
@@ -208,14 +234,17 @@ function processCreateActionGroup(
     // Convert the event key to camelCase (this is what NgRx generates at runtime)
     // 'Load Data' -> 'loadData'
     // 'Load' -> 'load'
-    const camelCaseName = toCamelCase(eventKey);
+    const camelCaseName = interner.intern(toCamelCase(eventKey) || '');
 
     if (!camelCaseName) {
       continue;
     }
 
+    // Intern the event key for the events map
+    const internedEventKey = interner.intern(eventKey);
+
     // Store in events map for container's ngrxMetadata
-    eventsMap[camelCaseName] = eventKey;
+    eventsMap[camelCaseName] = internedEventKey;
 
     // Create a virtual symbol for the generated action method
     const id = createSymbolId(
@@ -230,6 +259,7 @@ function processCreateActionGroup(
       keyLocation.character
     );
 
+    // Build POJO with only primitive values
     symbols.push({
       id,
       name: camelCaseName,
@@ -246,7 +276,7 @@ function processCreateActionGroup(
       filePath: uri,
       parametersCount: 0,
       ngrxMetadata: {
-        type: eventKey, // Original event key name
+        type: internedEventKey, // Original event key name (interned)
         role: 'action'
       }
     });
@@ -280,24 +310,25 @@ function computeHash(content: string): string {
 function extractImports(ast: TSESTree.Program, imports: ImportInfo[]): void {
   for (const statement of ast.body) {
     if (statement.type === AST_NODE_TYPES.ImportDeclaration) {
-      const moduleSpecifier = statement.source.value as string;
+      // Intern module specifiers - commonly repeated across files
+      const moduleSpecifier = interner.intern(statement.source.value as string);
       
       for (const specifier of statement.specifiers) {
         if (specifier.type === AST_NODE_TYPES.ImportDefaultSpecifier) {
           imports.push({
-            localName: specifier.local.name,
+            localName: interner.intern(specifier.local.name),
             moduleSpecifier,
             isDefault: true
           });
         } else if (specifier.type === AST_NODE_TYPES.ImportNamespaceSpecifier) {
           imports.push({
-            localName: specifier.local.name,
+            localName: interner.intern(specifier.local.name),
             moduleSpecifier,
             isNamespace: true
           });
         } else if (specifier.type === AST_NODE_TYPES.ImportSpecifier) {
           imports.push({
-            localName: specifier.local.name,
+            localName: interner.intern(specifier.local.name),
             moduleSpecifier,
             isDefault: false
           });
@@ -310,14 +341,14 @@ function extractImports(ast: TSESTree.Program, imports: ImportInfo[]): void {
 function extractReExports(ast: TSESTree.Program, reExports: ReExportInfo[]): void {
   for (const statement of ast.body) {
     if (statement.type === AST_NODE_TYPES.ExportAllDeclaration) {
-      const moduleSpecifier = statement.source.value as string;
+      const moduleSpecifier = interner.intern(statement.source.value as string);
       reExports.push({
         moduleSpecifier,
         isAll: true
       });
     }
     else if (statement.type === AST_NODE_TYPES.ExportNamedDeclaration && statement.source) {
-      const moduleSpecifier = statement.source.value as string;
+      const moduleSpecifier = interner.intern(statement.source.value as string);
       const exportedNames: string[] = [];
       
       for (const specifier of statement.specifiers) {
@@ -325,7 +356,7 @@ function extractReExports(ast: TSESTree.Program, reExports: ReExportInfo[]): voi
           const exportedName = specifier.exported.type === AST_NODE_TYPES.Identifier
             ? specifier.exported.name
             : (specifier.exported as TSESTree.StringLiteral).value;
-          exportedNames.push(exportedName);
+          exportedNames.push(interner.intern(exportedName));
         }
       }
       
@@ -408,7 +439,8 @@ function indexObjectProperties(
   for (const prop of objExpr.properties) {
     if (prop.type === AST_NODE_TYPES.Property && prop.loc) {
       if (prop.key.type === AST_NODE_TYPES.Identifier && prop.key.loc) {
-        const propName = prop.key.name;
+        // Use .name directly (already a string) and intern it
+        const propName = interner.intern(prop.key.name);
         const fullContainerPath = containerPath.join('.');
         const id = createSymbolId(
           uri,
@@ -422,6 +454,7 @@ function indexObjectProperties(
           prop.key.loc.start.column
         );
         
+        // Build POJO with only primitive values - no ts.Node references
         symbols.push({
           id,
           name: propName,
@@ -479,12 +512,15 @@ function traverseAST(
     if (node.type === AST_NODE_TYPES.Identifier && node.loc) {
       // Skip if this identifier is the name being declared
       if (!isDeclarationContext(node, parent)) {
-        const isImportRef = imports.some(imp => imp.localName === node.name);
+        // Use .name directly (string property) and intern it
+        const symbolName = interner.intern(node.name);
+        const isImportRef = imports.some(imp => imp.localName === symbolName);
         const isLocal = scopeTracker?.isLocalVariable(node.name) || false;
         const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
         
+        // Build POJO with only primitive values
         references.push({
-          symbolName: node.name,
+          symbolName,
           location: {
             uri,
             line: node.loc.start.line - 1,
@@ -509,6 +545,8 @@ function traverseAST(
       const memberExpr = node as TSESTree.MemberExpression;
       if (memberExpr.property.type === AST_NODE_TYPES.Identifier && memberExpr.property.loc) {
         const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
+        // Intern the property name
+        const propName = interner.intern(memberExpr.property.name);
         
         // Check if this is an imported symbol access (will become pending reference)
         // This prevents duplicate references for NgRx action group usages
@@ -519,8 +557,9 @@ function traverseAST(
         // Only add to regular references if NOT an imported symbol access
         // (imported accesses are handled via pendingReferences for cross-file resolution)
         if (!isImportedAccess) {
+          // Build POJO with only primitive values
           references.push({
-            symbolName: memberExpr.property.name,
+            symbolName: propName,
             location: {
               uri,
               line: memberExpr.property.loc.start.line - 1,
@@ -542,9 +581,10 @@ function traverseAST(
         // Pattern: ImportedSymbol.member() where ImportedSymbol is an import
         if (isImportedAccess && memberExpr.object.type === AST_NODE_TYPES.Identifier) {
           const objectIdentifier = memberExpr.object as TSESTree.Identifier;
+          // Build POJO with interned strings
           pendingReferences!.push({
-            container: objectIdentifier.name,
-            member: memberExpr.property.name,
+            container: interner.intern(objectIdentifier.name),
+            member: propName,
             location: {
               uri,
               line: memberExpr.property.loc.start.line - 1,
@@ -571,8 +611,9 @@ function traverseAST(
         // The first argument is the action creator reference
         if (firstArg.type === AST_NODE_TYPES.Identifier && firstArg.loc) {
           const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
+          // Build POJO with interned name
           references.push({
-            symbolName: firstArg.name,
+            symbolName: interner.intern(firstArg.name),
             location: {
               uri,
               line: firstArg.loc.start.line - 1,
@@ -596,8 +637,9 @@ function traverseAST(
         for (const arg of callExpr.arguments) {
           if (arg.type === AST_NODE_TYPES.Identifier && arg.loc) {
             const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
+            // Build POJO with interned name
             references.push({
-              symbolName: arg.name,
+              symbolName: interner.intern(arg.name),
               location: {
                 uri,
                 line: arg.loc.start.line - 1,
@@ -629,8 +671,9 @@ function traverseAST(
               }
               
               const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
+              // Build POJO with interned name
               references.push({
-                symbolName: memberExpr.property.name,
+                symbolName: interner.intern(memberExpr.property.name),
                 location: {
                   uri,
                   line: memberExpr.property.loc.start.line - 1,
@@ -661,7 +704,8 @@ function traverseAST(
     switch (node.type) {
       case AST_NODE_TYPES.FunctionDeclaration:
         if ((node as TSESTree.FunctionDeclaration).id?.name) {
-          symbolName = (node as TSESTree.FunctionDeclaration).id!.name;
+          // Intern the function name
+          symbolName = interner.intern((node as TSESTree.FunctionDeclaration).id!.name);
           symbolKind = 'function';
           parametersCount = (node as TSESTree.FunctionDeclaration).params.length;
           needsScopeTracking = true;
@@ -670,7 +714,8 @@ function traverseAST(
 
       case AST_NODE_TYPES.ClassDeclaration:
         if ((node as TSESTree.ClassDeclaration).id?.name) {
-          symbolName = (node as TSESTree.ClassDeclaration).id!.name;
+          // Intern the class name
+          symbolName = interner.intern((node as TSESTree.ClassDeclaration).id!.name);
           symbolKind = 'class';
           
           // Check if this class implements Action interface (legacy NgRx)
@@ -699,7 +744,7 @@ function traverseAST(
                   
                   if (actionType) {
                     pendingNgRxMetadata = {
-                      type: actionType,
+                      type: interner.intern(actionType),
                       role: 'action'
                     };
                   }
@@ -713,21 +758,24 @@ function traverseAST(
 
       case AST_NODE_TYPES.TSInterfaceDeclaration:
         if ((node as TSESTree.TSInterfaceDeclaration).id?.name) {
-          symbolName = (node as TSESTree.TSInterfaceDeclaration).id.name;
+          // Intern the interface name
+          symbolName = interner.intern((node as TSESTree.TSInterfaceDeclaration).id.name);
           symbolKind = 'interface';
         }
         break;
 
       case AST_NODE_TYPES.TSTypeAliasDeclaration:
         if ((node as TSESTree.TSTypeAliasDeclaration).id?.name) {
-          symbolName = (node as TSESTree.TSTypeAliasDeclaration).id.name;
+          // Intern the type alias name
+          symbolName = interner.intern((node as TSESTree.TSTypeAliasDeclaration).id.name);
           symbolKind = 'type';
         }
         break;
 
       case AST_NODE_TYPES.TSEnumDeclaration:
         if ((node as TSESTree.TSEnumDeclaration).id?.name) {
-          symbolName = (node as TSESTree.TSEnumDeclaration).id.name;
+          // Intern the enum name
+          symbolName = interner.intern((node as TSESTree.TSEnumDeclaration).id.name);
           symbolKind = 'enum';
         }
         break;
@@ -736,7 +784,8 @@ function traverseAST(
         for (const decl of (node as TSESTree.VariableDeclaration).declarations) {
           if (decl.id.type === AST_NODE_TYPES.Identifier && decl.id.loc) {
             const varKind = (node as TSESTree.VariableDeclaration).kind === 'const' ? 'constant' : 'variable';
-            const varName = decl.id.name;
+            // Intern the variable name
+            const varName = interner.intern(decl.id.name);
             const fullContainerPath = containerPath.length > 0 ? containerPath.join('.') : undefined;
             
             // Check if this is an NgRx call expression
@@ -749,7 +798,7 @@ function traverseAST(
                 const actionType = extractActionTypeString(callExpr);
                 if (actionType) {
                   ngrxMetadata = {
-                    type: actionType,
+                    type: interner.intern(actionType),
                     role: 'action'
                   };
                 }
@@ -795,6 +844,7 @@ function traverseAST(
               decl.id.loc.start.line - 1,
               decl.id.loc.start.column
             );
+            // Build POJO with only primitive values - no AST node references
             symbols.push({
               id,
               name: varName,
@@ -831,7 +881,8 @@ function traverseAST(
       case AST_NODE_TYPES.MethodDefinition:
         if ((node as TSESTree.MethodDefinition).key.type === AST_NODE_TYPES.Identifier) {
           const methodNode = node as TSESTree.MethodDefinition;
-          const methodName = (methodNode.key as TSESTree.Identifier).name;
+          // Intern the method name
+          const methodName = interner.intern((methodNode.key as TSESTree.Identifier).name);
           const methodStatic = methodNode.static;
           const methodParams = methodNode.value.params.length;
           const fullContainerPath = containerPath.length > 0 ? containerPath.join('.') : undefined;
@@ -846,6 +897,7 @@ function traverseAST(
             methodNode.key.loc.start.line - 1,
             methodNode.key.loc.start.column
           );
+          // Build POJO with only primitive values
           symbols.push({
             id,
             name: methodName,
@@ -875,7 +927,8 @@ function traverseAST(
       case AST_NODE_TYPES.PropertyDefinition:
         if ((node as TSESTree.PropertyDefinition).key.type === AST_NODE_TYPES.Identifier) {
           const propNode = node as TSESTree.PropertyDefinition;
-          const propName = (propNode.key as TSESTree.Identifier).name;
+          // Intern the property name
+          const propName = interner.intern((propNode.key as TSESTree.Identifier).name);
           const propStatic = propNode.static;
           const fullContainerPath = containerPath.length > 0 ? containerPath.join('.') : undefined;
           
@@ -906,6 +959,7 @@ function traverseAST(
             propNode.key.loc.start.line - 1,
             propNode.key.loc.start.column
           );
+          // Build POJO with only primitive values
           symbols.push({
             id,
             name: propName,
@@ -945,6 +999,7 @@ function traverseAST(
         node.loc.start.line - 1,
         node.loc.start.column
       );
+      // Build POJO with only primitive values - no AST node references leak
       symbols.push({
         id,
         name: symbolName,
@@ -1086,11 +1141,14 @@ function extractTextSymbols(uri: string, content: string): IndexedSymbol[] {
 
       if (words) {
         for (const word of words) {
+          // Intern text symbols for deduplication
+          const internedWord = interner.intern(word);
           const index = line.indexOf(word);
-          const id = createSymbolId(uri, word, undefined, undefined, 'text', false, undefined, i, index);
+          const id = createSymbolId(uri, internedWord, undefined, undefined, 'text', false, undefined, i, index);
+          // Build POJO with only primitive values
           symbols.push({
             id,
-            name: word,
+            name: internedWord,
             kind: 'text',
             location: {
               uri,

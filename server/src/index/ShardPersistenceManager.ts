@@ -2,18 +2,33 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { encode, decode } from '@msgpack/msgpack';
+import {
+  IndexedSymbol,
+  IndexedReference,
+  PendingReference,
+  ImportInfo,
+  ReExportInfo,
+  CompactShard,
+  compactSymbol,
+  compactReference,
+  compactPendingRef,
+  hydrateSymbol,
+  hydrateReference,
+  hydratePendingRef,
+  SHARD_VERSION
+} from '../types.js';
 
 /**
- * Represents a single shard (per-file index) on disk.
+ * Represents a single shard (per-file index) in memory (hydrated format).
  */
 export interface FileShard {
   uri: string;
   hash: string;
-  symbols: any[];
-  references: any[];
-  imports: any[];
-  reExports?: any[];
-  pendingReferences?: any[];
+  symbols: IndexedSymbol[];
+  references: IndexedReference[];
+  imports: ImportInfo[];
+  reExports?: ReExportInfo[];
+  pendingReferences?: PendingReference[];
   lastIndexedAt: number;
   shardVersion?: number;
   mtime?: number;
@@ -27,6 +42,72 @@ interface PendingWrite {
   timer: NodeJS.Timeout;
   resolve: () => void;
   reject: (error: Error) => void;
+}
+
+/**
+ * Convert a FileShard to compact storage format.
+ * This significantly reduces storage size by:
+ * - Removing redundant uri from each symbol/reference
+ * - Using short field names
+ * - Using numeric scope indices instead of repeated strings
+ */
+function toCompactShard(shard: FileShard): CompactShard {
+  // Build scope table for reference deduplication
+  const scopeTable = new Map<string, number>();
+  
+  const compactRefs = shard.references.map(ref => compactReference(ref, scopeTable));
+  
+  // Convert scope table map to array (index -> scope string)
+  const scopeArray: string[] = new Array(scopeTable.size);
+  for (const [scope, idx] of scopeTable) {
+    scopeArray[idx] = scope;
+  }
+  
+  const compact: CompactShard = {
+    u: shard.uri,
+    h: shard.hash,
+    s: shard.symbols.map(compactSymbol),
+    r: compactRefs,
+    i: shard.imports,
+    t: shard.lastIndexedAt,
+    v: shard.shardVersion || SHARD_VERSION
+  };
+  
+  if (shard.reExports && shard.reExports.length > 0) {
+    compact.re = shard.reExports;
+  }
+  if (shard.pendingReferences && shard.pendingReferences.length > 0) {
+    compact.pr = shard.pendingReferences.map(compactPendingRef);
+  }
+  if (scopeArray.length > 0) {
+    compact.sc = scopeArray;
+  }
+  if (shard.mtime !== undefined) {
+    compact.m = shard.mtime;
+  }
+  
+  return compact;
+}
+
+/**
+ * Hydrate a compact shard from storage to full FileShard format.
+ */
+function fromCompactShard(compact: CompactShard): FileShard {
+  const uri = compact.u;
+  const scopeTable = compact.sc || [];
+  
+  return {
+    uri,
+    hash: compact.h,
+    symbols: compact.s.map(s => hydrateSymbol(s, uri)),
+    references: compact.r.map(r => hydrateReference(r, uri, scopeTable)),
+    imports: compact.i,
+    reExports: compact.re,
+    pendingReferences: compact.pr?.map(pr => hydratePendingRef(pr, uri)),
+    lastIndexedAt: compact.t,
+    shardVersion: compact.v,
+    mtime: compact.m
+  };
 }
 
 /**
@@ -132,7 +213,7 @@ export class ShardPersistenceManager {
 
   /**
    * Load a shard from disk.
-   * Supports automatic migration from JSON to MessagePack format.
+   * Supports automatic migration from JSON/legacy formats to compact MessagePack.
    * 
    * @param uri - The file URI to load the shard for
    * @returns The shard data or null if not found
@@ -145,7 +226,16 @@ export class ShardPersistenceManager {
         // Try MessagePack format first (preferred)
         if (fs.existsSync(binPath)) {
           const buffer = fs.readFileSync(binPath);
-          return decode(buffer) as FileShard;
+          const decoded = decode(buffer) as any;
+          
+          // Check if this is compact format (has 'u' field) or legacy format (has 'uri' field)
+          if ('u' in decoded) {
+            // Compact format - hydrate to full FileShard
+            return fromCompactShard(decoded as CompactShard);
+          } else {
+            // Legacy format - return as-is but schedule migration on next save
+            return decoded as FileShard;
+          }
         }
         
         // Migration path: try legacy JSON format
@@ -154,17 +244,18 @@ export class ShardPersistenceManager {
           const content = fs.readFileSync(jsonPath, 'utf-8');
           const shard = JSON.parse(content) as FileShard;
           
-          // Migrate to MessagePack format
+          // Migrate to compact MessagePack format
           const shardDir = path.dirname(binPath);
           if (!fs.existsSync(shardDir)) {
             fs.mkdirSync(shardDir, { recursive: true });
           }
-          const encoded = encode(shard);
+          const compact = toCompactShard(shard);
+          const encoded = encode(compact);
           fs.writeFileSync(binPath, encoded);
           
           // Remove legacy JSON file
           fs.unlinkSync(jsonPath);
-          console.info(`[ShardPersistenceManager] Migrated shard to msgpack: ${uri}`);
+          console.info(`[ShardPersistenceManager] Migrated shard to compact format: ${uri}`);
           
           return shard;
         }
@@ -194,7 +285,7 @@ export class ShardPersistenceManager {
 
   /**
    * Immediately save a shard to disk (bypasses buffering).
-   * Uses MessagePack binary format for optimal performance.
+   * Uses compact MessagePack format for optimal storage size.
    */
   private async saveShardImmediate(shard: FileShard): Promise<void> {
     return this.withLock(shard.uri, async () => {
@@ -207,7 +298,9 @@ export class ShardPersistenceManager {
           fs.mkdirSync(shardDir, { recursive: true });
         }
         
-        const encoded = encode(shard);
+        // Convert to compact format before saving
+        const compact = toCompactShard(shard);
+        const encoded = encode(compact);
         fs.writeFileSync(shardPath, encoded);
       } catch (error) {
         console.error(`[ShardPersistenceManager] Error saving shard for ${shard.uri}: ${error}`);

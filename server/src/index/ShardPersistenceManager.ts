@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { encode, decode } from '@msgpack/msgpack';
 
 /**
  * Represents a single shard (per-file index) on disk.
@@ -85,13 +86,16 @@ export class ShardPersistenceManager {
   /**
    * Get shard file path for a given URI.
    * Uses hashed directory structure for filesystem performance:
-   * .smart-index/index/<prefix1>/<prefix2>/<hash>.json
+   * .smart-index/index/<prefix1>/<prefix2>/<hash>.bin
+   * 
+   * @param uri - The file URI
+   * @param extension - File extension ('bin' for msgpack, 'json' for legacy)
    */
-  getShardPath(uri: string): string {
+  getShardPath(uri: string, extension: 'bin' | 'json' = 'bin'): string {
     const hash = crypto.createHash('sha256').update(uri).digest('hex');
     const prefix1 = hash.substring(0, 2);
     const prefix2 = hash.substring(2, 4);
-    return path.join(this.shardsDirectory, prefix1, prefix2, `${hash}.json`);
+    return path.join(this.shardsDirectory, prefix1, prefix2, `${hash}.${extension}`);
   }
 
   /**
@@ -128,6 +132,7 @@ export class ShardPersistenceManager {
 
   /**
    * Load a shard from disk.
+   * Supports automatic migration from JSON to MessagePack format.
    * 
    * @param uri - The file URI to load the shard for
    * @returns The shard data or null if not found
@@ -135,13 +140,36 @@ export class ShardPersistenceManager {
   async loadShard(uri: string): Promise<FileShard | null> {
     return this.withLock(uri, async () => {
       try {
-        const shardPath = this.getShardPath(uri);
-        if (!fs.existsSync(shardPath)) {
-          return null;
+        const binPath = this.getShardPath(uri, 'bin');
+        
+        // Try MessagePack format first (preferred)
+        if (fs.existsSync(binPath)) {
+          const buffer = fs.readFileSync(binPath);
+          return decode(buffer) as FileShard;
         }
-
-        const content = fs.readFileSync(shardPath, 'utf-8');
-        return JSON.parse(content);
+        
+        // Migration path: try legacy JSON format
+        const jsonPath = this.getShardPath(uri, 'json');
+        if (fs.existsSync(jsonPath)) {
+          const content = fs.readFileSync(jsonPath, 'utf-8');
+          const shard = JSON.parse(content) as FileShard;
+          
+          // Migrate to MessagePack format
+          const shardDir = path.dirname(binPath);
+          if (!fs.existsSync(shardDir)) {
+            fs.mkdirSync(shardDir, { recursive: true });
+          }
+          const encoded = encode(shard);
+          fs.writeFileSync(binPath, encoded);
+          
+          // Remove legacy JSON file
+          fs.unlinkSync(jsonPath);
+          console.info(`[ShardPersistenceManager] Migrated shard to msgpack: ${uri}`);
+          
+          return shard;
+        }
+        
+        return null;
       } catch (error) {
         console.error(`[ShardPersistenceManager] Error loading shard for ${uri}: ${error}`);
         return null;
@@ -166,11 +194,12 @@ export class ShardPersistenceManager {
 
   /**
    * Immediately save a shard to disk (bypasses buffering).
+   * Uses MessagePack binary format for optimal performance.
    */
   private async saveShardImmediate(shard: FileShard): Promise<void> {
     return this.withLock(shard.uri, async () => {
       try {
-        const shardPath = this.getShardPath(shard.uri);
+        const shardPath = this.getShardPath(shard.uri, 'bin');
         const shardDir = path.dirname(shardPath);
         
         // Ensure directory exists (nested structure)
@@ -178,8 +207,8 @@ export class ShardPersistenceManager {
           fs.mkdirSync(shardDir, { recursive: true });
         }
         
-        const content = JSON.stringify(shard, null, 2);
-        fs.writeFileSync(shardPath, content, 'utf-8');
+        const encoded = encode(shard);
+        fs.writeFileSync(shardPath, encoded);
       } catch (error) {
         console.error(`[ShardPersistenceManager] Error saving shard for ${shard.uri}: ${error}`);
         throw error;
@@ -234,6 +263,7 @@ export class ShardPersistenceManager {
 
   /**
    * Delete a shard from disk.
+   * Removes both MessagePack and legacy JSON formats if they exist.
    * 
    * @param uri - The file URI to delete the shard for
    */
@@ -248,9 +278,16 @@ export class ShardPersistenceManager {
 
     return this.withLock(uri, async () => {
       try {
-        const shardPath = this.getShardPath(uri);
-        if (fs.existsSync(shardPath)) {
-          fs.unlinkSync(shardPath);
+        // Delete MessagePack format
+        const binPath = this.getShardPath(uri, 'bin');
+        if (fs.existsSync(binPath)) {
+          fs.unlinkSync(binPath);
+        }
+        
+        // Also delete legacy JSON format if it exists
+        const jsonPath = this.getShardPath(uri, 'json');
+        if (fs.existsSync(jsonPath)) {
+          fs.unlinkSync(jsonPath);
         }
       } catch (error) {
         console.error(`[ShardPersistenceManager] Error deleting shard for ${uri}: ${error}`);
@@ -260,13 +297,19 @@ export class ShardPersistenceManager {
 
   /**
    * Check if a shard exists on disk.
+   * Checks for both MessagePack and legacy JSON formats.
    * 
    * @param uri - The file URI to check
    * @returns True if the shard file exists
    */
   async shardExists(uri: string): Promise<boolean> {
-    const shardPath = this.getShardPath(uri);
-    return fs.existsSync(shardPath);
+    const binPath = this.getShardPath(uri, 'bin');
+    if (fs.existsSync(binPath)) {
+      return true;
+    }
+    // Also check legacy JSON format
+    const jsonPath = this.getShardPath(uri, 'json');
+    return fs.existsSync(jsonPath);
   }
 
   /**
@@ -292,6 +335,7 @@ export class ShardPersistenceManager {
 
   /**
    * Recursively collect all shard files from nested directory structure.
+   * Collects both MessagePack (.bin) and legacy JSON (.json) files.
    */
   collectShardFiles(dir?: string): string[] {
     const searchDir = dir || this.shardsDirectory;
@@ -309,7 +353,7 @@ export class ShardPersistenceManager {
         
         if (entry.isDirectory()) {
           results.push(...this.collectShardFiles(fullPath));
-        } else if (entry.isFile() && entry.name.endsWith('.json')) {
+        } else if (entry.isFile() && (entry.name.endsWith('.bin') || entry.name.endsWith('.json'))) {
           results.push(fullPath);
         }
       }
@@ -337,6 +381,7 @@ export class ShardPersistenceManager {
 
   /**
    * Recursively clear directory contents.
+   * Clears both MessagePack (.bin) and legacy JSON (.json) files.
    */
   private clearDirectory(dir: string): void {
     try {
@@ -348,7 +393,7 @@ export class ShardPersistenceManager {
         if (entry.isDirectory()) {
           this.clearDirectory(fullPath);
           fs.rmdirSync(fullPath);
-        } else if (entry.isFile() && entry.name.endsWith('.json')) {
+        } else if (entry.isFile() && (entry.name.endsWith('.bin') || entry.name.endsWith('.json'))) {
           fs.unlinkSync(fullPath);
         }
       }

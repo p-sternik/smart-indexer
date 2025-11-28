@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0](https://github.com/p-sternik/smart-indexer/compare/v1.7.0...v1.8.0) (2025-11-28)
+
+
+### Features
+
+* Enhance NgRx support with cross-file reference resolution and pending references handling ([0ba1957](https://github.com/p-sternik/smart-indexer/commit/0ba195758969d20e9c7ab242f5242dae79435dd1))
+
 ## [1.7.0](https://github.com/p-sternik/smart-indexer/compare/v1.6.3...v1.7.0) (2025-11-28)
 
 

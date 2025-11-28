@@ -2,7 +2,7 @@
   "name": "smart-indexer",
   "displayName": "Smart Indexer",
   "description": "Fast IntelliSense with persistent cache and Git-aware incremental indexing",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "publisher": "psternik",
   "repository": {
     "type": "git",

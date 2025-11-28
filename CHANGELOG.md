@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.0](https://github.com/p-sternik/smart-indexer/compare/v1.28.0...v1.29.0) (2025-11-28)
+
+
+### Features
+
+* Add MessagePack support for shard persistence and migration from JSON ([ab1a629](https://github.com/p-sternik/smart-indexer/commit/ab1a62964cdfa765d38f746cf0239070ef2aa16e))
+
 ## [1.28.0](https://github.com/p-sternik/smart-indexer/compare/v1.27.0...v1.28.0) (2025-11-28)
 
 

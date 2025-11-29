@@ -828,6 +828,8 @@ export class SqlJsStorage {
 
     try {
       const data = this.db.export();
+      // Yield to event loop before heavy I/O to prevent VS Code UI frame drops
+      await new Promise(setImmediate);
       await fsPromises.writeFile(this.dbPath, data);
       this.isDirty = false;
       console.info('[SqlJsStorage] Database saved to disk');

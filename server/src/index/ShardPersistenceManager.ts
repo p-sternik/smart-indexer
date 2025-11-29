@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -33,6 +32,26 @@ export interface FileShard {
   lastIndexedAt: number;
   shardVersion?: number;
   mtime?: number;
+}
+
+/**
+ * Lightweight metadata entry for the summary file.
+ * Used for O(1) startup instead of scanning all shards.
+ */
+export interface ShardMetadataEntry {
+  uri: string;
+  hash: string;
+  mtime?: number;
+  symbolCount: number;
+  lastIndexedAt: number;
+}
+
+/**
+ * Metadata summary file structure.
+ */
+interface MetadataSummary {
+  version: number;
+  entries: ShardMetadataEntry[];
 }
 
 /**
@@ -174,6 +193,11 @@ export class ShardPersistenceManager {
   private readonly maxPendingWrites: number = 100;
   private lockCleanupCounter: number = 0;
   private readonly lockCleanupInterval: number = 1000; // Cleanup every 1000 operations
+  
+  // Metadata summary for O(1) startup
+  private static readonly METADATA_SUMMARY_VERSION = 1;
+  private metadataCache: Map<string, ShardMetadataEntry> = new Map();
+  private metadataDirty: boolean = false;
 
   /**
    * Create a new ShardPersistenceManager.
@@ -209,6 +233,13 @@ export class ShardPersistenceManager {
    */
   getShardsDirectory(): string {
     return this.shardsDirectory;
+  }
+
+  /**
+   * Get the metadata summary file path.
+   */
+  private getMetadataPath(): string {
+    return path.join(this.shardsDirectory, 'metadata.json');
   }
 
   /**
@@ -676,12 +707,116 @@ export class ShardPersistenceManager {
   }
 
   /**
+   * Load metadata summary from disk.
+   * Returns entries if metadata.json exists and is valid, null otherwise.
+   * Caller should fall back to scanning shards if this returns null.
+   * 
+   * O(1) startup optimization - reads single file instead of all shards.
+   */
+  async loadMetadataSummary(): Promise<ShardMetadataEntry[] | null> {
+    try {
+      const metadataPath = this.getMetadataPath();
+      const content = await fsPromises.readFile(metadataPath, 'utf-8');
+      const summary: MetadataSummary = JSON.parse(content);
+      
+      // Validate version
+      if (summary.version !== ShardPersistenceManager.METADATA_SUMMARY_VERSION) {
+        console.info(`[ShardPersistenceManager] Metadata version mismatch (${summary.version} vs ${ShardPersistenceManager.METADATA_SUMMARY_VERSION}), will rebuild`);
+        return null;
+      }
+      
+      // Validate structure
+      if (!Array.isArray(summary.entries)) {
+        console.warn(`[ShardPersistenceManager] Invalid metadata structure, will rebuild`);
+        return null;
+      }
+      
+      // Populate cache
+      this.metadataCache.clear();
+      for (const entry of summary.entries) {
+        this.metadataCache.set(entry.uri, entry);
+      }
+      this.metadataDirty = false;
+      
+      console.info(`[ShardPersistenceManager] Loaded metadata summary: ${summary.entries.length} entries`);
+      return summary.entries;
+    } catch (error: any) {
+      if (error.code === 'ENOENT') {
+        console.info(`[ShardPersistenceManager] No metadata.json found, will scan shards`);
+      } else {
+        console.warn(`[ShardPersistenceManager] Error loading metadata.json: ${error.message}, will rebuild`);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Save metadata summary to disk.
+   * Called after indexing completes to persist the summary for fast startup.
+   */
+  async saveMetadataSummary(): Promise<void> {
+    if (!this.metadataDirty && this.metadataCache.size === 0) {
+      return;
+    }
+    
+    try {
+      const summary: MetadataSummary = {
+        version: ShardPersistenceManager.METADATA_SUMMARY_VERSION,
+        entries: Array.from(this.metadataCache.values())
+      };
+      
+      const metadataPath = this.getMetadataPath();
+      await fsPromises.writeFile(metadataPath, JSON.stringify(summary), 'utf-8');
+      this.metadataDirty = false;
+      
+      console.info(`[ShardPersistenceManager] Saved metadata summary: ${summary.entries.length} entries`);
+    } catch (error) {
+      console.error(`[ShardPersistenceManager] Error saving metadata summary: ${error}`);
+    }
+  }
+
+  /**
+   * Update metadata entry for a shard.
+   * Called when a shard is saved to keep the summary in sync.
+   */
+  updateMetadataEntry(entry: ShardMetadataEntry): void {
+    this.metadataCache.set(entry.uri, entry);
+    this.metadataDirty = true;
+  }
+
+  /**
+   * Remove metadata entry for a shard.
+   * Called when a shard is deleted.
+   */
+  removeMetadataEntry(uri: string): void {
+    if (this.metadataCache.delete(uri)) {
+      this.metadataDirty = true;
+    }
+  }
+
+  /**
+   * Get cached metadata for a URI.
+   */
+  getMetadataEntry(uri: string): ShardMetadataEntry | undefined {
+    return this.metadataCache.get(uri);
+  }
+
+  /**
+   * Get all cached metadata entries.
+   */
+  getAllMetadataEntries(): ShardMetadataEntry[] {
+    return Array.from(this.metadataCache.values());
+  }
+
+  /**
    * Cleanup resources.
    */
   async dispose(): Promise<void> {
     await this.flush();
+    await this.saveMetadataSummary();
     this.shardLocks.clear();
     this.lockCounters.clear();
+    this.metadataCache.clear();
     console.info(`[ShardPersistenceManager] Disposed`);
   }
 }

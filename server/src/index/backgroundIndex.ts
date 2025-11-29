@@ -6,7 +6,7 @@ import { fuzzyScore } from '../utils/fuzzySearch.js';
 import { toCamelCase, toPascalCase, sanitizeFilePath } from '../utils/stringUtils.js';
 import { WorkerPool } from '../utils/workerPool.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
-import { ShardPersistenceManager, FileShard } from './ShardPersistenceManager.js';
+import { ShardPersistenceManager, FileShard, ShardMetadataEntry } from './ShardPersistenceManager.js';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
@@ -111,104 +111,215 @@ export class BackgroundIndex implements ISymbolIndex {
 
   /**
    * Load lightweight metadata from all shards.
-   * Uses async I/O to avoid blocking the event loop during startup.
+   * Optimized O(1) startup: reads metadata.json summary if available,
+   * falls back to O(N) shard scanning if missing/corrupt.
    */
   private async loadShardMetadata(): Promise<void> {
     try {
-      const shardsDirectory = this.shardManager.getShardsDirectory();
-      try {
-        await fsPromises.access(shardsDirectory);
-      } catch {
-        return; // Directory doesn't exist yet
+      // OPTIMIZATION: Try loading metadata summary first (O(1) startup)
+      const summaryEntries = await this.shardManager.loadMetadataSummary();
+      
+      if (summaryEntries && summaryEntries.length > 0) {
+        // Fast path: use cached metadata summary
+        await this.loadFromMetadataSummary(summaryEntries);
+        return;
       }
-
-      const shardFiles = await this.shardManager.collectShardFiles();
-      let loadedShards = 0;
-
-      // Process shards in batches to avoid blocking event loop
-      const BATCH_SIZE = 100;
-      for (let i = 0; i < shardFiles.length; i += BATCH_SIZE) {
-        const batch = shardFiles.slice(i, i + BATCH_SIZE);
-        
-        await Promise.all(batch.map(async (shardFile) => {
-          try {
-            // Load shard via ShardPersistenceManager for proper format handling
-            // Extract URI from shard file path by loading it
-            const buffer = await fsPromises.readFile(shardFile);
-            const { decode } = await import('@msgpack/msgpack');
-            const decoded = decode(buffer) as any;
-            
-            // Handle both compact ('u') and legacy ('uri') formats
-            const uri = decoded.u || decoded.uri;
-            if (!uri) {
-              console.warn(`[BackgroundIndex] Shard file missing URI: ${shardFile}`);
-              return;
-            }
-            
-            // Load via ShardPersistenceManager for proper hydration
-            const shard = await this.shardManager.loadShard(uri);
-            if (!shard) {
-              return;
-            }
-
-            this.fileMetadata.set(shard.uri, {
-              hash: shard.hash,
-              lastIndexedAt: shard.lastIndexedAt,
-              symbolCount: shard.symbols.length,
-              mtime: shard.mtime
-            });
-
-            // Build symbol name index and reverse indexes for O(1) cleanup
-            const symbolIds = new Set<string>();
-            const symbolNames = new Set<string>();
-            for (const symbol of shard.symbols) {
-              let uriSet = this.symbolNameIndex.get(symbol.name);
-              if (!uriSet) {
-                uriSet = new Set();
-                this.symbolNameIndex.set(symbol.name, uriSet);
-              }
-              uriSet.add(shard.uri);
-
-              // Build symbol ID index
-              this.symbolIdIndex.set(symbol.id, shard.uri);
-              symbolIds.add(symbol.id);
-              symbolNames.add(symbol.name);
-            }
-            // Store reverse mappings for O(1) cleanup
-            this.fileToSymbolIds.set(shard.uri, symbolIds);
-            this.fileToSymbolNames.set(shard.uri, symbolNames);
-
-            // Build reference map and reverse index
-            if (shard.references) {
-              const referenceNames = new Set<string>();
-              for (const ref of shard.references) {
-                let refUriSet = this.referenceMap.get(ref.symbolName);
-                if (!refUriSet) {
-                  refUriSet = new Set();
-                  this.referenceMap.set(ref.symbolName, refUriSet);
-                }
-                refUriSet.add(shard.uri);
-                referenceNames.add(ref.symbolName);
-              }
-              this.fileToReferenceNames.set(shard.uri, referenceNames);
-            }
-
-            loadedShards++;
-          } catch (error) {
-            console.error(`[BackgroundIndex] Error loading shard ${shardFile}: ${error}`);
-          }
-        }));
-        
-        // Yield to event loop after each batch
-        if (i + BATCH_SIZE < shardFiles.length) {
-          await new Promise(resolve => setImmediate(resolve));
-        }
-      }
-
-      console.info(`[BackgroundIndex] Loaded metadata from ${loadedShards} shards`);
+      
+      // Fallback: scan all shards (O(N) startup)
+      await this.loadFromShardScan();
     } catch (error) {
       console.error(`[BackgroundIndex] Error loading shard metadata: ${error}`);
     }
+  }
+
+  /**
+   * Load index data from metadata summary entries.
+   * This is the fast O(1) startup path.
+   */
+  private async loadFromMetadataSummary(entries: ShardMetadataEntry[]): Promise<void> {
+    const startTime = Date.now();
+    let loadedShards = 0;
+    
+    // Process entries in batches to avoid blocking event loop
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < entries.length; i += BATCH_SIZE) {
+      const batch = entries.slice(i, i + BATCH_SIZE);
+      
+      await Promise.all(batch.map(async (entry) => {
+        try {
+          // Store lightweight metadata
+          this.fileMetadata.set(entry.uri, {
+            hash: entry.hash,
+            lastIndexedAt: entry.lastIndexedAt,
+            symbolCount: entry.symbolCount,
+            mtime: entry.mtime
+          });
+          
+          // Load full shard to build symbol indexes
+          const shard = await this.shardManager.loadShard(entry.uri);
+          if (!shard) {
+            return;
+          }
+          
+          // Build symbol name index and reverse indexes for O(1) cleanup
+          const symbolIds = new Set<string>();
+          const symbolNames = new Set<string>();
+          for (const symbol of shard.symbols) {
+            let uriSet = this.symbolNameIndex.get(symbol.name);
+            if (!uriSet) {
+              uriSet = new Set();
+              this.symbolNameIndex.set(symbol.name, uriSet);
+            }
+            uriSet.add(shard.uri);
+
+            // Build symbol ID index
+            this.symbolIdIndex.set(symbol.id, shard.uri);
+            symbolIds.add(symbol.id);
+            symbolNames.add(symbol.name);
+          }
+          // Store reverse mappings for O(1) cleanup
+          this.fileToSymbolIds.set(shard.uri, symbolIds);
+          this.fileToSymbolNames.set(shard.uri, symbolNames);
+
+          // Build reference map and reverse index
+          if (shard.references) {
+            const referenceNames = new Set<string>();
+            for (const ref of shard.references) {
+              let refUriSet = this.referenceMap.get(ref.symbolName);
+              if (!refUriSet) {
+                refUriSet = new Set();
+                this.referenceMap.set(ref.symbolName, refUriSet);
+              }
+              refUriSet.add(shard.uri);
+              referenceNames.add(ref.symbolName);
+            }
+            this.fileToReferenceNames.set(shard.uri, referenceNames);
+          }
+
+          loadedShards++;
+        } catch (error) {
+          console.error(`[BackgroundIndex] Error loading shard for ${entry.uri}: ${error}`);
+        }
+      }));
+      
+      // Yield to event loop after each batch
+      if (i + BATCH_SIZE < entries.length) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    }
+    
+    const duration = Date.now() - startTime;
+    console.info(`[BackgroundIndex] Loaded ${loadedShards} shards from metadata summary in ${duration}ms`);
+  }
+
+  /**
+   * Load index data by scanning all shard files.
+   * This is the fallback O(N) startup path when metadata.json is missing.
+   */
+  private async loadFromShardScan(): Promise<void> {
+    const shardsDirectory = this.shardManager.getShardsDirectory();
+    try {
+      await fsPromises.access(shardsDirectory);
+    } catch {
+      return; // Directory doesn't exist yet
+    }
+
+    const shardFiles = await this.shardManager.collectShardFiles();
+    let loadedShards = 0;
+
+    // Process shards in batches to avoid blocking event loop
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < shardFiles.length; i += BATCH_SIZE) {
+      const batch = shardFiles.slice(i, i + BATCH_SIZE);
+      
+      await Promise.all(batch.map(async (shardFile) => {
+        try {
+          // Load shard via ShardPersistenceManager for proper format handling
+          // Extract URI from shard file path by loading it
+          const buffer = await fsPromises.readFile(shardFile);
+          const { decode } = await import('@msgpack/msgpack');
+          const decoded = decode(buffer) as any;
+          
+          // Handle both compact ('u') and legacy ('uri') formats
+          const uri = decoded.u || decoded.uri;
+          if (!uri) {
+            console.warn(`[BackgroundIndex] Shard file missing URI: ${shardFile}`);
+            return;
+          }
+          
+          // Load via ShardPersistenceManager for proper hydration
+          const shard = await this.shardManager.loadShard(uri);
+          if (!shard) {
+            return;
+          }
+
+          this.fileMetadata.set(shard.uri, {
+            hash: shard.hash,
+            lastIndexedAt: shard.lastIndexedAt,
+            symbolCount: shard.symbols.length,
+            mtime: shard.mtime
+          });
+          
+          // Update metadata cache for next startup
+          this.shardManager.updateMetadataEntry({
+            uri: shard.uri,
+            hash: shard.hash,
+            mtime: shard.mtime,
+            symbolCount: shard.symbols.length,
+            lastIndexedAt: shard.lastIndexedAt
+          });
+
+          // Build symbol name index and reverse indexes for O(1) cleanup
+          const symbolIds = new Set<string>();
+          const symbolNames = new Set<string>();
+          for (const symbol of shard.symbols) {
+            let uriSet = this.symbolNameIndex.get(symbol.name);
+            if (!uriSet) {
+              uriSet = new Set();
+              this.symbolNameIndex.set(symbol.name, uriSet);
+            }
+            uriSet.add(shard.uri);
+
+            // Build symbol ID index
+            this.symbolIdIndex.set(symbol.id, shard.uri);
+            symbolIds.add(symbol.id);
+            symbolNames.add(symbol.name);
+          }
+          // Store reverse mappings for O(1) cleanup
+          this.fileToSymbolIds.set(shard.uri, symbolIds);
+          this.fileToSymbolNames.set(shard.uri, symbolNames);
+
+          // Build reference map and reverse index
+          if (shard.references) {
+            const referenceNames = new Set<string>();
+            for (const ref of shard.references) {
+              let refUriSet = this.referenceMap.get(ref.symbolName);
+              if (!refUriSet) {
+                refUriSet = new Set();
+                this.referenceMap.set(ref.symbolName, refUriSet);
+              }
+              refUriSet.add(shard.uri);
+              referenceNames.add(ref.symbolName);
+            }
+            this.fileToReferenceNames.set(shard.uri, referenceNames);
+          }
+
+          loadedShards++;
+        } catch (error) {
+          console.error(`[BackgroundIndex] Error loading shard ${shardFile}: ${error}`);
+        }
+      }));
+      
+      // Yield to event loop after each batch
+      if (i + BATCH_SIZE < shardFiles.length) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    }
+
+    // Save metadata summary for fast startup next time
+    await this.shardManager.saveMetadataSummary();
+    
+    console.info(`[BackgroundIndex] Loaded metadata from ${loadedShards} shards (scanned)`);
   }
 
   /**
@@ -379,6 +490,15 @@ export class BackgroundIndex implements ISymbolIndex {
 
       // Save shard to disk - use NoLock variant since we already hold the lock
       await this.shardManager.saveShardNoLock(shard);
+      
+      // Update metadata cache for fast startup
+      this.shardManager.updateMetadataEntry({
+        uri: shard.uri,
+        hash: shard.hash,
+        mtime: shard.mtime,
+        symbolCount: result.symbols.length,
+        lastIndexedAt: shard.lastIndexedAt
+      });
     });
 
     // Resolve NgRx cross-file references after indexing (outside the lock to avoid deadlock)
@@ -675,6 +795,9 @@ export class BackgroundIndex implements ISymbolIndex {
     }
 
     await this.deleteShard(uri);
+    
+    // Update metadata cache
+    this.shardManager.removeMetadataEntry(uri);
   }
 
   /**
@@ -1136,6 +1259,12 @@ export class BackgroundIndex implements ISymbolIndex {
       });
     }
     console.info('[BackgroundIndex] Background indexing completed successfully.');
+    
+    // Save metadata summary for fast startup next time
+    await this.shardManager.saveMetadataSummary();
+    
+    // Memory compaction: recreate Maps to reclaim memory from deleted entries
+    this.compact();
     
     const duration = Date.now() - startTime;
     const filesPerSecond = (total / (duration / 1000)).toFixed(2);

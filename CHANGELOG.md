@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.37.0](https://github.com/p-sternik/smart-indexer/compare/v1.36.0...v1.37.0) (2025-11-29)
+
+
+### Features
+
+* Implement LRU caching in BackgroundIndex to reduce disk I/O; optimize DynamicIndex with symbol name indexing for efficient lookups ([bce0c0b](https://github.com/p-sternik/smart-indexer/commit/bce0c0b16cc5a19a5187403be9e68837105d666d))
+
 ## [1.36.0](https://github.com/p-sternik/smart-indexer/compare/v1.35.0...v1.36.0) (2025-11-29)
 
 

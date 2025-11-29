@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { encode, decode } from '@msgpack/msgpack';
@@ -129,6 +130,12 @@ export class ShardPersistenceManager {
   private pendingWrites: Map<string, PendingWrite> = new Map();
   private bufferEnabled: boolean;
   private bufferDelayMs: number;
+  
+  // Memory management limits
+  private readonly maxLocks: number = 10000;
+  private readonly maxPendingWrites: number = 100;
+  private lockCleanupCounter: number = 0;
+  private readonly lockCleanupInterval: number = 1000; // Cleanup every 1000 operations
 
   /**
    * Create a new ShardPersistenceManager.
@@ -184,6 +191,13 @@ export class ShardPersistenceManager {
    * Prevents race conditions between concurrent load-modify-save operations.
    */
   async withLock<T>(uri: string, task: () => Promise<T>): Promise<T> {
+    // Periodic cleanup of stale lock entries to prevent memory growth
+    this.lockCleanupCounter++;
+    if (this.lockCleanupCounter >= this.lockCleanupInterval) {
+      this.lockCleanupCounter = 0;
+      this.cleanupStaleLocks();
+    }
+    
     const currentLock = this.shardLocks.get(uri) || Promise.resolve();
     
     let resolveResult: (value: T) => void;
@@ -212,6 +226,47 @@ export class ShardPersistenceManager {
   }
 
   /**
+   * Cleanup stale lock entries to prevent unbounded memory growth.
+   * Removes lock entries that are already resolved (Promise settled).
+   */
+  private cleanupStaleLocks(): void {
+    if (this.shardLocks.size <= this.maxLocks) {
+      return;
+    }
+    
+    // Log cleanup for observability
+    const beforeSize = this.shardLocks.size;
+    
+    // Create a list of URIs to check
+    const urisToCheck = Array.from(this.shardLocks.keys());
+    let cleaned = 0;
+    
+    for (const uri of urisToCheck) {
+      const lock = this.shardLocks.get(uri);
+      if (lock) {
+        // Check if the promise is settled by racing with an immediately resolved promise
+        // If the lock wins, it's still pending; if our check wins, it's settled
+        Promise.race([
+          lock.then(() => 'settled'),
+          Promise.resolve('check')
+        ]).then(result => {
+          if (result === 'settled') {
+            // Lock promise is settled, safe to remove if still the same
+            if (this.shardLocks.get(uri) === lock) {
+              this.shardLocks.delete(uri);
+              cleaned++;
+            }
+          }
+        });
+      }
+    }
+    
+    if (cleaned > 0 || beforeSize > this.maxLocks) {
+      console.info(`[ShardPersistenceManager] Lock cleanup: ${beforeSize} -> ${this.shardLocks.size} entries`);
+    }
+  }
+
+  /**
    * Load a shard from disk.
    * Supports automatic migration from JSON/legacy formats to compact MessagePack.
    * 
@@ -228,6 +283,8 @@ export class ShardPersistenceManager {
    * Load a shard from disk WITHOUT acquiring a lock.
    * Use this ONLY when already holding a lock on the URI (e.g., inside withLock callback).
    * 
+   * Uses async I/O to avoid blocking the event loop.
+   * 
    * @param uri - The file URI to load the shard for
    * @returns The shard data or null if not found
    */
@@ -235,9 +292,9 @@ export class ShardPersistenceManager {
     try {
       const binPath = this.getShardPath(uri, 'bin');
       
-      // Try MessagePack format first (preferred)
-      if (fs.existsSync(binPath)) {
-        const buffer = fs.readFileSync(binPath);
+      // Try MessagePack format first (preferred) - use async I/O
+      try {
+        const buffer = await fsPromises.readFile(binPath);
         const decoded = decode(buffer) as any;
         
         // Check if this is compact format (has 'u' field) or legacy format (has 'uri' field)
@@ -248,31 +305,38 @@ export class ShardPersistenceManager {
           // Legacy format - return as-is but schedule migration on next save
           return decoded as FileShard;
         }
+      } catch (binError: any) {
+        // File doesn't exist or read error - try JSON fallback
+        if (binError.code !== 'ENOENT') {
+          throw binError;
+        }
       }
       
       // Migration path: try legacy JSON format
       const jsonPath = this.getShardPath(uri, 'json');
-      if (fs.existsSync(jsonPath)) {
-        const content = fs.readFileSync(jsonPath, 'utf-8');
+      try {
+        const content = await fsPromises.readFile(jsonPath, 'utf-8');
         const shard = JSON.parse(content) as FileShard;
         
-        // Migrate to compact MessagePack format
+        // Migrate to compact MessagePack format (async)
         const shardDir = path.dirname(binPath);
-        if (!fs.existsSync(shardDir)) {
-          fs.mkdirSync(shardDir, { recursive: true });
-        }
+        await fsPromises.mkdir(shardDir, { recursive: true });
         const compact = toCompactShard(shard);
         const encoded = encode(compact);
-        fs.writeFileSync(binPath, encoded);
+        await fsPromises.writeFile(binPath, encoded);
         
         // Remove legacy JSON file
-        fs.unlinkSync(jsonPath);
+        await fsPromises.unlink(jsonPath);
         console.info(`[ShardPersistenceManager] Migrated shard to compact format: ${uri}`);
         
         return shard;
+      } catch (jsonError: any) {
+        // JSON file doesn't exist either
+        if (jsonError.code === 'ENOENT') {
+          return null;
+        }
+        throw jsonError;
       }
-      
-      return null;
     } catch (error) {
       console.error(`[ShardPersistenceManager] Error loading shard for ${uri}: ${error}`);
       return null;
@@ -308,6 +372,8 @@ export class ShardPersistenceManager {
    * Save a shard to disk WITHOUT acquiring a lock.
    * Use this ONLY when already holding a lock on the URI (e.g., inside withLock callback).
    * 
+   * Uses async I/O to avoid blocking the event loop.
+   * 
    * @param shard - The shard data to save
    */
   async saveShardNoLock(shard: FileShard): Promise<void> {
@@ -315,15 +381,13 @@ export class ShardPersistenceManager {
       const shardPath = this.getShardPath(shard.uri, 'bin');
       const shardDir = path.dirname(shardPath);
       
-      // Ensure directory exists (nested structure)
-      if (!fs.existsSync(shardDir)) {
-        fs.mkdirSync(shardDir, { recursive: true });
-      }
+      // Ensure directory exists (nested structure) - async
+      await fsPromises.mkdir(shardDir, { recursive: true });
       
       // Convert to compact format before saving
       const compact = toCompactShard(shard);
       const encoded = encode(compact);
-      fs.writeFileSync(shardPath, encoded);
+      await fsPromises.writeFile(shardPath, encoded);
     } catch (error) {
       console.error(`[ShardPersistenceManager] Error saving shard for ${shard.uri}: ${error}`);
       throw error;
@@ -333,9 +397,16 @@ export class ShardPersistenceManager {
   /**
    * Save a shard with buffering/coalescing.
    * Multiple saves within the buffer window are merged (last-write-wins).
+   * Applies backpressure when too many pending writes accumulate.
    */
   private async saveShardBuffered(shard: FileShard): Promise<void> {
     const uri = shard.uri;
+    
+    // BACKPRESSURE: If too many pending writes, flush immediately to prevent memory growth
+    if (this.pendingWrites.size >= this.maxPendingWrites) {
+      console.warn(`[ShardPersistenceManager] Backpressure: ${this.pendingWrites.size} pending writes, flushing...`);
+      await this.flush();
+    }
     
     return new Promise<void>((resolve, reject) => {
       // Check if there's already a pending write for this URI
@@ -392,16 +463,24 @@ export class ShardPersistenceManager {
 
     return this.withLock(uri, async () => {
       try {
-        // Delete MessagePack format
+        // Delete MessagePack format (async)
         const binPath = this.getShardPath(uri, 'bin');
-        if (fs.existsSync(binPath)) {
-          fs.unlinkSync(binPath);
+        try {
+          await fsPromises.unlink(binPath);
+        } catch (err: any) {
+          if (err.code !== 'ENOENT') {
+            throw err;
+          }
         }
         
-        // Also delete legacy JSON format if it exists
+        // Also delete legacy JSON format if it exists (async)
         const jsonPath = this.getShardPath(uri, 'json');
-        if (fs.existsSync(jsonPath)) {
-          fs.unlinkSync(jsonPath);
+        try {
+          await fsPromises.unlink(jsonPath);
+        } catch (err: any) {
+          if (err.code !== 'ENOENT') {
+            throw err;
+          }
         }
       } catch (error) {
         console.error(`[ShardPersistenceManager] Error deleting shard for ${uri}: ${error}`);
@@ -412,18 +491,26 @@ export class ShardPersistenceManager {
   /**
    * Check if a shard exists on disk.
    * Checks for both MessagePack and legacy JSON formats.
+   * Uses async I/O to avoid blocking.
    * 
    * @param uri - The file URI to check
    * @returns True if the shard file exists
    */
   async shardExists(uri: string): Promise<boolean> {
     const binPath = this.getShardPath(uri, 'bin');
-    if (fs.existsSync(binPath)) {
+    try {
+      await fsPromises.access(binPath);
       return true;
+    } catch {
+      // Check legacy JSON format
+      const jsonPath = this.getShardPath(uri, 'json');
+      try {
+        await fsPromises.access(jsonPath);
+        return true;
+      } catch {
+        return false;
+      }
     }
-    // Also check legacy JSON format
-    const jsonPath = this.getShardPath(uri, 'json');
-    return fs.existsSync(jsonPath);
   }
 
   /**

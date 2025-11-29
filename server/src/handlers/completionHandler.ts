@@ -22,6 +22,7 @@ import { URI } from 'vscode-uri';
 
 import { IHandler, ServerServices, ServerState } from './types.js';
 import { IndexedSymbol } from '../types.js';
+import { getWordRangeAtPosition } from '../utils/textUtils.js';
 
 /**
  * Custom data attached to completion items for resolution phase.
@@ -85,7 +86,7 @@ export class CompletionHandler implements IHandler {
 
       const offset = document.offsetAt(params.position);
       const text = document.getText();
-      const wordRange = this.getWordRangeAtPosition(text, offset);
+      const wordRange = getWordRangeAtPosition(text, offset);
       
       // Extract prefix (what the user has typed so far)
       let prefix = '';
@@ -255,28 +256,6 @@ export class CompletionHandler implements IHandler {
       return filePath.substring(workspaceRoot.length + 1).replace(/\\/g, '/');
     }
     return filePath.replace(/\\/g, '/');
-  }
-
-  /**
-   * Get word range at a given offset in text.
-   */
-  private getWordRangeAtPosition(
-    text: string,
-    offset: number
-  ): { start: number; end: number } | null {
-    const wordPattern = /[a-zA-Z_][a-zA-Z0-9_]*/g;
-    let match;
-
-    while ((match = wordPattern.exec(text)) !== null) {
-      if (match.index <= offset && offset <= match.index + match[0].length) {
-        return {
-          start: match.index,
-          end: match.index + match[0].length
-        };
-      }
-    }
-
-    return null;
   }
 
   /**

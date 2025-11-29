@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.45.0](https://github.com/p-sternik/smart-indexer/compare/v1.44.0...v1.45.0) (2025-11-29)
+
+
+### Features
+
+* enhance dead code detection by checking usage of symbols by exported symbols ([2f2dad8](https://github.com/p-sternik/smart-indexer/commit/2f2dad8f5c840920cd5848fe8b3911d81b98f393))
+
 ## [1.44.0](https://github.com/p-sternik/smart-indexer/compare/v1.43.3...v1.44.0) (2025-11-29)
 
 

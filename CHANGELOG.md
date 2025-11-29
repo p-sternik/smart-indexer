@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.0](https://github.com/p-sternik/smart-indexer/compare/v1.43.3...v1.44.0) (2025-11-29)
+
+
+### Features
+
+* add 'Find Dead Code in Folder' command and scope filtering for dead code analysis ([fba25dd](https://github.com/p-sternik/smart-indexer/commit/fba25dd16b7b78fdc9a60f5b66694c1cfa7e7c0f))
+
 ## [1.43.3](https://github.com/p-sternik/smart-indexer/compare/v1.43.2...v1.43.3) (2025-11-29)
 
 

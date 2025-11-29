@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.38.0](https://github.com/p-sternik/smart-indexer/compare/v1.37.0...v1.38.0) (2025-11-29)
+
+
+### Features
+
+* Add DeadCodeHandler for detecting and publishing diagnostics of unused exports ([351036d](https://github.com/p-sternik/smart-indexer/commit/351036d12e6af017e6de16237a206d5d458e2aab))
+
 ## [1.37.0](https://github.com/p-sternik/smart-indexer/compare/v1.36.0...v1.37.0) (2025-11-29)
 
 

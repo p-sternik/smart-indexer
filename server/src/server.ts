@@ -44,7 +44,8 @@ import {
   ServerServices, 
   ServerState,
   createDefinitionHandler,
-  createReferencesHandler
+  createReferencesHandler,
+  createCompletionHandler
 } from './handlers/index.js';
 
 const connection = createConnection(ProposedFeatures.all);
@@ -140,9 +141,10 @@ const serverServices: ServerServices = {
  */
 const handlerRegistry = new HandlerRegistry(serverServices, serverState);
 
-// Register handlers (Definition and References for now)
+// Register handlers
 handlerRegistry.register(createDefinitionHandler);
 handlerRegistry.register(createReferencesHandler);
+handlerRegistry.register(createCompletionHandler);
 
 // ============================================================================
 
@@ -956,55 +958,7 @@ connection.onWorkspaceSymbol(
   }
 );
 
-connection.onCompletion(
-  async (params: TextDocumentPositionParams): Promise<CompletionItem[]> => {
-    const uri = URI.parse(params.textDocument.uri).fsPath;
-    const { line, character } = params.position;
-    const start = Date.now();
-    
-    connection.console.log(`[Server] Completion request: ${uri}:${line}:${character}`);
-    
-    try {
-      const document = documents.get(params.textDocument.uri);
-      if (!document) {
-        connection.console.log(`[Server] Completion result: document not found, 0 items, 0 ms`);
-        return [];
-      }
-
-      const offset = document.offsetAt(params.position);
-      const text = document.getText();
-      const wordRange = getWordRangeAtPosition(text, offset);
-      
-      let prefix = '';
-      if (wordRange) {
-        prefix = text.substring(wordRange.start, offset);
-      }
-
-      const symbols = await mergedIndex.searchSymbols(prefix, 50);
-
-      const seen = new Set<string>();
-      const items: CompletionItem[] = [];
-
-      for (const sym of symbols) {
-        if (!seen.has(sym.name)) {
-          seen.add(sym.name);
-          items.push({
-            label: sym.name,
-            kind: mapCompletionItemKind(sym.kind),
-            detail: sym.kind,
-            data: sym
-          });
-        }
-      }
-
-      connection.console.log(`[Server] Completion result: prefix="${prefix}", ${items.length} items in ${Date.now() - start} ms`);
-      return items;
-    } catch (error) {
-      connection.console.error(`[Server] Completion error: ${error}, ${Date.now() - start} ms`);
-      return [];
-    }
-  }
-);
+// NOTE: connection.onCompletion is now handled by CompletionHandler (registered via HandlerRegistry)
 
 connection.onRequest('smart-indexer/rebuildIndex', async () => {
   try {
@@ -1121,25 +1075,6 @@ connection.onRequest('smart-indexer/inspectIndex', async () => {
   }
 });
 
-function getWordRangeAtPosition(
-  text: string,
-  offset: number
-): { start: number; end: number } | null {
-  const wordPattern = /[a-zA-Z_][a-zA-Z0-9_]*/g;
-  let match;
-
-  while ((match = wordPattern.exec(text)) !== null) {
-    if (match.index <= offset && offset <= match.index + match[0].length) {
-      return {
-        start: match.index,
-        end: match.index + match[0].length
-      };
-    }
-  }
-
-  return null;
-}
-
 function mapSymbolKind(kind: string): SymbolKind {
   switch (kind) {
     case 'function':
@@ -1162,31 +1097,6 @@ function mapSymbolKind(kind: string): SymbolKind {
       return SymbolKind.Property;
     default:
       return SymbolKind.Variable;
-  }
-}
-
-function mapCompletionItemKind(kind: string): CompletionItemKind {
-  switch (kind) {
-    case 'function':
-      return CompletionItemKind.Function;
-    case 'class':
-      return CompletionItemKind.Class;
-    case 'interface':
-      return CompletionItemKind.Interface;
-    case 'type':
-      return CompletionItemKind.TypeParameter;
-    case 'enum':
-      return CompletionItemKind.Enum;
-    case 'variable':
-      return CompletionItemKind.Variable;
-    case 'constant':
-      return CompletionItemKind.Constant;
-    case 'method':
-      return CompletionItemKind.Method;
-    case 'property':
-      return CompletionItemKind.Property;
-    default:
-      return CompletionItemKind.Text;
   }
 }
 

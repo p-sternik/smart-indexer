@@ -41,8 +41,12 @@ export {
   createReferencesHandler
 } from './referencesHandler.js';
 
+export {
+  CompletionHandler,
+  createCompletionHandler
+} from './completionHandler.js';
+
 // Future handlers (to be implemented):
-// export { CompletionHandler, createCompletionHandler } from './CompletionHandler.js';
 // export { WorkspaceSymbolHandler, createWorkspaceSymbolHandler } from './WorkspaceSymbolHandler.js';
 // export { DocumentHandler, createDocumentHandler } from './DocumentHandler.js';
 // export { CommandsHandler, createCommandsHandler } from './CommandsHandler.js';

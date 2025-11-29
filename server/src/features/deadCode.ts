@@ -1,5 +1,5 @@
 import { BackgroundIndex } from '../index/backgroundIndex.js';
-import { IndexedSymbol, IndexedReference } from '../types.js';
+import { IndexedSymbol, IndexedReference, IndexedFileResult } from '../types.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
 import { pluginRegistry } from '../plugins/FrameworkPlugin.js';
 import * as fsPromises from 'fs/promises';
@@ -122,6 +122,14 @@ export class DeadCodeDetector {
       return candidates;
     }
 
+    // Build a set of exported symbol names for "used by exported symbol" check
+    const exportedSymbolNames = new Set<string>();
+    for (const sym of fileResult.symbols) {
+      if (this.isExportedSymbol(sym, fileResult.imports)) {
+        exportedSymbolNames.add(sym.name);
+      }
+    }
+
     // Check each symbol in the file
     for (const symbol of fileResult.symbols) {
       if (!this.isExportedSymbol(symbol, fileResult.imports)) {
@@ -148,6 +156,19 @@ export class DeadCodeDetector {
 
       // Check if symbol is dead
       if (crossFileReferences.length === 0) {
+        // NEW: Check if this symbol is used by an EXPORTED symbol in the same file
+        // e.g., interface DeadCodeConfig is used by exported SmartIndexerConfig
+        const isUsedByExportedSymbol = this.isUsedByExportedSymbol(
+          symbol,
+          fileResult,
+          exportedSymbolNames
+        );
+        
+        if (isUsedByExportedSymbol) {
+          // Symbol is implicitly alive - used by an exported symbol
+          continue;
+        }
+
         // Advanced: Check if all references come from barrier files
         if (options?.checkBarrierFiles && references.length > 0) {
           const allReferencesAreBarriers = await this.areAllReferencesFromBarriers(
@@ -198,20 +219,28 @@ export class DeadCodeDetector {
 
     // Get all files from the background index
     const allFiles = await this.backgroundIndex.getAllFiles();
+    const totalIndexedFiles = allFiles.length;
     
     // Pre-filter files to get accurate total count
     const filesToAnalyze: string[] = [];
+    let scopeFilteredCount = 0;
+    let excludedCount = 0;
+    let entryPointCount = 0;
+    
     for (const fileUri of allFiles) {
       // Apply scope filtering if scopePath is provided
       // Only analyze files within the specified folder
       if (scopePath && !this.isFileInScope(fileUri, scopePath)) {
+        scopeFilteredCount++;
         continue;
       }
       
       if (this.shouldExcludeFile(fileUri, excludePatterns, includeTests)) {
+        excludedCount++;
         continue;
       }
       if (this.isEntryPoint(fileUri, options?.entryPoints)) {
+        entryPointCount++;
         continue;
       }
       filesToAnalyze.push(fileUri);
@@ -219,9 +248,18 @@ export class DeadCodeDetector {
     
     const totalFiles = filesToAnalyze.length;
     
-    // Report initial progress
+    // Log scope filtering stats for debugging
+    if (scopePath) {
+      console.log(`[DeadCodeDetector] Scope filtering: ${totalFiles}/${totalIndexedFiles} files in scope '${scopePath}'`);
+      console.log(`[DeadCodeDetector] Filtered out: ${scopeFilteredCount} out of scope, ${excludedCount} excluded, ${entryPointCount} entry points`);
+    }
+    
+    // Report initial progress with scope info
     const scopeLabel = scopePath ? ` in scope` : '';
-    onProgress?.(0, totalFiles, `Starting dead code analysis${scopeLabel}...`);
+    const progressMessage = scopePath 
+      ? `Analyzing ${totalFiles}/${totalIndexedFiles} files in scope...`
+      : `Starting dead code analysis${scopeLabel}...`;
+    onProgress?.(0, totalFiles, progressMessage);
     
     // Yield frequency: every 50 files to allow cancellation checks
     const YIELD_INTERVAL = 50;
@@ -501,5 +539,90 @@ export class DeadCodeDetector {
     // Low confidence: used multiple times in same file
     // (Could be intentional internal API)
     return 'low';
+  }
+
+  /**
+   * Check if a symbol is used by an exported symbol in the same file.
+   * 
+   * This handles the case where an interface (e.g., DeadCodeConfig) is only
+   * referenced by another exported symbol (e.g., SmartIndexerConfig) in the same file.
+   * The interface is "implicitly alive" through the exported parent symbol.
+   * 
+   * @param symbol The symbol to check
+   * @param fileResult The complete file result with all symbols and references
+   * @param exportedSymbolNames Set of exported symbol names in this file
+   * @returns true if the symbol is used by an exported symbol (and thus implicitly alive)
+   */
+  private isUsedByExportedSymbol(
+    symbol: IndexedSymbol,
+    fileResult: IndexedFileResult,
+    exportedSymbolNames: Set<string>
+  ): boolean {
+    // Find all references to this symbol within the same file
+    const localReferences = fileResult.references.filter(
+      ref => ref.symbolName === symbol.name && !ref.isImport
+    );
+
+    if (localReferences.length === 0) {
+      return false;
+    }
+
+    // Check if any of these references are within an exported symbol's body
+    for (const ref of localReferences) {
+      // The containerName tells us which symbol contains this reference
+      const containerName = ref.containerName;
+      
+      if (containerName && exportedSymbolNames.has(containerName)) {
+        // This symbol is used by an exported symbol
+        return true;
+      }
+    }
+
+    // Additional check: Look for type annotations in exported symbols
+    // Some references may not have containerName set (e.g., property types)
+    // In this case, check if any exported symbol uses this type by position
+    for (const exportedSymbol of fileResult.symbols) {
+      if (!exportedSymbolNames.has(exportedSymbol.name)) {
+        continue;
+      }
+      
+      // Skip self-reference
+      if (exportedSymbol.name === symbol.name) {
+        continue;
+      }
+
+      // Check if any reference to our symbol falls within the exported symbol's range
+      for (const ref of localReferences) {
+        if (this.isPositionWithinRange(ref, exportedSymbol)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if a reference position is within a symbol's range.
+   */
+  private isPositionWithinRange(ref: IndexedReference, symbol: IndexedSymbol): boolean {
+    const refLine = ref.location.line;
+    const refChar = ref.location.character;
+    const { startLine, startCharacter, endLine, endCharacter } = symbol.range;
+
+    // Check if reference is within the symbol's range
+    if (refLine < startLine || refLine > endLine) {
+      return false;
+    }
+    
+    if (refLine === startLine && refChar < startCharacter) {
+      return false;
+    }
+    
+    if (refLine === endLine && refChar > endCharacter) {
+      return false;
+    }
+
+    return true;
   }
 }

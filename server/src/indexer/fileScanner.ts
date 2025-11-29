@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
@@ -71,7 +70,7 @@ export class FileScanner {
     try {
       // Check folder hash early exit if enabled
       if (this.useFolderHashing && this.folderHasher) {
-        const changed = this.folderHasher.hasFolderChanged(dir);
+        const changed = await this.folderHasher.hasFolderChanged(dir);
         if (changed === false) {
           console.info(`[FileScanner] Skipping unchanged folder: ${dir} (hash unchanged)`);
           return;
@@ -178,34 +177,6 @@ export class FileScanner {
       if (error.code !== 'ENOENT') {
         console.error(`[FileScanner] Error checking file ${filePath}: ${error}`);
       }
-      return false;
-    }
-  }
-
-  /**
-   * Synchronous check (kept for backwards compatibility).
-   * @deprecated Use isIndexableFileAsync for non-blocking I/O.
-   */
-  private isIndexableFile(filePath: string): boolean {
-    if (!this.hasIndexableExtension(filePath)) {
-      return false;
-    }
-
-    try {
-      const stats = fs.statSync(filePath);
-      
-      if (stats.size > this.maxFileSize) {
-        const sizeInMB = stats.size / (1024 * 1024);
-        const maxSizeMB = this.maxFileSize / (1024 * 1024);
-        console.info(
-          `[FileScanner] Skipping large file ${filePath} (${sizeInMB.toFixed(2)}MB > ${maxSizeMB.toFixed(2)}MB)`
-        );
-        return false;
-      }
-      
-      return true;
-    } catch (error) {
-      console.error(`[FileScanner] Error checking file ${filePath}: ${error}`);
       return false;
     }
   }

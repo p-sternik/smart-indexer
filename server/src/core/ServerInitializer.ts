@@ -122,6 +122,7 @@ export class ServerInitializer {
       // Initialize import resolver and TypeScript service
       if (this.workspaceRoot) {
         this.importResolver = new ImportResolver(this.workspaceRoot);
+        await this.importResolver.init();
         connection.console.info('[ServerInitializer] Import resolver initialized');
         
         await typeScriptService.init(this.workspaceRoot);

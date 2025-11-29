@@ -1,7 +1,7 @@
 import { ISymbolIndex } from './ISymbolIndex.js';
 import { IndexedSymbol } from '../types.js';
 import { fuzzyScore } from '../utils/fuzzySearch.js';
-import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
 /**
@@ -20,11 +20,12 @@ export class StaticIndex implements ISymbolIndex {
    */
   async load(indexPath: string): Promise<void> {
     try {
-      if (!fs.existsSync(indexPath)) {
+      let stat;
+      try {
+        stat = await fsPromises.stat(indexPath);
+      } catch (err: any) {
         throw new Error(`Static index path not found: ${indexPath}`);
       }
-
-      const stat = fs.statSync(indexPath);
       
       if (stat.isDirectory()) {
         await this.loadFromDirectory(indexPath);
@@ -41,7 +42,7 @@ export class StaticIndex implements ISymbolIndex {
   }
 
   private async loadFromFile(filePath: string): Promise<void> {
-    const content = fs.readFileSync(filePath, 'utf-8');
+    const content = await fsPromises.readFile(filePath, 'utf-8');
     const data = JSON.parse(content);
 
     if (Array.isArray(data.symbols)) {
@@ -54,26 +55,32 @@ export class StaticIndex implements ISymbolIndex {
   }
 
   private async loadFromDirectory(dirPath: string): Promise<void> {
-    const files = fs.readdirSync(dirPath);
+    const files = await fsPromises.readdir(dirPath);
     
-    for (const file of files) {
-      if (!file.endsWith('.json')) {
-        continue;
-      }
-      
-      const filePath = path.join(dirPath, file);
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const data = JSON.parse(content);
-        
-        if (Array.isArray(data.symbols)) {
-          this.symbols.push(...data.symbols);
-        } else if (Array.isArray(data)) {
-          this.symbols.push(...data);
+    // Process files in parallel for better performance
+    const loadPromises = files
+      .filter(file => file.endsWith('.json'))
+      .map(async (file) => {
+        const filePath = path.join(dirPath, file);
+        try {
+          const content = await fsPromises.readFile(filePath, 'utf-8');
+          const data = JSON.parse(content);
+          
+          if (Array.isArray(data.symbols)) {
+            return data.symbols;
+          } else if (Array.isArray(data)) {
+            return data;
+          }
+          return [];
+        } catch (error) {
+          console.error(`[StaticIndex] Error loading ${filePath}: ${error}`);
+          return [];
         }
-      } catch (error) {
-        console.error(`[StaticIndex] Error loading ${filePath}: ${error}`);
-      }
+      });
+
+    const results = await Promise.all(loadPromises);
+    for (const symbols of results) {
+      this.symbols.push(...symbols);
     }
   }
 

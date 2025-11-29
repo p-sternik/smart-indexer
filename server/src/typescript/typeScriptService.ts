@@ -1,6 +1,6 @@
 import * as ts from 'typescript';
 import * as path from 'path';
-import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 
 /**
  * TypeScriptService - Manages TypeScript LanguageService for precise symbol resolution.
@@ -10,6 +10,7 @@ import * as fs from 'fs';
  * - Uses persistent ts.LanguageService (not recreated on each request)
  * - Incremental updates via IScriptSnapshot registry
  * - Keeps program "warm" for instant getSymbolAtLocation calls
+ * - Pre-loads files asynchronously before TS needs them synchronously
  */
 export class TypeScriptService {
   private languageService: ts.LanguageService | null = null;
@@ -32,7 +33,8 @@ export class TypeScriptService {
     
     // Try to load tsconfig.json
     const tsconfigPath = path.join(workspaceRoot, 'tsconfig.json');
-    if (fs.existsSync(tsconfigPath)) {
+    try {
+      await fsPromises.access(tsconfigPath);
       try {
         const configFile = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
         if (configFile.config) {
@@ -47,6 +49,8 @@ export class TypeScriptService {
       } catch (error) {
         console.warn(`[TypeScriptService] Error loading tsconfig.json: ${error}`);
       }
+    } catch {
+      // tsconfig.json doesn't exist, use defaults
     }
 
     this.createLanguageService();
@@ -73,6 +77,51 @@ export class TypeScriptService {
     };
   }
 
+  /**
+   * Pre-load a file asynchronously into the cache.
+   * Call this before using TS APIs that need the file synchronously.
+   */
+  async preloadFile(fileName: string): Promise<boolean> {
+    if (this.files.has(fileName)) {
+      return true;
+    }
+    
+    try {
+      const content = await fsPromises.readFile(fileName, 'utf-8');
+      const snapshot = ts.ScriptSnapshot.fromString(content);
+      this.files.set(fileName, { version: 1, snapshot });
+      return true;
+    } catch (error: any) {
+      if (error.code !== 'ENOENT') {
+        console.error(`[TypeScriptService] Error preloading file ${fileName}: ${error}`);
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Check if a file exists asynchronously.
+   */
+  async fileExistsAsync(fileName: string): Promise<boolean> {
+    try {
+      await fsPromises.access(fileName);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Read a file asynchronously.
+   */
+  async readFileAsync(fileName: string): Promise<string | undefined> {
+    try {
+      return await fsPromises.readFile(fileName, 'utf-8');
+    } catch {
+      return undefined;
+    }
+  }
+
   private createLanguageService(): void {
     this.serviceHost = {
       getScriptFileNames: () => Array.from(this.files.keys()),
@@ -87,14 +136,18 @@ export class TypeScriptService {
           return file.snapshot;
         }
         
-        // Try to read from disk and cache
-        if (fs.existsSync(fileName)) {
-          const content = fs.readFileSync(fileName, 'utf-8');
-          const snapshot = ts.ScriptSnapshot.fromString(content);
-          
-          // Cache it for future use
-          this.files.set(fileName, { version: 1, snapshot });
-          return snapshot;
+        // Try to read from disk synchronously (TS API requirement)
+        // NOTE: For hot paths, use preloadFile() before calling TS APIs
+        try {
+          const content = ts.sys.readFile(fileName);
+          if (content !== undefined) {
+            const snapshot = ts.ScriptSnapshot.fromString(content);
+            // Cache it for future use
+            this.files.set(fileName, { version: 1, snapshot });
+            return snapshot;
+          }
+        } catch {
+          // File doesn't exist or can't be read
         }
         
         return undefined;

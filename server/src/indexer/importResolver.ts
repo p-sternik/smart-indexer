@@ -1,11 +1,19 @@
 import * as path from 'path';
-import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as ts from 'typescript';
 import { ImportInfo } from '../types.js';
 
 interface PathMapping {
   pattern: string;
   paths: string[];
+}
+
+/**
+ * Cache entry for config files (tsconfig.json, package.json)
+ */
+interface ConfigCacheEntry<T> {
+  data: T;
+  timestamp: number;
 }
 
 /**
@@ -17,20 +25,40 @@ export class ImportResolver {
   private pathMappings: PathMapping[] = [];
   private baseUrl: string = '';
   private compilerOptions: ts.CompilerOptions = {};
+  
+  /** TTL for config file cache in milliseconds (10 seconds) */
+  private static readonly CONFIG_CACHE_TTL = 10_000;
+  
+  /** Cache for tsconfig.json files */
+  private tsconfigCache = new Map<string, ConfigCacheEntry<ts.ParsedCommandLine | null>>();
+  
+  /** Cache for package.json files */
+  private packageJsonCache = new Map<string, ConfigCacheEntry<any | null>>();
+  
+  /** Cache for file existence checks */
+  private existsCache = new Map<string, ConfigCacheEntry<boolean>>();
 
   constructor(workspaceRoot: string) {
     this.workspaceRoot = workspaceRoot;
-    this.loadTsConfig();
+  }
+
+  /**
+   * Async initialization - must be called after construction
+   */
+  async init(): Promise<void> {
+    await this.loadTsConfig();
   }
 
   /**
    * Load tsconfig.json and extract path mappings and baseUrl.
    */
-  private loadTsConfig(): void {
+  private async loadTsConfig(): Promise<void> {
     const tsconfigPath = path.join(this.workspaceRoot, 'tsconfig.json');
     
-    if (!fs.existsSync(tsconfigPath)) {
-      return;
+    try {
+      await fsPromises.access(tsconfigPath);
+    } catch {
+      return; // File doesn't exist
     }
 
     try {
@@ -67,26 +95,107 @@ export class ImportResolver {
   }
 
   /**
+   * Invalidate config caches (call when files change)
+   */
+  invalidateCache(filePath?: string): void {
+    if (filePath) {
+      const normalizedPath = path.normalize(filePath);
+      if (normalizedPath.endsWith('tsconfig.json')) {
+        this.tsconfigCache.delete(normalizedPath);
+      } else if (normalizedPath.endsWith('package.json')) {
+        this.packageJsonCache.delete(normalizedPath);
+      }
+      this.existsCache.delete(normalizedPath);
+    } else {
+      // Invalidate all caches
+      this.tsconfigCache.clear();
+      this.packageJsonCache.clear();
+      this.existsCache.clear();
+    }
+  }
+
+  /**
+   * Check if a cached entry is still valid
+   */
+  private isCacheValid<T>(entry: ConfigCacheEntry<T> | undefined): entry is ConfigCacheEntry<T> {
+    if (!entry) {
+      return false;
+    }
+    return (Date.now() - entry.timestamp) < ImportResolver.CONFIG_CACHE_TTL;
+  }
+
+  /**
+   * Check if file exists with caching
+   */
+  private async fileExistsAsync(filePath: string): Promise<boolean> {
+    const cached = this.existsCache.get(filePath);
+    if (this.isCacheValid(cached)) {
+      return cached.data;
+    }
+    
+    try {
+      await fsPromises.access(filePath);
+      this.existsCache.set(filePath, { data: true, timestamp: Date.now() });
+      return true;
+    } catch {
+      this.existsCache.set(filePath, { data: false, timestamp: Date.now() });
+      return false;
+    }
+  }
+
+  /**
+   * Get file stats with error handling
+   */
+  private async statAsync(filePath: string): Promise<{ isFile: boolean } | null> {
+    try {
+      const stat = await fsPromises.stat(filePath);
+      return { isFile: stat.isFile() };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Read package.json with caching
+   */
+  private async readPackageJsonAsync(packageJsonPath: string): Promise<any | null> {
+    const cached = this.packageJsonCache.get(packageJsonPath);
+    if (this.isCacheValid(cached)) {
+      return cached.data;
+    }
+    
+    try {
+      const content = await fsPromises.readFile(packageJsonPath, 'utf-8');
+      const data = JSON.parse(content);
+      this.packageJsonCache.set(packageJsonPath, { data, timestamp: Date.now() });
+      return data;
+    } catch {
+      this.packageJsonCache.set(packageJsonPath, { data: null, timestamp: Date.now() });
+      return null;
+    }
+  }
+
+  /**
    * Resolve a module specifier to an absolute file path.
    * 
    * @param moduleSpecifier - e.g., './foo', '../bar', '@angular/core', '@app/utils'
    * @param fromFile - absolute path of the importing file
    * @returns resolved absolute file path, or null if cannot be resolved
    */
-  resolveImport(moduleSpecifier: string, fromFile: string): string | null {
+  async resolveImport(moduleSpecifier: string, fromFile: string): Promise<string | null> {
     // Handle relative imports
     if (moduleSpecifier.startsWith('./') || moduleSpecifier.startsWith('../')) {
       return this.resolveRelativeImport(moduleSpecifier, fromFile);
     }
 
     // Try path mappings first (e.g., @app/* -> src/*)
-    const pathMappingResult = this.resolvePathMapping(moduleSpecifier);
+    const pathMappingResult = await this.resolvePathMapping(moduleSpecifier);
     if (pathMappingResult) {
       return pathMappingResult;
     }
 
     // Try node_modules resolution
-    const nodeModulesResult = this.resolveNodeModules(moduleSpecifier, fromFile);
+    const nodeModulesResult = await this.resolveNodeModules(moduleSpecifier, fromFile);
     if (nodeModulesResult) {
       return nodeModulesResult;
     }
@@ -98,7 +207,7 @@ export class ImportResolver {
   /**
    * Resolve relative imports (e.g., './foo', '../bar/baz').
    */
-  private resolveRelativeImport(moduleSpecifier: string, fromFile: string): string | null {
+  private async resolveRelativeImport(moduleSpecifier: string, fromFile: string): Promise<string | null> {
     const fromDir = path.dirname(fromFile);
     const basePath = path.resolve(fromDir, moduleSpecifier);
 
@@ -108,7 +217,7 @@ export class ImportResolver {
   /**
    * Resolve using tsconfig path mappings.
    */
-  private resolvePathMapping(moduleSpecifier: string): string | null {
+  private async resolvePathMapping(moduleSpecifier: string): Promise<string | null> {
     for (const mapping of this.pathMappings) {
       const pattern = mapping.pattern.replace('*', '(.*)');
       const regex = new RegExp(`^${pattern}$`);
@@ -119,7 +228,7 @@ export class ImportResolver {
         
         for (const mappedPath of mapping.paths) {
           const resolvedPath = mappedPath.replace('*', captured);
-          const result = this.tryResolveFile(resolvedPath);
+          const result = await this.tryResolveFile(resolvedPath);
           if (result) {
             return result;
           }
@@ -133,39 +242,37 @@ export class ImportResolver {
   /**
    * Resolve from node_modules.
    */
-  private resolveNodeModules(moduleSpecifier: string, fromFile: string): string | null {
+  private async resolveNodeModules(moduleSpecifier: string, fromFile: string): Promise<string | null> {
     let currentDir = path.dirname(fromFile);
 
     while (true) {
       const nodeModulesPath = path.join(currentDir, 'node_modules', moduleSpecifier);
       
       // Try to resolve as a file
-      const fileResult = this.tryResolveFile(nodeModulesPath);
+      const fileResult = await this.tryResolveFile(nodeModulesPath);
       if (fileResult) {
         return fileResult;
       }
 
       // Try to resolve as a package with package.json
       const packageJsonPath = path.join(nodeModulesPath, 'package.json');
-      if (fs.existsSync(packageJsonPath)) {
-        try {
-          const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+      if (await this.fileExistsAsync(packageJsonPath)) {
+        const packageJson = await this.readPackageJsonAsync(packageJsonPath);
+        if (packageJson) {
           const mainField = packageJson.types || packageJson.typings || packageJson.module || packageJson.main;
           
           if (mainField) {
             const mainPath = path.join(nodeModulesPath, mainField);
-            const result = this.tryResolveFile(mainPath);
+            const result = await this.tryResolveFile(mainPath);
             if (result) {
               return result;
             }
           }
-        } catch (error) {
-          // Ignore package.json parsing errors
         }
       }
 
       // Try index file
-      const indexResult = this.tryResolveFile(path.join(nodeModulesPath, 'index'));
+      const indexResult = await this.tryResolveFile(path.join(nodeModulesPath, 'index'));
       if (indexResult) {
         return indexResult;
       }
@@ -206,14 +313,14 @@ export class ImportResolver {
   /**
    * Try to resolve a base path as a file with various extensions.
    */
-  private tryResolveFile(basePath: string): string | null {
+  private async tryResolveFile(basePath: string): Promise<string | null> {
     // Try with various extensions
     const extensions = ['.ts', '.tsx', '.d.ts', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'];
     
     // Try as file with extensions
     for (const ext of extensions) {
       const filePath = basePath + ext;
-      if (fs.existsSync(filePath)) {
+      if (await this.fileExistsAsync(filePath)) {
         return filePath;
       }
     }
@@ -221,13 +328,14 @@ export class ImportResolver {
     // Try as directory with index file
     for (const ext of extensions) {
       const indexPath = path.join(basePath, 'index' + ext);
-      if (fs.existsSync(indexPath)) {
+      if (await this.fileExistsAsync(indexPath)) {
         return indexPath;
       }
     }
 
     // Try exact path (might already have extension)
-    if (fs.existsSync(basePath) && fs.statSync(basePath).isFile()) {
+    const stat = await this.statAsync(basePath);
+    if (stat?.isFile) {
       return basePath;
     }
 

@@ -1,5 +1,6 @@
 import { simpleGit, SimpleGit } from 'simple-git';
-import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
+import { watch } from 'fs';
 import * as path from 'path';
 
 export interface GitChanges {
@@ -19,9 +20,12 @@ export class GitWatcher {
       this.workspaceRoot = workspaceRoot;
       const gitDir = path.join(workspaceRoot, '.git');
 
-      if (fs.existsSync(gitDir)) {
+      try {
+        await fsPromises.access(gitDir);
         this.git = simpleGit(workspaceRoot);
         this.isGitRepo = true;
+      } catch {
+        this.isGitRepo = false;
       }
     } catch (error) {
       console.error(`[GitWatcher] Error initializing git watcher: ${error}`);
@@ -42,6 +46,18 @@ export class GitWatcher {
     } catch (error) {
       console.error(`[GitWatcher] Error getting current git hash: ${error}`);
       return undefined;
+    }
+  }
+
+  /**
+   * Check if a file exists asynchronously
+   */
+  private async fileExistsAsync(filePath: string): Promise<boolean> {
+    try {
+      await fsPromises.access(filePath);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -82,12 +98,16 @@ export class GitWatcher {
       const modified: string[] = [];
       const deleted: string[] = [];
 
-      for (const filePath of changedFiles) {
-        const fullPath = path.join(this.workspaceRoot, filePath);
+      // Check file existence in parallel for better performance
+      const fullPaths = changedFiles.map(f => path.join(this.workspaceRoot, f));
+      const existsResults = await Promise.all(
+        fullPaths.map(fp => this.fileExistsAsync(fp))
+      );
 
-        if (fs.existsSync(fullPath)) {
-          // File exists - treat as added (will be re-indexed; we lose add/modify distinction
-          // with --name-only but that's fine since both trigger re-indexing)
+      for (let i = 0; i < changedFiles.length; i++) {
+        const fullPath = fullPaths[i];
+        if (existsResults[i]) {
+          // File exists - treat as added (will be re-indexed)
           added.push(fullPath);
         } else {
           // File doesn't exist - it was deleted
@@ -161,7 +181,7 @@ export class GitWatcher {
       const headFile = path.join(this.workspaceRoot, '.git', 'HEAD');
       let lastHash = await this.getCurrentHash();
 
-      fs.watch(headFile, async () => {
+      watch(headFile, async () => {
         try {
           const currentHash = await this.getCurrentHash();
           if (currentHash && currentHash !== lastHash) {

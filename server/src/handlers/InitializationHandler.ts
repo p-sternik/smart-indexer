@@ -90,6 +90,7 @@ export class InitializationHandler implements IHandler {
       // Initialize import resolver if workspace is available
       if (this.state.workspaceRoot) {
         this.state.importResolver = new ImportResolver(this.state.workspaceRoot);
+        await this.state.importResolver.init();
         connection.console.info('[Server] Import resolver initialized');
         
         // Initialize TypeScript service for semantic intelligence

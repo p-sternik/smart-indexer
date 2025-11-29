@@ -153,7 +153,7 @@ export class DefinitionHandler implements IHandler {
             connection.console.log(`[Server] Symbol is imported from: ${importInfo.moduleSpecifier}`);
             
             // Resolve the module to a file path
-            const resolvedPath = importResolver.resolveImport(importInfo.moduleSpecifier, uri);
+            const resolvedPath = await importResolver.resolveImport(importInfo.moduleSpecifier, uri);
             
             if (resolvedPath) {
               connection.console.log(`[Server] Resolved import to: ${resolvedPath}`);
@@ -330,7 +330,7 @@ export class DefinitionHandler implements IHandler {
       return [];
     }
     
-    const resolvedPath = importResolver.resolveImport(targetModulePath, fromFile);
+    const resolvedPath = await importResolver.resolveImport(targetModulePath, fromFile);
     if (!resolvedPath) {
       connection.console.log(`[Server] Could not resolve re-export module: ${targetModulePath}`);
       return [];

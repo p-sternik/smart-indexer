@@ -61,7 +61,7 @@ export class ReExportResolver {
       }
 
       // Resolve the module specifier
-      const resolvedModule = this.importResolver.resolveImport(
+      const resolvedModule = await this.importResolver.resolveImport(
         reExport.moduleSpecifier,
         fromFile
       );

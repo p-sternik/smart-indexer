@@ -22,8 +22,8 @@ export class ShardStore {
   /**
    * Initialize the shard store.
    */
-  init(workspaceRoot: string, cacheDirectory: string): void {
-    this.shardManager.init(workspaceRoot, cacheDirectory);
+  async init(workspaceRoot: string, cacheDirectory: string): Promise<void> {
+    await this.shardManager.init(workspaceRoot, cacheDirectory);
   }
 
   /**
@@ -43,7 +43,7 @@ export class ShardStore {
   /**
    * Collect all shard files from disk.
    */
-  collectShardFiles(): string[] {
+  async collectShardFiles(): Promise<string[]> {
     return this.shardManager.collectShardFiles();
   }
 

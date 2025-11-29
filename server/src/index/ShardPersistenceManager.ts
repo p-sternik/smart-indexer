@@ -164,6 +164,7 @@ function fromCompactShard(compact: CompactShard): FileShard {
 export class ShardPersistenceManager {
   private shardsDirectory: string = '';
   private shardLocks: Map<string, Promise<void>> = new Map();
+  private lockCounters: Map<string, number> = new Map(); // Track active lock count per URI
   private pendingWrites: Map<string, PendingWrite> = new Map();
   private bufferEnabled: boolean;
   private bufferDelayMs: number;
@@ -191,11 +192,13 @@ export class ShardPersistenceManager {
    * @param workspaceRoot - Workspace root directory
    * @param cacheDirectory - Cache directory name (e.g., '.smart-index')
    */
-  init(workspaceRoot: string, cacheDirectory: string): void {
+  async init(workspaceRoot: string, cacheDirectory: string): Promise<void> {
     this.shardsDirectory = path.join(workspaceRoot, cacheDirectory, 'index');
     
-    if (!fs.existsSync(this.shardsDirectory)) {
-      fs.mkdirSync(this.shardsDirectory, { recursive: true });
+    try {
+      await fsPromises.access(this.shardsDirectory);
+    } catch {
+      await fsPromises.mkdir(this.shardsDirectory, { recursive: true });
     }
     
     console.info(`[ShardPersistenceManager] Initialized at ${this.shardsDirectory}`);
@@ -226,6 +229,9 @@ export class ShardPersistenceManager {
   /**
    * Execute a task with exclusive access to a shard file.
    * Prevents race conditions between concurrent load-modify-save operations.
+   * 
+   * Uses reference counting to ensure lock entries are cleaned up when
+   * no more tasks are waiting, preventing unbounded memory growth.
    */
   async withLock<T>(uri: string, task: () => Promise<T>): Promise<T> {
     // Periodic cleanup of stale lock entries to prevent memory growth
@@ -234,6 +240,10 @@ export class ShardPersistenceManager {
       this.lockCleanupCounter = 0;
       this.cleanupStaleLocks();
     }
+    
+    // Increment active lock counter for this URI
+    const currentCount = this.lockCounters.get(uri) || 0;
+    this.lockCounters.set(uri, currentCount + 1);
     
     const currentLock = this.shardLocks.get(uri) || Promise.resolve();
     
@@ -252,9 +262,14 @@ export class ShardPersistenceManager {
         rejectResult!(error);
       }
     }).finally(() => {
-      // Clean up lock entry if this is still the current lock
-      if (this.shardLocks.get(uri) === newLock) {
+      // Decrement counter and clean up if no more locks waiting
+      const count = this.lockCounters.get(uri) || 1;
+      if (count <= 1) {
+        // Last lock released - clean up both maps
+        this.lockCounters.delete(uri);
         this.shardLocks.delete(uri);
+      } else {
+        this.lockCounters.set(uri, count - 1);
       }
     });
     
@@ -264,7 +279,7 @@ export class ShardPersistenceManager {
 
   /**
    * Cleanup stale lock entries to prevent unbounded memory growth.
-   * Removes lock entries that are already resolved (Promise settled).
+   * Removes lock entries with zero active count.
    */
   private cleanupStaleLocks(): void {
     if (this.shardLocks.size <= this.maxLocks) {
@@ -273,33 +288,20 @@ export class ShardPersistenceManager {
     
     // Log cleanup for observability
     const beforeSize = this.shardLocks.size;
-    
-    // Create a list of URIs to check
-    const urisToCheck = Array.from(this.shardLocks.keys());
     let cleaned = 0;
     
-    for (const uri of urisToCheck) {
-      const lock = this.shardLocks.get(uri);
-      if (lock) {
-        // Check if the promise is settled by racing with an immediately resolved promise
-        // If the lock wins, it's still pending; if our check wins, it's settled
-        Promise.race([
-          lock.then(() => 'settled'),
-          Promise.resolve('check')
-        ]).then(result => {
-          if (result === 'settled') {
-            // Lock promise is settled, safe to remove if still the same
-            if (this.shardLocks.get(uri) === lock) {
-              this.shardLocks.delete(uri);
-              cleaned++;
-            }
-          }
-        });
+    // Clean up entries where counter is 0 or missing (should not happen, but defensive)
+    for (const uri of this.shardLocks.keys()) {
+      const count = this.lockCounters.get(uri) || 0;
+      if (count === 0) {
+        this.shardLocks.delete(uri);
+        this.lockCounters.delete(uri);
+        cleaned++;
       }
     }
     
     if (cleaned > 0 || beforeSize > this.maxLocks) {
-      console.info(`[ShardPersistenceManager] Lock cleanup: ${beforeSize} -> ${this.shardLocks.size} entries`);
+      console.info(`[ShardPersistenceManager] Lock cleanup: ${beforeSize} -> ${this.shardLocks.size} entries (cleaned ${cleaned})`);
     }
   }
 
@@ -579,23 +581,27 @@ export class ShardPersistenceManager {
   /**
    * Recursively collect all shard files from nested directory structure.
    * Collects both MessagePack (.bin) and legacy JSON (.json) files.
+   * Uses async I/O to avoid blocking the event loop.
    */
-  collectShardFiles(dir?: string): string[] {
+  async collectShardFiles(dir?: string): Promise<string[]> {
     const searchDir = dir || this.shardsDirectory;
     const results: string[] = [];
     
     try {
-      if (!fs.existsSync(searchDir)) {
-        return results;
+      try {
+        await fsPromises.access(searchDir);
+      } catch {
+        return results; // Directory doesn't exist
       }
 
-      const entries = fs.readdirSync(searchDir, { withFileTypes: true });
+      const entries = await fsPromises.readdir(searchDir, { withFileTypes: true });
       
       for (const entry of entries) {
         const fullPath = path.join(searchDir, entry.name);
         
         if (entry.isDirectory()) {
-          results.push(...this.collectShardFiles(fullPath));
+          const subResults = await this.collectShardFiles(fullPath);
+          results.push(...subResults);
         } else if (entry.isFile() && (entry.name.endsWith('.bin') || entry.name.endsWith('.json'))) {
           results.push(fullPath);
         }
@@ -614,30 +620,35 @@ export class ShardPersistenceManager {
     // Flush pending writes first
     await this.flush();
 
-    if (fs.existsSync(this.shardsDirectory)) {
-      this.clearDirectory(this.shardsDirectory);
+    try {
+      await fsPromises.access(this.shardsDirectory);
+      await this.clearDirectory(this.shardsDirectory);
+    } catch {
+      // Directory doesn't exist, nothing to clear
     }
     
     this.shardLocks.clear();
+    this.lockCounters.clear();
     console.info(`[ShardPersistenceManager] Cleared all shards`);
   }
 
   /**
    * Recursively clear directory contents.
    * Clears both MessagePack (.bin) and legacy JSON (.json) files.
+   * Uses async I/O to avoid blocking the event loop.
    */
-  private clearDirectory(dir: string): void {
+  private async clearDirectory(dir: string): Promise<void> {
     try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      const entries = await fsPromises.readdir(dir, { withFileTypes: true });
       
       for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
         
         if (entry.isDirectory()) {
-          this.clearDirectory(fullPath);
-          fs.rmdirSync(fullPath);
+          await this.clearDirectory(fullPath);
+          await fsPromises.rmdir(fullPath);
         } else if (entry.isFile() && (entry.name.endsWith('.bin') || entry.name.endsWith('.json'))) {
-          fs.unlinkSync(fullPath);
+          await fsPromises.unlink(fullPath);
         }
       }
     } catch (error) {
@@ -651,12 +662,14 @@ export class ShardPersistenceManager {
   getStats(): { 
     shardsDirectory: string;
     activeLocks: number;
+    activeLockCounters: number;
     pendingWrites: number;
     bufferEnabled: boolean;
   } {
     return {
       shardsDirectory: this.shardsDirectory,
       activeLocks: this.shardLocks.size,
+      activeLockCounters: this.lockCounters.size,
       pendingWrites: this.pendingWrites.size,
       bufferEnabled: this.bufferEnabled
     };
@@ -668,6 +681,7 @@ export class ShardPersistenceManager {
   async dispose(): Promise<void> {
     await this.flush();
     this.shardLocks.clear();
+    this.lockCounters.clear();
     console.info(`[ShardPersistenceManager] Disposed`);
   }
 }

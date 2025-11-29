@@ -208,10 +208,8 @@ export class CacheManager {
 
   async clear(): Promise<void> {
     try {
-      const allFiles = await this.storage.getAllFiles();
-      for (const file of allFiles) {
-        await this.storage.deleteFile(file.uri);
-      }
+      // Use single transaction for O(1) clear instead of O(N) file-by-file deletion
+      await this.storage.clearAllData();
       this.stats = {
         totalFiles: 0,
         totalSymbols: 0,

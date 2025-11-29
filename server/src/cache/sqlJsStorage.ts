@@ -107,6 +107,10 @@ export class SqlJsStorage {
     if (!this.db) { return; }
 
     try {
+      // Performance PRAGMAs for sql.js (in-memory DB with periodic disk flush)
+      this.db.run('PRAGMA synchronous = NORMAL;');
+      this.db.run('PRAGMA journal_mode = WAL;');
+      
       this.db.run(`
         CREATE TABLE IF NOT EXISTS metadata (
           key TEXT PRIMARY KEY,
@@ -456,6 +460,30 @@ export class SqlJsStorage {
     }
   }
 
+  /**
+   * Clear all data from symbols and files tables in a single transaction.
+   * O(1) operation instead of O(N) file-by-file deletion.
+   */
+  async clearAllData(): Promise<void> {
+    if (!this.db) { return; }
+    try {
+      this.db.run('BEGIN TRANSACTION');
+      try {
+        this.db.run('DELETE FROM symbols');
+        this.db.run('DELETE FROM files');
+        this.db.run('COMMIT');
+        this.markDirty();
+        console.info('[SqlJsStorage] All data cleared in single transaction');
+      } catch (deleteError) {
+        this.db.run('ROLLBACK');
+        throw deleteError;
+      }
+    } catch (error) {
+      console.error(`[SqlJsStorage] Error clearing all data: ${error}`);
+      throw error;
+    }
+  }
+
   async findSymbolsByName(name: string): Promise<Array<{
     id: string;
     name: string;
@@ -704,6 +732,48 @@ export class SqlJsStorage {
   }>> {
     if (!this.db) { return []; }
     try {
+      // Use prepared statement for O(1) lookup
+      if (this.stmts.getSymbolsByUri) {
+        this.stmts.getSymbolsByUri.reset();
+        this.stmts.getSymbolsByUri.bind([uri]);
+        const results: Array<{
+          id: string;
+          name: string;
+          kind: string;
+          uri: string;
+          line: number;
+          character: number;
+          startLine: number;
+          startCharacter: number;
+          endLine: number;
+          endCharacter: number;
+          containerName: string | null;
+          containerKind: string | null;
+          isStatic: boolean | null;
+        }> = [];
+        
+        while (this.stmts.getSymbolsByUri.step()) {
+          const row = this.stmts.getSymbolsByUri.get() as any[];
+          results.push({
+            id: row[0] as string,
+            name: row[1] as string,
+            kind: row[2] as string,
+            uri: row[3] as string,
+            line: row[4] as number,
+            character: row[5] as number,
+            startLine: row[6] as number,
+            startCharacter: row[7] as number,
+            endLine: row[8] as number,
+            endCharacter: row[9] as number,
+            containerName: row[10] as string | null,
+            containerKind: row[11] as string | null,
+            isStatic: row[12] ? true : false
+          });
+        }
+        return results;
+      }
+      
+      // Fallback to raw SQL if prepared statement not available
       const result = this.db.exec(
         `SELECT id, name, kind, uri, line, character, startLine, startCharacter, endLine, endCharacter, 
          containerName, containerKind, isStatic FROM symbols WHERE uri = ?`,

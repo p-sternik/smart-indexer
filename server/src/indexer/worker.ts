@@ -1,74 +1,38 @@
 import { parentPort } from 'worker_threads';
-import { parse } from '@typescript-eslint/typescript-estree';
 import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
 import { IndexedFileResult, IndexedSymbol, IndexedReference, ImportInfo, ReExportInfo, PendingReference, SHARD_VERSION, NgRxMetadata } from '../types.js';
 import { createSymbolId } from './symbolResolver.js';
-import { toCamelCase } from '../utils/stringUtils.js';
-import { PluginRegistry, PluginVisitorContext, PluginVisitResult } from '../plugins/FrameworkPlugin.js';
+import { PluginRegistry, PluginVisitorContext } from '../plugins/FrameworkPlugin.js';
 import { AngularPlugin } from '../plugins/angular/AngularPlugin.js';
 import { NgRxPlugin } from '../plugins/ngrx/NgRxPlugin.js';
-import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
+
+// Import refactored components
+import {
+  StringInterner,
+  ScopeTracker,
+  astParser,
+  ImportExtractor,
+  isNgRxCreateActionCall,
+  isNgRxCreateActionGroupCall,
+  isNgRxCreateEffectCall,
+  isNgRxOnCall,
+  isNgRxOfTypeCall,
+  extractActionTypeString,
+  hasActionInterface,
+  hasEffectDecorator,
+  processCreateActionGroup
+} from './components/index.js';
 
 // Initialize plugin registry for worker thread
 const workerPluginRegistry = new PluginRegistry();
 workerPluginRegistry.register(new AngularPlugin());
 workerPluginRegistry.register(new NgRxPlugin());
 
-/**
- * StringInterner - Deduplicates repeated strings to save memory.
- * Common strings like 'Component', 'Injectable', import names, etc. are interned
- * so only one instance exists per unique string value.
- * 
- * Implements LRU-style eviction to prevent unbounded memory growth.
- * When the pool exceeds maxSize, the oldest entries are evicted.
- */
-class StringInterner {
-  private pool = new Map<string, string>();
-  private readonly maxSize: number;
-
-  constructor(maxSize: number = 10000) {
-    this.maxSize = maxSize;
-  }
-
-  intern(s: string): string {
-    let cached = this.pool.get(s);
-    if (cached) {
-      // Move to end (most recently used) by re-inserting
-      this.pool.delete(s);
-      this.pool.set(s, cached);
-      return cached;
-    }
-
-    // Evict oldest entries if at capacity
-    if (this.pool.size >= this.maxSize) {
-      // Delete oldest 10% to avoid frequent evictions
-      const evictCount = Math.max(1, Math.floor(this.maxSize * 0.1));
-      const keysIterator = this.pool.keys();
-      for (let i = 0; i < evictCount; i++) {
-        const oldestKey = keysIterator.next().value;
-        if (oldestKey !== undefined) {
-          this.pool.delete(oldestKey);
-        }
-      }
-    }
-
-    this.pool.set(s, s);
-    return s;
-  }
-
-  clear(): void {
-    this.pool.clear();
-  }
-
-  get size(): number {
-    return this.pool.size;
-  }
-}
-
 // Global interner instance per worker - reused across all file processing
 const interner = new StringInterner();
+const importExtractor = new ImportExtractor(interner);
 
 interface WorkerTaskData {
   uri: string;
@@ -79,332 +43,6 @@ interface WorkerResult {
   success: boolean;
   result?: IndexedFileResult;
   error?: string;
-}
-
-class ScopeTracker {
-  private scopeStack: string[] = [];
-  private localVariables: Map<string, Set<string>> = new Map();
-  
-  enterScope(scopeName: string): void {
-    this.scopeStack.push(scopeName);
-  }
-  
-  exitScope(): void {
-    this.scopeStack.pop();
-  }
-  
-  getCurrentScopeId(): string {
-    return this.scopeStack.join('::') || '<global>';
-  }
-  
-  addLocalVariable(varName: string): void {
-    const scopeId = this.getCurrentScopeId();
-    if (!this.localVariables.has(scopeId)) {
-      this.localVariables.set(scopeId, new Set());
-    }
-    this.localVariables.get(scopeId)!.add(varName);
-  }
-  
-  isLocalVariable(varName: string): boolean {
-    const scopeId = this.getCurrentScopeId();
-    return this.localVariables.get(scopeId)?.has(varName) || false;
-  }
-}
-
-function isNgRxCreateActionCall(node: TSESTree.CallExpression): boolean {
-  if (node.callee.type === AST_NODE_TYPES.Identifier) {
-    return node.callee.name === 'createAction';
-  }
-  return false;
-}
-
-function isNgRxCreateActionGroupCall(node: TSESTree.CallExpression): boolean {
-  if (node.callee.type === AST_NODE_TYPES.Identifier) {
-    return node.callee.name === 'createActionGroup';
-  }
-  return false;
-}
-
-function isNgRxCreateEffectCall(node: TSESTree.CallExpression): boolean {
-  if (node.callee.type === AST_NODE_TYPES.Identifier) {
-    return node.callee.name === 'createEffect';
-  }
-  return false;
-}
-
-function isNgRxOnCall(node: TSESTree.CallExpression): boolean {
-  if (node.callee.type === AST_NODE_TYPES.Identifier) {
-    return node.callee.name === 'on';
-  }
-  return false;
-}
-
-function isNgRxOfTypeCall(node: TSESTree.CallExpression): boolean {
-  if (node.callee.type === AST_NODE_TYPES.Identifier) {
-    return node.callee.name === 'ofType';
-  }
-  return false;
-}
-
-function extractActionTypeString(node: TSESTree.CallExpression): string | null {
-  if (node.arguments.length > 0) {
-    const firstArg = node.arguments[0];
-    if (firstArg.type === AST_NODE_TYPES.Literal && typeof firstArg.value === 'string') {
-      return firstArg.value;
-    }
-  }
-  return null;
-}
-
-function hasActionInterface(node: TSESTree.ClassDeclaration): boolean {
-  if (!node.implements || node.implements.length === 0) {
-    return false;
-  }
-  
-  for (const impl of node.implements) {
-    if (impl.expression.type === AST_NODE_TYPES.Identifier && impl.expression.name === 'Action') {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Process createActionGroup calls and generate virtual symbols for action methods
- * 
- * Example:
- *   const PageActions = createActionGroup({
- *     source: 'Page',
- *     events: {
- *       'Load Data': emptyProps(),
- *       'Load': emptyProps()
- *     }
- *   });
- * 
- * This generates virtual symbols:
- *   - loadData (method) for 'Load Data'
- *   - load (method) for 'Load'
- * 
- * Returns the events mapping (camelCase -> 'Event String') for the container's ngrxMetadata.
- */
-function processCreateActionGroup(
-  callExpr: TSESTree.CallExpression,
-  containerName: string,
-  uri: string,
-  symbols: IndexedSymbol[],
-  containerPath: string[]
-): Record<string, string> | undefined {
-  const eventsMap: Record<string, string> = {};
-  
-  // createActionGroup expects a config object as first argument
-  if (callExpr.arguments.length === 0) {
-    return undefined;
-  }
-
-  const configArg = callExpr.arguments[0];
-  if (configArg.type !== AST_NODE_TYPES.ObjectExpression) {
-    return undefined;
-  }
-
-  // Find the 'events' property in the config object
-  let eventsProperty: TSESTree.Property | null = null;
-  for (const prop of configArg.properties) {
-    if (prop.type === AST_NODE_TYPES.Property && 
-        prop.key.type === AST_NODE_TYPES.Identifier &&
-        prop.key.name === 'events') {
-      eventsProperty = prop;
-      break;
-    }
-  }
-
-  if (!eventsProperty || eventsProperty.value.type !== AST_NODE_TYPES.ObjectExpression) {
-    return undefined;
-  }
-
-  const eventsObject = eventsProperty.value as TSESTree.ObjectExpression;
-  const fullContainerPath = containerPath.length > 0 ? containerPath.join('.') : undefined;
-
-  // Process each event in the events object
-  for (const eventProp of eventsObject.properties) {
-    if (eventProp.type !== AST_NODE_TYPES.Property || !eventProp.loc) {
-      continue;
-    }
-
-    let eventKey: string | null = null;
-    let keyLocation: { line: number; character: number } | null = null;
-    let keyRange: { startLine: number; startCharacter: number; endLine: number; endCharacter: number } | null = null;
-
-    // Extract the event key (can be Identifier or StringLiteral)
-    if (eventProp.key.type === AST_NODE_TYPES.Identifier && eventProp.key.loc) {
-      // Use .name directly (string property)
-      eventKey = eventProp.key.name;
-      keyLocation = {
-        line: eventProp.key.loc.start.line - 1,
-        character: eventProp.key.loc.start.column
-      };
-      keyRange = {
-        startLine: eventProp.key.loc.start.line - 1,
-        startCharacter: eventProp.key.loc.start.column,
-        endLine: eventProp.key.loc.end.line - 1,
-        endCharacter: eventProp.key.loc.end.column
-      };
-    } else if (eventProp.key.type === AST_NODE_TYPES.Literal && 
-               typeof eventProp.key.value === 'string' &&
-               eventProp.key.loc) {
-      eventKey = eventProp.key.value;
-      keyLocation = {
-        line: eventProp.key.loc.start.line - 1,
-        character: eventProp.key.loc.start.column
-      };
-      keyRange = {
-        startLine: eventProp.key.loc.start.line - 1,
-        startCharacter: eventProp.key.loc.start.column,
-        endLine: eventProp.key.loc.end.line - 1,
-        endCharacter: eventProp.key.loc.end.column
-      };
-    }
-
-    if (!eventKey || !keyLocation || !keyRange) {
-      continue;
-    }
-
-    // Convert the event key to camelCase (this is what NgRx generates at runtime)
-    // 'Load Data' -> 'loadData'
-    // 'Load' -> 'load'
-    const camelCaseName = interner.intern(toCamelCase(eventKey) || '');
-
-    if (!camelCaseName) {
-      continue;
-    }
-
-    // Intern the event key for the events map
-    const internedEventKey = interner.intern(eventKey);
-
-    // Store in events map for container's ngrxMetadata
-    eventsMap[camelCaseName] = internedEventKey;
-
-    // Create a virtual symbol for the generated action method
-    const id = createSymbolId(
-      uri,
-      camelCaseName,
-      containerName,
-      fullContainerPath,
-      'method',
-      false,
-      0, // Action creators typically have 0 or optional props parameter
-      keyLocation.line,
-      keyLocation.character
-    );
-
-    // Build POJO with only primitive values
-    symbols.push({
-      id,
-      name: camelCaseName,
-      kind: 'method',
-      location: {
-        uri,
-        line: keyLocation.line,
-        character: keyLocation.character
-      },
-      range: keyRange,
-      containerName,
-      containerKind: 'constant',
-      fullContainerPath,
-      filePath: uri,
-      parametersCount: 0,
-      ngrxMetadata: {
-        type: internedEventKey, // Original event key name (interned)
-        role: 'action'
-      }
-    });
-  }
-
-  return Object.keys(eventsMap).length > 0 ? eventsMap : undefined;
-}
-
-function hasEffectDecorator(node: TSESTree.PropertyDefinition): boolean {
-  if (!node.decorators || node.decorators.length === 0) {
-    return false;
-  }
-  
-  for (const decorator of node.decorators) {
-    if (decorator.expression.type === AST_NODE_TYPES.Identifier && decorator.expression.name === 'Effect') {
-      return true;
-    }
-    if (decorator.expression.type === AST_NODE_TYPES.CallExpression &&
-        decorator.expression.callee.type === AST_NODE_TYPES.Identifier &&
-        decorator.expression.callee.name === 'Effect') {
-      return true;
-    }
-  }
-  return false;
-}
-
-function computeHash(content: string): string {
-  return crypto.createHash('sha256').update(content).digest('hex');
-}
-
-function extractImports(ast: TSESTree.Program, imports: ImportInfo[]): void {
-  for (const statement of ast.body) {
-    if (statement.type === AST_NODE_TYPES.ImportDeclaration) {
-      // Intern module specifiers - commonly repeated across files
-      const moduleSpecifier = interner.intern(statement.source.value as string);
-      
-      for (const specifier of statement.specifiers) {
-        if (specifier.type === AST_NODE_TYPES.ImportDefaultSpecifier) {
-          imports.push({
-            localName: interner.intern(specifier.local.name),
-            moduleSpecifier,
-            isDefault: true
-          });
-        } else if (specifier.type === AST_NODE_TYPES.ImportNamespaceSpecifier) {
-          imports.push({
-            localName: interner.intern(specifier.local.name),
-            moduleSpecifier,
-            isNamespace: true
-          });
-        } else if (specifier.type === AST_NODE_TYPES.ImportSpecifier) {
-          imports.push({
-            localName: interner.intern(specifier.local.name),
-            moduleSpecifier,
-            isDefault: false
-          });
-        }
-      }
-    }
-  }
-}
-
-function extractReExports(ast: TSESTree.Program, reExports: ReExportInfo[]): void {
-  for (const statement of ast.body) {
-    if (statement.type === AST_NODE_TYPES.ExportAllDeclaration) {
-      const moduleSpecifier = interner.intern(statement.source.value as string);
-      reExports.push({
-        moduleSpecifier,
-        isAll: true
-      });
-    }
-    else if (statement.type === AST_NODE_TYPES.ExportNamedDeclaration && statement.source) {
-      const moduleSpecifier = interner.intern(statement.source.value as string);
-      const exportedNames: string[] = [];
-      
-      for (const specifier of statement.specifiers) {
-        if (specifier.type === AST_NODE_TYPES.ExportSpecifier) {
-          const exportedName = specifier.exported.type === AST_NODE_TYPES.Identifier
-            ? specifier.exported.name
-            : (specifier.exported as TSESTree.StringLiteral).value;
-          exportedNames.push(interner.intern(exportedName));
-        }
-      }
-      
-      if (exportedNames.length > 0) {
-        reExports.push({
-          moduleSpecifier,
-          exportedNames
-        });
-      }
-    }
-  }
 }
 
 function isDeclarationContext(node: TSESTree.Node, parent: TSESTree.Node | null): boolean {
@@ -849,7 +487,8 @@ function traverseAST(
                   varName,
                   uri,
                   symbols,
-                  [...containerPath, varName]
+                  [...containerPath, varName],
+                  interner
                 );
                 
                 // Add metadata to the container variable with isGroup flag and events map
@@ -1189,33 +828,26 @@ function extractCodeSymbolsAndReferences(uri: string, content: string): {
 } {
   const symbols: IndexedSymbol[] = [];
   const references: IndexedReference[] = [];
-  const imports: ImportInfo[] = [];
-  const reExports: ReExportInfo[] = [];
   const pendingReferences: PendingReference[] = [];
 
   try {
-    const ast = parse(content, {
-      loc: true,
-      range: true,
-      comment: false,
-      tokens: false,
-      errorOnUnknownASTType: false,
-      jsx: uri.endsWith('x')
-    });
+    const ast = astParser.parse(content, uri);
+    if (!ast) {
+      return { symbols, references, imports: [], reExports: [], pendingReferences, parseError: 'Failed to parse AST' };
+    }
 
-    extractImports(ast, imports);
-    extractReExports(ast, reExports);
+    const imports = importExtractor.extractImports(ast);
+    const reExports = importExtractor.extractReExports(ast);
 
     const scopeTracker = new ScopeTracker();
     traverseAST(ast, symbols, references, uri, undefined, undefined, [], imports, scopeTracker, null, undefined, pendingReferences);
+    
+    return { symbols, references, imports, reExports, pendingReferences };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`[Worker] Error parsing code file ${uri}: ${errorMessage}`);
-    // Return the error so processFile can mark the result appropriately
-    return { symbols, references, imports, reExports, pendingReferences, parseError: errorMessage };
+    return { symbols, references, imports: [], reExports: [], pendingReferences, parseError: errorMessage };
   }
-
-  return { symbols, references, imports, reExports, pendingReferences };
 }
 
 function extractTextSymbols(uri: string, content: string): IndexedSymbol[] {
@@ -1289,7 +921,7 @@ function processFile(taskData: WorkerTaskData): IndexedFileResult {
     };
   }
   
-  const hash = computeHash(content);
+  const hash = astParser.computeHash(content);
   
   const ext = path.extname(uri).toLowerCase();
   const isCodeFile = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'].includes(ext);

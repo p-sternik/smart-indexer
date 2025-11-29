@@ -7,7 +7,6 @@ import { toCamelCase, toPascalCase, sanitizeFilePath } from '../utils/stringUtil
 import { WorkerPool } from '../utils/workerPool.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
 import { ShardPersistenceManager, FileShard } from './ShardPersistenceManager.js';
-import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
@@ -99,7 +98,7 @@ export class BackgroundIndex implements ISymbolIndex {
    */
   async init(workspaceRoot: string, cacheDirectory: string): Promise<void> {
     // Initialize the centralized shard persistence manager
-    this.shardManager.init(workspaceRoot, cacheDirectory);
+    await this.shardManager.init(workspaceRoot, cacheDirectory);
 
     const workerScriptPath = path.join(__dirname, 'indexer', 'worker.js');
     this.workerPool = new WorkerPool(workerScriptPath, this.maxConcurrentJobs);
@@ -123,7 +122,7 @@ export class BackgroundIndex implements ISymbolIndex {
         return; // Directory doesn't exist yet
       }
 
-      const shardFiles = this.shardManager.collectShardFiles();
+      const shardFiles = await this.shardManager.collectShardFiles();
       let loadedShards = 0;
 
       // Process shards in batches to avoid blocking event loop
@@ -266,11 +265,11 @@ export class BackgroundIndex implements ISymbolIndex {
    * OPTIMIZED: Uses O(1) reverse indexes for cleanup instead of O(N) scans.
    */
   async updateFile(uri: string, result: IndexedFileResult): Promise<void> {
-    // CRITICAL: Invalidate cache BEFORE acquiring lock to prevent stale reads
-    this.shardCache.delete(uri);
-    
     // Wrap entire operation in lock to prevent race conditions
     await this.shardManager.withLock(uri, async () => {
+      // CRITICAL: Invalidate cache INSIDE lock to prevent stale cache repopulation
+      this.shardCache.delete(uri);
+      
       // Get current mtime (async)
       let mtime: number | undefined;
       try {
@@ -528,8 +527,10 @@ export class BackgroundIndex implements ISymbolIndex {
     const filePath = sanitizeFilePath(rawFilePath);
     
     try {
-      // PRE-VALIDATION: Check file exists to prevent ENOENT errors
-      if (!fs.existsSync(filePath)) {
+      // PRE-VALIDATION: Check file exists to prevent ENOENT errors (async)
+      try {
+        await fsPromises.access(filePath);
+      } catch {
         console.warn(`[BackgroundIndex] Skipping non-existent file: ${filePath}`);
         return;
       }
@@ -996,7 +997,7 @@ export class BackgroundIndex implements ISymbolIndex {
     files: string[],
     onProgress?: (current: number) => void
   ): Promise<void> {
-    // PRE-QUEUE VALIDATION: Sanitize paths and filter out non-existent files
+    // PRE-QUEUE VALIDATION: Sanitize paths and filter out non-existent files (async)
     const validFiles: string[] = [];
     const skippedFiles: string[] = [];
     
@@ -1004,9 +1005,10 @@ export class BackgroundIndex implements ISymbolIndex {
       // Sanitize path to handle Git's quoted/escaped output
       const uri = sanitizeFilePath(rawUri);
       
-      if (fs.existsSync(uri)) {
+      try {
+        await fsPromises.access(uri);
         validFiles.push(uri);
-      } else {
+      } catch {
         skippedFiles.push(rawUri); // Log original for debugging
       }
     }
@@ -1425,10 +1427,49 @@ export class BackgroundIndex implements ISymbolIndex {
       this.fileToReferenceNames.clear();
       this.referenceMap.clear();
       this.shardCache.clear(); // Clear LRU cache
+      
+      // Compact maps to reclaim memory from deleted entries
+      this.compact();
     } catch (error) {
       console.error(`[BackgroundIndex] Error clearing shards: ${error}`);
       throw error;
     }
+  }
+
+  /**
+   * Compact all in-memory maps by creating fresh Map instances.
+   * 
+   * JavaScript Maps retain memory for deleted entries until the Map is replaced.
+   * This method creates new Map instances copying only active data, allowing
+   * the old Maps (with their "tombstoned" entries) to be garbage collected.
+   * 
+   * Call this after significant deletion events (e.g., clear(), bulk remove).
+   */
+  compact(): void {
+    const startTime = Date.now();
+    const beforeSizes = {
+      fileMetadata: this.fileMetadata.size,
+      symbolNameIndex: this.symbolNameIndex.size,
+      symbolIdIndex: this.symbolIdIndex.size,
+      referenceMap: this.referenceMap.size
+    };
+
+    // Create fresh Map instances, copying only active entries
+    this.fileMetadata = new Map(this.fileMetadata);
+    this.symbolNameIndex = new Map(this.symbolNameIndex);
+    this.symbolIdIndex = new Map(this.symbolIdIndex);
+    this.fileToSymbolIds = new Map(this.fileToSymbolIds);
+    this.fileToSymbolNames = new Map(this.fileToSymbolNames);
+    this.fileToReferenceNames = new Map(this.fileToReferenceNames);
+    this.referenceMap = new Map(this.referenceMap);
+    this.shardCache = new Map(this.shardCache);
+
+    const duration = Date.now() - startTime;
+    console.info(
+      `[BackgroundIndex] Compacted maps in ${duration}ms: ` +
+      `files=${beforeSizes.fileMetadata}, symbols=${beforeSizes.symbolIdIndex}, ` +
+      `names=${beforeSizes.symbolNameIndex}, refs=${beforeSizes.referenceMap}`
+    );
   }
 
   /**

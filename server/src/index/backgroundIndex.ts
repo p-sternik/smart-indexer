@@ -377,7 +377,8 @@ export class BackgroundIndex implements ISymbolIndex {
         // Persist synthetic reference to source shard (survives restart)
         // ShardPersistenceManager handles locking internally
         await this.shardManager.withLock(sourceUri, async () => {
-          const sourceShard = await this.loadShard(sourceUri);
+          // CRITICAL: Use loadShardNoLock to avoid nested lock acquisition (deadlock fix)
+          const sourceShard = await this.shardManager.loadShardNoLock(sourceUri);
           if (sourceShard) {
             if (!sourceShard.references) {
               sourceShard.references = [];
@@ -401,7 +402,8 @@ export class BackgroundIndex implements ISymbolIndex {
               );
             }
             
-            await this.saveShard(sourceShard);
+            // CRITICAL: Use saveShardNoLock to avoid nested lock acquisition
+            await this.shardManager.saveShardNoLock(sourceShard);
           }
         });
 

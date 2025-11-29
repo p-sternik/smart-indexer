@@ -22,6 +22,7 @@ import { IndexedSymbol } from '../types.js';
 import { findSymbolAtPosition } from '../indexer/symbolResolver.js';
 import { parseMemberAccess, resolvePropertyRecursively } from '../indexer/recursiveResolver.js';
 import { disambiguateSymbols } from '../utils/disambiguation.js';
+import { getWordRangeAtPosition } from '../utils/textUtils.js';
 
 /**
  * Handler for textDocument/definition requests.
@@ -262,7 +263,7 @@ export class DefinitionHandler implements IHandler {
 
       // Fallback: use simple word-based lookup
       const offset = document.offsetAt(params.position);
-      const wordRange = this.getWordRangeAtPosition(text, offset);
+      const wordRange = getWordRangeAtPosition(text, offset);
       if (!wordRange) {
         connection.console.log(`[Server] Definition result: no word at position, ${Date.now() - start} ms`);
         return null;
@@ -468,28 +469,6 @@ export class DefinitionHandler implements IHandler {
       connection.console.error(`[Server] Error in TypeScript disambiguation: ${error}`);
       return candidates;
     }
-  }
-
-  /**
-   * Get word range at a given offset in text.
-   */
-  private getWordRangeAtPosition(
-    text: string,
-    offset: number
-  ): { start: number; end: number } | null {
-    const wordPattern = /[a-zA-Z_][a-zA-Z0-9_]*/g;
-    let match;
-
-    while ((match = wordPattern.exec(text)) !== null) {
-      if (match.index <= offset && offset <= match.index + match[0].length) {
-        return {
-          start: match.index,
-          end: match.index + match[0].length
-        };
-      }
-    }
-
-    return null;
   }
 }
 

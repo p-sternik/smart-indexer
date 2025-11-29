@@ -18,6 +18,7 @@ import { URI } from 'vscode-uri';
 
 import { IHandler, ServerServices, ServerState } from './types.js';
 import { findSymbolAtPosition } from '../indexer/symbolResolver.js';
+import { getWordRangeAtPosition } from '../utils/textUtils.js';
 
 /**
  * Handler for textDocument/references requests.
@@ -148,7 +149,7 @@ export class ReferencesHandler implements IHandler {
 
       // Fallback: use simple word-based lookup
       const offset = document.offsetAt(params.position);
-      const wordRange = this.getWordRangeAtPosition(text, offset);
+      const wordRange = getWordRangeAtPosition(text, offset);
       if (!wordRange) {
         connection.console.log(`[Server] References result: no word at position, ${Date.now() - start} ms`);
         return null;
@@ -187,28 +188,6 @@ export class ReferencesHandler implements IHandler {
       connection.console.error(`[Server] References error: ${error}, ${duration} ms`);
       return null;
     }
-  }
-
-  /**
-   * Get word range at a given offset in text.
-   */
-  private getWordRangeAtPosition(
-    text: string,
-    offset: number
-  ): { start: number; end: number } | null {
-    const wordPattern = /[a-zA-Z_][a-zA-Z0-9_]*/g;
-    let match;
-
-    while ((match = wordPattern.exec(text)) !== null) {
-      if (match.index <= offset && offset <= match.index + match[0].length) {
-        return {
-          start: match.index,
-          end: match.index + match[0].length
-        };
-      }
-    }
-
-    return null;
   }
 }
 

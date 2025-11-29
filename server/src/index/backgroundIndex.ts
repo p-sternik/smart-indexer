@@ -55,6 +55,10 @@ export class BackgroundIndex implements ISymbolIndex {
   private workerPool: WorkerPool | null = null;
   private progressCallback: ProgressCallback | null = null;
   private isBulkIndexing: boolean = false; // Flag to defer NgRx resolution during bulk indexing
+  
+  // LRU shard cache to reduce disk I/O
+  private shardCache: Map<string, FileShard> = new Map();
+  private readonly MAX_CACHE_SIZE = 50;
 
   constructor(symbolIndexer: SymbolIndexer, maxConcurrentJobs: number = 4) {
     this.symbolIndexer = symbolIndexer;
@@ -209,10 +213,34 @@ export class BackgroundIndex implements ISymbolIndex {
   }
 
   /**
-   * Load a shard from disk via ShardPersistenceManager.
+   * Load a shard from disk via ShardPersistenceManager with LRU caching.
+   * Uses an in-memory cache to reduce disk I/O for frequently accessed shards.
    */
   private async loadShard(uri: string): Promise<FileShard | null> {
-    return this.shardManager.loadShard(uri);
+    // Check cache first (O(1) lookup)
+    const cached = this.shardCache.get(uri);
+    if (cached) {
+      // Move to end for LRU (delete + re-add makes it most recently used)
+      this.shardCache.delete(uri);
+      this.shardCache.set(uri, cached);
+      return cached;
+    }
+
+    // Cache miss: load from disk
+    const shard = await this.shardManager.loadShard(uri);
+    if (shard) {
+      // Enforce LRU eviction before adding new entry
+      if (this.shardCache.size >= this.MAX_CACHE_SIZE) {
+        // Delete oldest entry (first key in Map iteration order)
+        const oldestKey = this.shardCache.keys().next().value;
+        if (oldestKey) {
+          this.shardCache.delete(oldestKey);
+        }
+      }
+      this.shardCache.set(uri, shard);
+    }
+
+    return shard;
   }
 
   /**
@@ -238,6 +266,9 @@ export class BackgroundIndex implements ISymbolIndex {
    * OPTIMIZED: Uses O(1) reverse indexes for cleanup instead of O(N) scans.
    */
   async updateFile(uri: string, result: IndexedFileResult): Promise<void> {
+    // CRITICAL: Invalidate cache BEFORE acquiring lock to prevent stale reads
+    this.shardCache.delete(uri);
+    
     // Wrap entire operation in lock to prevent race conditions
     await this.shardManager.withLock(uri, async () => {
       // Get current mtime (async)
@@ -591,6 +622,9 @@ export class BackgroundIndex implements ISymbolIndex {
    * OPTIMIZED: Uses O(1) reverse indexes instead of O(N) scans.
    */
   async removeFile(uri: string): Promise<void> {
+    // CRITICAL: Invalidate cache to prevent stale reads
+    this.shardCache.delete(uri);
+    
     this.fileMetadata.delete(uri);
 
     // O(1) CLEANUP: Remove from symbol name index using reverse index
@@ -1388,6 +1422,7 @@ export class BackgroundIndex implements ISymbolIndex {
       this.fileToSymbolNames.clear();
       this.fileToReferenceNames.clear();
       this.referenceMap.clear();
+      this.shardCache.clear(); // Clear LRU cache
     } catch (error) {
       console.error(`[BackgroundIndex] Error clearing shards: ${error}`);
       throw error;

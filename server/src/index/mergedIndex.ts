@@ -76,16 +76,16 @@ export class MergedIndex implements ISymbolIndex {
   }
 
   async searchSymbols(query: string, limit: number, context?: RankingContext): Promise<IndexedSymbol[]> {
-    // Get from all indices without limit initially
-    // For performance, we'll process in batches to avoid blocking event loop
-    const allResults: IndexedSymbol[] = [];
+    // OPTIMIZATION: Use a search budget to avoid fetching 50k+ results when only 50 are needed.
+    // Request limit * 2 from each provider, capped at 1000, to allow for deduplication and ranking.
+    const searchBudget = Math.min(limit * 2, 1000);
     
-    // Collect results from all indices
+    // Collect results from all indices with capped limits
     const [dynamicResults, backgroundResults, staticResults] = await Promise.all([
-      this.dynamicIndex.searchSymbols(query, Number.MAX_SAFE_INTEGER),
-      this.backgroundIndex.searchSymbols(query, Number.MAX_SAFE_INTEGER),
+      this.dynamicIndex.searchSymbols(query, searchBudget),
+      this.backgroundIndex.searchSymbols(query, searchBudget),
       this.staticIndex 
-        ? this.staticIndex.searchSymbols(query, Number.MAX_SAFE_INTEGER)
+        ? this.staticIndex.searchSymbols(query, searchBudget)
         : Promise.resolve([])
     ]);
 

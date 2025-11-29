@@ -17,6 +17,8 @@ import * as crypto from 'crypto';
 export class DynamicIndex implements ISymbolIndex {
   private fileSymbols: Map<string, IndexedFileResult> = new Map();
   private fileHashes: Map<string, string> = new Map(); // uri -> content hash for self-healing
+  private symbolNameIndex: Map<string, Set<string>> = new Map(); // name -> Set of URIs (O(1) lookup)
+  private fileToSymbolNames: Map<string, Set<string>> = new Map(); // uri -> Set of symbol names (reverse index for O(1) cleanup)
   private symbolIndexer: SymbolIndexer;
   private languageRouter: LanguageRouter | null = null;
 
@@ -36,10 +38,37 @@ export class DynamicIndex implements ISymbolIndex {
    */
   async updateFile(uri: string, content?: string): Promise<void> {
     try {
+      // O(1) CLEANUP: Remove old symbols using reverse index before adding new ones
+      const oldSymbolNames = this.fileToSymbolNames.get(uri);
+      if (oldSymbolNames) {
+        for (const name of oldSymbolNames) {
+          const uriSet = this.symbolNameIndex.get(name);
+          if (uriSet) {
+            uriSet.delete(uri);
+            if (uriSet.size === 0) {
+              this.symbolNameIndex.delete(name);
+            }
+          }
+        }
+      }
+
       // Use language router if available, otherwise fall back to symbol indexer
       const indexer = this.languageRouter || this.symbolIndexer;
       const result = await indexer.indexFile(uri, content);
       this.fileSymbols.set(uri, result);
+
+      // Update symbol name index and reverse index
+      const newSymbolNames = new Set<string>();
+      for (const symbol of result.symbols) {
+        let uriSet = this.symbolNameIndex.get(symbol.name);
+        if (!uriSet) {
+          uriSet = new Set();
+          this.symbolNameIndex.set(symbol.name, uriSet);
+        }
+        uriSet.add(uri);
+        newSymbolNames.add(symbol.name);
+      }
+      this.fileToSymbolNames.set(uri, newSymbolNames);
       
       // Store content hash for self-healing validation
       if (content !== undefined) {
@@ -55,6 +84,21 @@ export class DynamicIndex implements ISymbolIndex {
    * Remove a file from the dynamic index (e.g., when closed).
    */
   removeFile(uri: string): void {
+    // O(1) CLEANUP: Remove symbols using reverse index
+    const oldSymbolNames = this.fileToSymbolNames.get(uri);
+    if (oldSymbolNames) {
+      for (const name of oldSymbolNames) {
+        const uriSet = this.symbolNameIndex.get(name);
+        if (uriSet) {
+          uriSet.delete(uri);
+          if (uriSet.size === 0) {
+            this.symbolNameIndex.delete(name);
+          }
+        }
+      }
+      this.fileToSymbolNames.delete(uri);
+    }
+
     this.fileSymbols.delete(uri);
     this.fileHashes.delete(uri);
   }
@@ -90,6 +134,20 @@ export class DynamicIndex implements ISymbolIndex {
 
       // Hash mismatch or missing - index is stale, trigger immediate re-parsing
       console.info(`[DynamicIndex] Self-healing: Hash mismatch for ${filePath}, repairing index`);
+
+      // O(1) CLEANUP: Remove old symbols using reverse index before adding new ones
+      const oldSymbolNames = this.fileToSymbolNames.get(filePath);
+      if (oldSymbolNames) {
+        for (const name of oldSymbolNames) {
+          const uriSet = this.symbolNameIndex.get(name);
+          if (uriSet) {
+            uriSet.delete(filePath);
+            if (uriSet.size === 0) {
+              this.symbolNameIndex.delete(name);
+            }
+          }
+        }
+      }
       
       // Use the indexer directly for immediate, synchronous parsing (high priority)
       const indexer = this.languageRouter || this.symbolIndexer;
@@ -98,6 +156,19 @@ export class DynamicIndex implements ISymbolIndex {
       // Update the index with fresh symbols
       this.fileSymbols.set(filePath, result);
       this.fileHashes.set(filePath, currentHash);
+
+      // Update symbol name index and reverse index
+      const newSymbolNames = new Set<string>();
+      for (const symbol of result.symbols) {
+        let uriSet = this.symbolNameIndex.get(symbol.name);
+        if (!uriSet) {
+          uriSet = new Set();
+          this.symbolNameIndex.set(symbol.name, uriSet);
+        }
+        uriSet.add(filePath);
+        newSymbolNames.add(symbol.name);
+      }
+      this.fileToSymbolNames.set(filePath, newSymbolNames);
 
       console.info(`[DynamicIndex] Self-healing complete: ${result.symbols.length} symbols indexed for ${filePath}`);
       return true;
@@ -109,11 +180,21 @@ export class DynamicIndex implements ISymbolIndex {
 
   async findDefinitions(name: string): Promise<IndexedSymbol[]> {
     const results: IndexedSymbol[] = [];
+    
+    // O(1) lookup using symbol name index
+    const uriSet = this.symbolNameIndex.get(name);
+    if (!uriSet) {
+      return results;
+    }
 
-    for (const [_, fileResult] of this.fileSymbols) {
-      for (const symbol of fileResult.symbols) {
-        if (symbol.name === name) {
-          results.push(symbol);
+    // Only scan files that contain the symbol
+    for (const uri of uriSet) {
+      const fileResult = this.fileSymbols.get(uri);
+      if (fileResult) {
+        for (const symbol of fileResult.symbols) {
+          if (symbol.name === name) {
+            results.push(symbol);
+          }
         }
       }
     }

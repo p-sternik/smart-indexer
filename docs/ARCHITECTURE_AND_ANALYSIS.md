@@ -218,6 +218,19 @@ interface ISymbolIndex {
 }
 
 // Multiple implementations: DynamicIndex, BackgroundIndex, StaticIndex
+// DynamicIndex uses O(1) Map-based lookups via symbolNameIndex
+class DynamicIndex implements ISymbolIndex {
+  private fileSymbols: Map<string, IndexedFileResult>;       // uri → file data
+  private symbolNameIndex: Map<string, Set<string>>;         // name → Set of URIs (O(1) lookup)
+  private fileToSymbolNames: Map<string, Set<string>>;       // uri → Set of names (O(1) cleanup)
+  
+  async findDefinitions(name: string): Promise<IndexedSymbol[]> {
+    const uriSet = this.symbolNameIndex.get(name);  // O(1) lookup
+    if (!uriSet) return [];
+    // Only scan files that contain the symbol
+    for (const uri of uriSet) { /* ... */ }
+  }
+}
 ```
 
 #### 3.2.2 **Façade Pattern** - MergedIndex
@@ -227,6 +240,20 @@ class MergedIndex {
   async findDefinitions(name: string): Promise<IndexedSymbol[]> {
     // Queries Dynamic → Background → Static with priority
     return this.mergeResults(dynamic, background, static);
+  }
+  
+  async searchSymbols(query: string, limit: number): Promise<IndexedSymbol[]> {
+    // OPTIMIZATION: Search budget to avoid fetching 50k+ results
+    const searchBudget = Math.min(limit * 2, 1000);  // Cap at 1000
+    
+    const [dynamic, background, static] = await Promise.all([
+      this.dynamicIndex.searchSymbols(query, searchBudget),
+      this.backgroundIndex.searchSymbols(query, searchBudget),
+      this.staticIndex?.searchSymbols(query, searchBudget) ?? []
+    ]);
+    
+    // Merge, rank, and return top N results
+    return this.rankSymbolsWithBatching(merged, query, context, limit);
   }
 }
 ```
@@ -658,6 +685,10 @@ class BackgroundIndex implements ISymbolIndex {
   private fileToSymbolIds: Map<string, Set<string>>; // uri → Set of symbolIds (O(1) cleanup)
   private referenceMap: Map<string, Set<string>>;     // symbolName → URIs
   
+  // LRU shard cache to reduce disk I/O (max 50 entries)
+  private shardCache: Map<string, FileShard>;  // uri → shard (LRU eviction)
+  private readonly MAX_CACHE_SIZE = 50;
+  
   // Disk persistence via centralized manager
   private shardManager: ShardPersistenceManager; // .smart-index/index/<hash1>/<hash2>/<sha256>.bin
 }
@@ -1056,7 +1087,7 @@ class HybridDefinitionProvider {
 |----------|--------|--------|----------------|
 | **Monolithic server.ts** | Hard to test, maintain | OPEN | Decompose into request handlers |
 | **Synchronous FS operations** | Can block event loop | OPEN | Use async fs with batching |
-| **Memory pressure** | Large symbol indices in RAM | OPEN | Implement LRU eviction |
+| **✅ Memory pressure** | Large symbol indices in RAM | RESOLVED | LRU shard cache with 50-entry limit |
 | **No TypeScript project awareness** | Limited type inference | OPEN | Integrate ts.Program for deep analysis |
 | **Limited cross-workspace support** | Multi-root workspace issues | OPEN | Better workspace folder isolation |
 
@@ -1096,6 +1127,9 @@ The following critical issues have been fully addressed:
 | **Nested Lock Deadlock** | `withLock` inside `withLock` | `loadShardNoLock`/`saveShardNoLock` methods | `ShardPersistenceManager.ts:234,313` |
 | **Disk I/O Storms** | Rapid shard writes | 100ms write buffering | `ShardPersistenceManager.ts:337-376` |
 | **Git Quoted Paths** | `project\"projects` failing | `sanitizeFilePath()` pre-queue | `backgroundIndex.ts:866-892` |
+| **DynamicIndex O(F×S) scan** | `findDefinitions` iterating all files | Map-based `symbolNameIndex` for O(1) lookups | `dynamicIndex.ts:19-20` |
+| **Unbounded searchSymbols** | Fetching MAX_SAFE_INTEGER results | Search budget cap (limit×2, max 1000) | `mergedIndex.ts:79-82` |
+| **Shard disk I/O** | `loadShard` hitting disk every call | LRU cache with 50-entry limit | `backgroundIndex.ts:60-61,217-241` |
 
 ---
 

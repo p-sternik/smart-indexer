@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.43.2](https://github.com/p-sternik/smart-indexer/compare/v1.43.1...v1.43.2) (2025-11-29)
+
+
+### Code Refactoring
+
+* migrate file system operations to fs/promises for async support and adjust memory limits ([66611b3](https://github.com/p-sternik/smart-indexer/commit/66611b3f1e434e0b60e0ec7469780b45b8c73959))
+
 ## [1.43.1](https://github.com/p-sternik/smart-indexer/compare/v1.43.0...v1.43.1) (2025-11-29)
 
 

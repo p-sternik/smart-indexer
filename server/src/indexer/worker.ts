@@ -6,7 +6,7 @@ import { PluginRegistry, PluginVisitorContext } from '../plugins/FrameworkPlugin
 import { AngularPlugin } from '../plugins/angular/AngularPlugin.js';
 import { NgRxPlugin } from '../plugins/ngrx/NgRxPlugin.js';
 import * as path from 'path';
-import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 
 // Import refactored components
 import {
@@ -894,14 +894,14 @@ function extractTextSymbols(uri: string, content: string): IndexedSymbol[] {
   return symbols;
 }
 
-function processFile(taskData: WorkerTaskData): IndexedFileResult {
+async function processFile(taskData: WorkerTaskData): Promise<IndexedFileResult> {
   const { uri } = taskData;
   
-  // Read file content with safe error handling
+  // Read file content with safe error handling (async I/O for I/O concurrency in worker)
   // If reading fails, return a valid "skipped" result to ensure the task counter decrements
   let content: string;
   try {
-    content = taskData.content ?? fs.readFileSync(uri, 'utf-8');
+    content = taskData.content ?? await fsPromises.readFile(uri, 'utf-8');
   } catch (error: any) {
     // Return a safe empty result so the main thread counts this task as "done"
     // This prevents the indexer from hanging on malformed paths or missing files
@@ -970,9 +970,9 @@ function processFile(taskData: WorkerTaskData): IndexedFileResult {
 }
 
 if (parentPort) {
-  parentPort.on('message', (taskData: WorkerTaskData) => {
+  parentPort.on('message', async (taskData: WorkerTaskData) => {
     try {
-      const result = processFile(taskData);
+      const result = await processFile(taskData);
       const response: WorkerResult = {
         success: true,
         result

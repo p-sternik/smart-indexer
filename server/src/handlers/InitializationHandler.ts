@@ -26,7 +26,7 @@ import { DeadCodeDetector } from '../features/deadCode.js';
 import { FileWatcher } from '../index/fileWatcher.js';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 
 /**
  * Handler for LSP initialization events.
@@ -488,7 +488,8 @@ export class InitializationHandler implements IHandler {
 
       let processed = 0;
       const computeHash = async (uri: string): Promise<string> => {
-        const content = fs.readFileSync(uri, 'utf-8');
+        // Use async I/O to avoid blocking the event loop during indexing
+        const content = await fsPromises.readFile(uri, 'utf-8');
         return crypto.createHash('sha256').update(content).digest('hex');
       };
 
@@ -569,6 +570,7 @@ export class InitializationHandler implements IHandler {
 
   /**
    * Load metadata from disk.
+   * Uses async I/O to avoid blocking the event loop.
    */
   private async loadMetadata(): Promise<{ version: number; lastGitHash?: string; lastUpdatedAt: number; folderHashes?: Record<string, any> }> {
     const { connection, configManager } = this.services;
@@ -576,8 +578,9 @@ export class InitializationHandler implements IHandler {
     
     try {
       const metadataPath = path.join(this.state.workspaceRoot, configManager.getConfig().cacheDirectory, 'metadata.json');
-      if (fs.existsSync(metadataPath)) {
-        const content = fs.readFileSync(metadataPath, 'utf-8');
+      
+      try {
+        const content = await fsPromises.readFile(metadataPath, 'utf-8');
         const metadata = JSON.parse(content);
         
         // Load folder hashes if present
@@ -587,6 +590,12 @@ export class InitializationHandler implements IHandler {
         }
         
         return metadata;
+      } catch (readError: any) {
+        // File doesn't exist - return default metadata
+        if (readError.code === 'ENOENT') {
+          return { version: 1, lastUpdatedAt: 0 };
+        }
+        throw readError;
       }
     } catch (error) {
       connection.console.error(`[Server] Error loading metadata: ${error}`);
@@ -596,6 +605,7 @@ export class InitializationHandler implements IHandler {
 
   /**
    * Save metadata to disk.
+   * Uses async I/O to avoid blocking the event loop.
    */
   private async saveMetadata(metadata: { version: number; lastGitHash?: string; lastUpdatedAt: number }): Promise<void> {
     const { connection, configManager } = this.services;
@@ -604,9 +614,9 @@ export class InitializationHandler implements IHandler {
     try {
       const metadataPath = path.join(this.state.workspaceRoot, configManager.getConfig().cacheDirectory, 'metadata.json');
       const dir = path.dirname(metadataPath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
+      
+      // Ensure directory exists (async)
+      await fsPromises.mkdir(dir, { recursive: true });
       
       // Include folder hashes in metadata
       const extendedMetadata = {
@@ -614,7 +624,7 @@ export class InitializationHandler implements IHandler {
         folderHashes: folderHasher.exportToMetadata()
       };
       
-      fs.writeFileSync(metadataPath, JSON.stringify(extendedMetadata, null, 2), 'utf-8');
+      await fsPromises.writeFile(metadataPath, JSON.stringify(extendedMetadata, null, 2), 'utf-8');
       connection.console.info(`[Server] Saved metadata with ${Object.keys(extendedMetadata.folderHashes).length} folder hashes`);
     } catch (error) {
       connection.console.error(`[Server] Error saving metadata: ${error}`);

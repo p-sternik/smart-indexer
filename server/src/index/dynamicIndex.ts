@@ -21,6 +21,11 @@ export class DynamicIndex implements ISymbolIndex {
   private fileToSymbolNames: Map<string, Set<string>> = new Map(); // uri -> Set of symbol names (reverse index for O(1) cleanup)
   private symbolIdIndex: Map<string, IndexedSymbol> = new Map(); // symbolId -> IndexedSymbol (O(1) lookup by ID)
   private fileToSymbolIds: Map<string, Set<string>> = new Map(); // uri -> Set of symbolIds (reverse index for O(1) cleanup)
+  
+  // Reference tracking for O(1) findReferencesByName (mirrors BackgroundIndex)
+  private referenceMap: Map<string, Set<string>> = new Map(); // symbolName -> Set of URIs containing references
+  private fileToReferenceNames: Map<string, Set<string>> = new Map(); // uri -> Set of referenced symbol names (reverse index for O(1) cleanup)
+  
   private symbolIndexer: SymbolIndexer;
   private languageRouter: LanguageRouter | null = null;
 
@@ -62,6 +67,20 @@ export class DynamicIndex implements ISymbolIndex {
         }
       }
 
+      // O(1) CLEANUP: Remove old references using reverse index
+      const oldReferenceNames = this.fileToReferenceNames.get(uri);
+      if (oldReferenceNames) {
+        for (const symbolName of oldReferenceNames) {
+          const uriSet = this.referenceMap.get(symbolName);
+          if (uriSet) {
+            uriSet.delete(uri);
+            if (uriSet.size === 0) {
+              this.referenceMap.delete(symbolName);
+            }
+          }
+        }
+      }
+
       // Use language router if available, otherwise fall back to symbol indexer
       const indexer = this.languageRouter || this.symbolIndexer;
       const result = await indexer.indexFile(uri, content);
@@ -86,6 +105,21 @@ export class DynamicIndex implements ISymbolIndex {
       }
       this.fileToSymbolNames.set(uri, newSymbolNames);
       this.fileToSymbolIds.set(uri, newSymbolIds);
+      
+      // Update reference map and reverse index for O(1) findReferencesByName
+      const newReferenceNames = new Set<string>();
+      if (result.references) {
+        for (const ref of result.references) {
+          let refUriSet = this.referenceMap.get(ref.symbolName);
+          if (!refUriSet) {
+            refUriSet = new Set();
+            this.referenceMap.set(ref.symbolName, refUriSet);
+          }
+          refUriSet.add(uri);
+          newReferenceNames.add(ref.symbolName);
+        }
+      }
+      this.fileToReferenceNames.set(uri, newReferenceNames);
       
       // Store content hash for self-healing validation
       if (content !== undefined) {
@@ -123,6 +157,21 @@ export class DynamicIndex implements ISymbolIndex {
         this.symbolIdIndex.delete(id);
       }
       this.fileToSymbolIds.delete(uri);
+    }
+
+    // O(1) CLEANUP: Remove references using reverse index
+    const oldReferenceNames = this.fileToReferenceNames.get(uri);
+    if (oldReferenceNames) {
+      for (const symbolName of oldReferenceNames) {
+        const uriSet = this.referenceMap.get(symbolName);
+        if (uriSet) {
+          uriSet.delete(uri);
+          if (uriSet.size === 0) {
+            this.referenceMap.delete(symbolName);
+          }
+        }
+      }
+      this.fileToReferenceNames.delete(uri);
     }
 
     this.fileSymbols.delete(uri);
@@ -182,6 +231,20 @@ export class DynamicIndex implements ISymbolIndex {
           this.symbolIdIndex.delete(id);
         }
       }
+
+      // O(1) CLEANUP: Remove old references using reverse index
+      const oldReferenceNames = this.fileToReferenceNames.get(filePath);
+      if (oldReferenceNames) {
+        for (const symbolName of oldReferenceNames) {
+          const uriSet = this.referenceMap.get(symbolName);
+          if (uriSet) {
+            uriSet.delete(filePath);
+            if (uriSet.size === 0) {
+              this.referenceMap.delete(symbolName);
+            }
+          }
+        }
+      }
       
       // Use the indexer directly for immediate, synchronous parsing (high priority)
       const indexer = this.languageRouter || this.symbolIndexer;
@@ -210,6 +273,21 @@ export class DynamicIndex implements ISymbolIndex {
       }
       this.fileToSymbolNames.set(filePath, newSymbolNames);
       this.fileToSymbolIds.set(filePath, newSymbolIds);
+
+      // Update reference map and reverse index for O(1) findReferencesByName
+      const newReferenceNames = new Set<string>();
+      if (result.references) {
+        for (const ref of result.references) {
+          let refUriSet = this.referenceMap.get(ref.symbolName);
+          if (!refUriSet) {
+            refUriSet = new Set();
+            this.referenceMap.set(ref.symbolName, refUriSet);
+          }
+          refUriSet.add(filePath);
+          newReferenceNames.add(ref.symbolName);
+        }
+      }
+      this.fileToReferenceNames.set(filePath, newReferenceNames);
 
       console.info(`[DynamicIndex] Self-healing complete: ${result.symbols.length} symbols indexed for ${filePath}`);
       return true;
@@ -263,17 +341,38 @@ export class DynamicIndex implements ISymbolIndex {
     const results: IndexedSymbol[] = [];
     const seen = new Set<string>();
 
-    for (const [_, fileResult] of this.fileSymbols) {
-      for (const symbol of fileResult.symbols) {
-        // Use fuzzy matching instead of startsWith
-        const match = fuzzyScore(symbol.name, query);
-        if (match) {
-          const key = `${symbol.name}:${symbol.location.uri}:${symbol.location.line}:${symbol.location.character}`;
-          if (!seen.has(key)) {
-            results.push(symbol);
-            seen.add(key);
-            if (results.length >= limit) {
-              return results;
+    // OPTIMIZATION: Use symbolNameIndex to filter candidate names first (O(K) where K = unique names)
+    // instead of iterating over all symbols in all files (O(N*M))
+    const candidateUris = new Set<string>();
+    
+    for (const [name, uriSet] of this.symbolNameIndex) {
+      // Fast fuzzy filter on name only
+      if (fuzzyScore(name, query)) {
+        for (const uri of uriSet) {
+          candidateUris.add(uri);
+        }
+      }
+    }
+
+    // Only scan candidate files for actual symbol objects
+    for (const uri of candidateUris) {
+      if (results.length >= limit) {
+        break;
+      }
+      
+      const fileResult = this.fileSymbols.get(uri);
+      if (fileResult) {
+        for (const symbol of fileResult.symbols) {
+          // Use fuzzy matching on actual symbol
+          const match = fuzzyScore(symbol.name, query);
+          if (match) {
+            const key = `${symbol.name}:${symbol.location.uri}:${symbol.location.line}:${symbol.location.character}`;
+            if (!seen.has(key)) {
+              results.push(symbol);
+              seen.add(key);
+              if (results.length >= limit) {
+                return results;
+              }
             }
           }
         }
@@ -290,12 +389,22 @@ export class DynamicIndex implements ISymbolIndex {
 
   /**
    * Find all references to a symbol by name.
+   * OPTIMIZED: Uses referenceMap for O(1) lookup of candidate files instead of O(N) scan.
    */
   async findReferencesByName(name: string): Promise<IndexedReference[]> {
     const references: IndexedReference[] = [];
     
-    for (const [_, fileResult] of this.fileSymbols) {
-      if (fileResult.references) {
+    // Use inverted index to find only files that contain references to this symbol
+    const candidateUris = this.referenceMap.get(name);
+    
+    if (!candidateUris || candidateUris.size === 0) {
+      return references; // Fast path: no references found
+    }
+    
+    // Only load and scan files that are known to have references to this symbol
+    for (const uri of candidateUris) {
+      const fileResult = this.fileSymbols.get(uri);
+      if (fileResult && fileResult.references) {
         for (const ref of fileResult.references) {
           if (ref.symbolName === name) {
             references.push(ref);

@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.34.0](https://github.com/p-sternik/smart-indexer/compare/v1.33.0...v1.34.0) (2025-11-29)
+
+
+### Features
+
+* Add CompletionHandler to manage LSP textDocument/completion requests ([2a170fe](https://github.com/p-sternik/smart-indexer/commit/2a170fe2d06838af6f4c3126737d9e0b4c564008))
+
 ## [1.33.0](https://github.com/p-sternik/smart-indexer/compare/v1.32.0...v1.33.0) (2025-11-29)
 
 

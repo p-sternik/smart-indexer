@@ -9,9 +9,6 @@ import {
   TextDocumentPositionParams,
   TextDocumentSyncKind,
   InitializeResult,
-  DefinitionParams,
-  Location,
-  ReferenceParams,
   WorkspaceSymbol,
   WorkspaceSymbolParams,
   SymbolKind
@@ -23,8 +20,7 @@ import { FileScanner } from './indexer/fileScanner.js';
 import { SymbolIndexer } from './indexer/symbolIndexer.js';
 import { LanguageRouter } from './indexer/languageRouter.js';
 import { ImportResolver } from './indexer/importResolver.js';
-import { findSymbolAtPosition, matchSymbolById } from './indexer/symbolResolver.js';
-import { parseMemberAccess, resolvePropertyRecursively } from './indexer/recursiveResolver.js';
+import { matchSymbolById } from './indexer/symbolResolver.js';
 import { ConfigurationManager } from './config/configurationManager.js';
 import { DynamicIndex } from './index/dynamicIndex.js';
 import { BackgroundIndex } from './index/backgroundIndex.js';
@@ -35,14 +31,21 @@ import { FileWatcher } from './index/fileWatcher.js';
 import { Profiler } from './profiler/profiler.js';
 import { FolderHasher } from './cache/folderHasher.js';
 import { RankingContext } from './utils/fuzzySearch.js';
-import { disambiguateSymbols } from './utils/disambiguation.js';
-import { IndexedSymbol } from './types.js';
 import { TypeScriptService } from './typescript/typeScriptService.js';
 import { DeadCodeDetector } from './features/deadCode.js';
 import { URI } from 'vscode-uri';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+
+// Handler imports
+import { 
+  HandlerRegistry, 
+  ServerServices, 
+  ServerState,
+  createDefinitionHandler,
+  createReferencesHandler
+} from './handlers/index.js';
 
 const connection = createConnection(ProposedFeatures.all);
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
@@ -87,175 +90,61 @@ const statsManager = new StatsManager();
 let workspaceRoot: string = '';
 let indexingDebounceTimer: NodeJS.Timeout | null = null;
 
-/**
- * Recursively resolve re-exports to find the actual symbol definition.
- * Implements a depth-limited search to prevent infinite loops.
- */
-async function resolveReExport(
-  symbolName: string,
-  targetModulePath: string,
-  fromFile: string,
-  depth: number = 0,
-  visited: Set<string> = new Set()
-): Promise<IndexedSymbol[]> {
-  const MAX_DEPTH = 5;
-  
-  if (depth >= MAX_DEPTH) {
-    connection.console.warn(`[Server] Re-export recursion limit reached for ${symbolName}`);
-    return [];
-  }
-  
-  if (visited.has(targetModulePath)) {
-    connection.console.warn(`[Server] Circular re-export detected: ${targetModulePath}`);
-    return [];
-  }
-  
-  visited.add(targetModulePath);
-  
-  // Resolve the module path to an actual file
-  if (!importResolver) {
-    return [];
-  }
-  
-  const resolvedPath = importResolver.resolveImport(targetModulePath, fromFile);
-  if (!resolvedPath) {
-    connection.console.log(`[Server] Could not resolve re-export module: ${targetModulePath}`);
-    return [];
-  }
-  
-  connection.console.log(`[Server] Following re-export to: ${resolvedPath} (depth ${depth})`);
-  
-  // Get symbols from the target file
-  const targetSymbols = await mergedIndex.getFileSymbols(resolvedPath);
-  const matchingSymbols = targetSymbols.filter(sym => sym.name === symbolName);
-  
-  if (matchingSymbols.length > 0) {
-    connection.console.log(`[Server] Found ${matchingSymbols.length} symbols in re-export target`);
-    return matchingSymbols;
-  }
-  
-  // If not found, check if the target file also re-exports the symbol
-  const targetReExports = await mergedIndex.getFileReExports(resolvedPath);
-  for (const reExport of targetReExports) {
-    if (reExport.isAll || (reExport.exportedNames && reExport.exportedNames.includes(symbolName))) {
-      const nestedResults = await resolveReExport(
-        symbolName,
-        reExport.moduleSpecifier,
-        resolvedPath,
-        depth + 1,
-        visited
-      );
-      if (nestedResults.length > 0) {
-        return nestedResults;
-      }
-    }
-  }
-  
-  return [];
-}
+// ============================================================================
+// Handler Registry Setup
+// ============================================================================
 
 /**
- * Use TypeScript service to disambiguate when multiple candidates exist.
- * Returns filtered candidates based on semantic analysis.
+ * Server state - mutable state that handlers can read/update.
  */
-async function disambiguateWithTypeScript(
-  candidates: IndexedSymbol[],
-  fileName: string,
-  content: string,
-  line: number,
-  character: number,
-  timeoutMs: number = 200
-): Promise<IndexedSymbol[]> {
-  if (!typeScriptService.isInitialized()) {
-    connection.console.log('[Server] TypeScript service not initialized, skipping disambiguation');
-    return candidates;
-  }
+const serverState: ServerState = {
+  workspaceRoot: '',
+  hasConfigurationCapability: false,
+  hasWorkspaceFolderCapability: false,
+  currentActiveDocumentUri: undefined,
+  importResolver: null,
+  deadCodeDetector: null,
+  staticIndex: undefined,
+  fileWatcher: null
+};
 
-  try {
-    // Calculate offset from line/character
-    const lines = content.split('\n');
-    let offset = 0;
-    for (let i = 0; i < line && i < lines.length; i++) {
-      offset += lines[i].length + 1; // +1 for newline
-    }
-    offset += character;
+/**
+ * Server services - dependencies injected into handlers.
+ * Note: Some services are set lazily after initialization.
+ */
+const serverServices: ServerServices = {
+  connection,
+  documents,
+  mergedIndex,
+  configManager,
+  dynamicIndex,
+  backgroundIndex,
+  staticIndex: undefined,
+  typeScriptService,
+  importResolver: null,
+  deadCodeDetector: null,
+  profiler,
+  statsManager,
+  workspaceRoot: '',
+  infrastructure: {
+    languageRouter,
+    fileScanner,
+    gitWatcher,
+    folderHasher
+  },
+  fileWatcher: null
+};
 
-    // Race the TS service call against a timeout
-    const disambiguationPromise = new Promise<IndexedSymbol[]>((resolve) => {
-      (async () => {
-        // Get semantic details from TypeScript
-        const symbolDetails = typeScriptService.getSymbolDetails(fileName, offset);
-        
-        if (!symbolDetails) {
-          connection.console.log('[Server] TypeScript service could not resolve symbol details');
-          resolve(candidates);
-          return;
-        }
+/**
+ * Handler registry - manages all LSP request handlers.
+ */
+const handlerRegistry = new HandlerRegistry(serverServices, serverState);
 
-        connection.console.log(
-          `[Server] TS symbol details: name="${symbolDetails.name}", kind="${symbolDetails.kind}", ` +
-          `container="${symbolDetails.containerName || '<none>'}", containerKind="${symbolDetails.containerKind || '<none>'}"`
-        );
+// Register handlers (Definition and References for now)
+handlerRegistry.register(createDefinitionHandler);
+handlerRegistry.register(createReferencesHandler);
 
-        // Filter candidates based on semantic information
-        const filtered = candidates.filter(candidate => {
-          // Name must match
-          if (candidate.name !== symbolDetails.name) {
-            return false;
-          }
-
-          // If TS found a container, filter by it
-          if (symbolDetails.containerName) {
-            // Exact container match
-            if (candidate.containerName === symbolDetails.containerName) {
-              return true;
-            }
-            // Check if full container path matches
-            if (candidate.fullContainerPath && 
-                candidate.fullContainerPath.endsWith(symbolDetails.containerName)) {
-              return true;
-            }
-            // No container match
-            return false;
-          }
-
-          // If no container from TS, prefer candidates without container (global scope)
-          if (!symbolDetails.containerName && !candidate.containerName) {
-            return true;
-          }
-
-          // Kind matching as secondary filter
-          if (candidate.kind === symbolDetails.kind) {
-            return true;
-          }
-
-          return false;
-        });
-
-        if (filtered.length > 0) {
-          connection.console.log(`[Server] TypeScript disambiguation: ${candidates.length} → ${filtered.length} candidates`);
-          resolve(filtered);
-        } else {
-          connection.console.log('[Server] TypeScript disambiguation filtered all candidates, keeping original set');
-          resolve(candidates);
-        }
-      })();
-    });
-
-    const timeoutPromise = new Promise<IndexedSymbol[]>((resolve) => {
-      setTimeout(() => {
-        connection.console.warn(`[Server] TypeScript disambiguation timed out after ${timeoutMs}ms`);
-        resolve(candidates);
-      }, timeoutMs);
-    });
-
-    return await Promise.race([disambiguationPromise, timeoutPromise]);
-  } catch (error) {
-    connection.console.error(`[Server] Error in TypeScript disambiguation: ${error}`);
-    return candidates;
-  }
-}
-
+// ============================================================================
 
 interface ServerSettings {
   cacheDirectory: string;
@@ -342,6 +231,11 @@ connection.onInitialize(async (params: InitializeParams) => {
     // Initialize import resolver
     if (workspaceRoot) {
       importResolver = new ImportResolver(workspaceRoot);
+      // Sync with handler services
+      serverState.importResolver = importResolver;
+      serverServices.importResolver = importResolver;
+      serverState.workspaceRoot = workspaceRoot;
+      serverServices.workspaceRoot = workspaceRoot;
       connection.console.info('[Server] Import resolver initialized');
       
       // Initialize TypeScript service for semantic intelligence
@@ -474,6 +368,9 @@ async function initializeIndexing(): Promise<void> {
     // Initialize dead code detector
     deadCodeDetector = new DeadCodeDetector(backgroundIndex);
     deadCodeDetector.setConfigurationManager(configManager);
+    // Sync with handler services
+    serverState.deadCodeDetector = deadCodeDetector;
+    serverServices.deadCodeDetector = deadCodeDetector;
     connection.console.info('[Server] Dead code detector initialized');
 
     // Set language router for dynamic index too
@@ -550,6 +447,9 @@ async function initializeIndexing(): Promise<void> {
       600 // 600ms debounce delay
     );
     await fileWatcher.init();
+    // Sync with handler services
+    serverState.fileWatcher = fileWatcher;
+    serverServices.fileWatcher = fileWatcher;
     connection.console.info('[Server] Live file synchronization enabled');
   } catch (error) {
     connection.console.error(`[Server] Error initializing indexing: ${error}`);
@@ -1003,404 +903,8 @@ documents.onDidClose(e => {
   }
 });
 
-connection.onDefinition(
-  async (params: DefinitionParams): Promise<Location | Location[] | null> => {
-    const uri = URI.parse(params.textDocument.uri).fsPath;
-    const { line, character } = params.position;
-    const start = Date.now();
-    
-    connection.console.log(`[Server] Definition request: ${uri}:${line}:${character}`);
-    
-    try {
-      const document = documents.get(params.textDocument.uri);
-      if (!document) {
-        connection.console.log(`[Server] Definition result: document not found, 0 ms`);
-        return null;
-      }
-
-      const text = document.getText();
-
-      // NEW: Check if this is a member expression (e.g., myStore.actions.opened)
-      const memberAccess = parseMemberAccess(text, line, character);
-      if (memberAccess && memberAccess.propertyChain.length > 0) {
-        connection.console.log(
-          `[Server] Detected member expression: ${memberAccess.baseName}.${memberAccess.propertyChain.join('.')}`
-        );
-
-        // Step 1: Find the base object definition
-        const baseCandidates = await mergedIndex.findDefinitions(memberAccess.baseName);
-        
-        if (baseCandidates.length > 0) {
-          // Use the first candidate (or disambiguate if needed)
-          let baseSymbol = baseCandidates[0];
-          if (baseCandidates.length > 1) {
-            const ranked = disambiguateSymbols(baseCandidates, uri);
-            baseSymbol = ranked[0];
-          }
-
-          connection.console.log(
-            `[Server] Found base symbol: ${baseSymbol.name} at ${baseSymbol.location.uri}:${baseSymbol.location.line}`
-          );
-
-          // Step 2: Recursively resolve the property chain
-          const fileResolver = async (fileUri: string) => {
-            try {
-              return fs.readFileSync(fileUri, 'utf-8');
-            } catch {
-              return '';
-            }
-          };
-
-          const symbolFinder = async (name: string, fileUri?: string) => {
-            if (fileUri) {
-              const fileSymbols = await mergedIndex.getFileSymbols(fileUri);
-              return fileSymbols.filter(sym => sym.name === name);
-            }
-            return await mergedIndex.findDefinitions(name);
-          };
-
-          const resolved = await resolvePropertyRecursively(
-            baseSymbol,
-            memberAccess.propertyChain,
-            fileResolver,
-            symbolFinder,
-            typeScriptService.isInitialized() ? typeScriptService : undefined
-          );
-
-          if (resolved) {
-            const duration = Date.now() - start;
-            profiler.record('definition', duration);
-            statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
-            
-            connection.console.log(
-              `[Server] Recursive resolution succeeded: ${memberAccess.baseName}.${memberAccess.propertyChain.join('.')} ` +
-              `-> ${resolved.location.uri}:${resolved.location.line} in ${duration} ms`
-            );
-
-            return {
-              uri: URI.file(resolved.location.uri).toString(),
-              range: {
-                start: { line: resolved.range.startLine, character: resolved.range.startCharacter },
-                end: { line: resolved.range.endLine, character: resolved.range.endCharacter }
-              }
-            };
-          } else {
-            connection.console.log(`[Server] Recursive resolution failed, falling back to standard resolution`);
-          }
-        }
-      }
-
-      // Try to resolve the exact symbol at the cursor position
-      const symbolAtCursor = findSymbolAtPosition(uri, text, line, character);
-      
-      if (symbolAtCursor) {
-        connection.console.log(
-          `[Server] Resolved symbol: name="${symbolAtCursor.name}", kind="${symbolAtCursor.kind}", ` +
-          `container="${symbolAtCursor.containerName || '<none>'}", isStatic=${symbolAtCursor.isStatic}`
-        );
-
-        // NEW: Check if this symbol is an import - if so, resolve it
-        if (importResolver) {
-          const imports = await mergedIndex.getFileImports(uri);
-          const importInfo = importResolver.findImportForSymbol(symbolAtCursor.name, imports);
-          
-          if (importInfo) {
-            connection.console.log(`[Server] Symbol is imported from: ${importInfo.moduleSpecifier}`);
-            
-            // Resolve the module to a file path
-            const resolvedPath = importResolver.resolveImport(importInfo.moduleSpecifier, uri);
-            
-            if (resolvedPath) {
-              connection.console.log(`[Server] Resolved import to: ${resolvedPath}`);
-              
-              // Search only in the resolved file
-              let targetSymbols = await mergedIndex.getFileSymbols(resolvedPath);
-              let matchingSymbols = targetSymbols.filter(sym => sym.name === symbolAtCursor.name);
-              
-              // If not found, check if it's a re-export (barrel file)
-              if (matchingSymbols.length === 0) {
-                connection.console.log(`[Server] Symbol not found in ${resolvedPath}, checking re-exports...`);
-                const reExports = await mergedIndex.getFileReExports(resolvedPath);
-                
-                for (const reExport of reExports) {
-                  // Check if this re-export includes our symbol
-                  if (reExport.isAll || (reExport.exportedNames && reExport.exportedNames.includes(symbolAtCursor.name))) {
-                    connection.console.log(`[Server] Found re-export for ${symbolAtCursor.name} from ${reExport.moduleSpecifier}`);
-                    const reExportResults = await resolveReExport(
-                      symbolAtCursor.name,
-                      reExport.moduleSpecifier,
-                      resolvedPath
-                    );
-                    if (reExportResults.length > 0) {
-                      matchingSymbols = reExportResults;
-                      break;
-                    }
-                  }
-                }
-              }
-              
-              if (matchingSymbols.length > 0) {
-                const results = matchingSymbols.map(sym => ({
-                  uri: URI.file(sym.location.uri).toString(),
-                  range: {
-                    start: { line: sym.range.startLine, character: sym.range.startCharacter },
-                    end: { line: sym.range.endLine, character: sym.range.endCharacter }
-                  }
-                }));
-                
-                const duration = Date.now() - start;
-                profiler.record('definition', duration);
-                statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
-                
-                connection.console.log(`[Server] Definition result (import-resolved): ${results.length} locations in ${duration} ms`);
-                return results;
-              }
-            } else {
-              connection.console.log(`[Server] Could not resolve import path for: ${importInfo.moduleSpecifier}`);
-            }
-          }
-        }
-
-        // Standard resolution: get all candidates by name
-        const candidates = await mergedIndex.findDefinitions(symbolAtCursor.name);
-        connection.console.log(`[Server] Found ${candidates.length} candidates by name`);
-
-        // Filter candidates to match the exact symbol
-        const filtered = candidates.filter(candidate => {
-          const nameMatch = candidate.name === symbolAtCursor.name;
-          const kindMatch = candidate.kind === symbolAtCursor.kind || 
-                           (symbolAtCursor.kind === 'function' && candidate.kind === 'method') ||
-                           (symbolAtCursor.kind === 'property' && candidate.kind === 'method');
-          const containerMatch = !symbolAtCursor.containerName || 
-                                candidate.containerName === symbolAtCursor.containerName;
-          const staticMatch = symbolAtCursor.isStatic === undefined || 
-                             candidate.isStatic === symbolAtCursor.isStatic;
-          
-          return nameMatch && kindMatch && containerMatch && staticMatch;
-        });
-
-        connection.console.log(`[Server] Filtered to ${filtered.length} exact matches`);
-
-        if (filtered.length > 0) {
-          // NEW: If multiple candidates remain, use TypeScript for semantic disambiguation
-          let finalCandidates = filtered;
-          if (filtered.length > 1) {
-            connection.console.log(`[Server] Multiple candidates detected, attempting TypeScript disambiguation...`);
-            finalCandidates = await disambiguateWithTypeScript(
-              filtered,
-              uri,
-              text,
-              line,
-              character,
-              200 // 200ms timeout
-            );
-          }
-          
-          // Apply disambiguation heuristics as final ranking
-          const ranked = disambiguateSymbols(finalCandidates, uri, symbolAtCursor.containerName);
-          
-          const results = ranked.map(sym => ({
-            uri: URI.file(sym.location.uri).toString(),
-            range: {
-              start: { line: sym.range.startLine, character: sym.range.startCharacter },
-              end: { line: sym.range.endLine, character: sym.range.endCharacter }
-            }
-          }));
-
-          const duration = Date.now() - start;
-          profiler.record('definition', duration);
-          statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
-          
-          connection.console.log(`[Server] Definition result: ${results.length} locations (ranked) in ${duration} ms`);
-          return results;
-        }
-      }
-
-      // Fallback: use simple word-based lookup
-      const offset = document.offsetAt(params.position);
-      const wordRange = getWordRangeAtPosition(text, offset);
-      if (!wordRange) {
-        connection.console.log(`[Server] Definition result: no word at position, ${Date.now() - start} ms`);
-        return null;
-      }
-
-      const word = text.substring(wordRange.start, wordRange.end);
-      let symbols = await mergedIndex.findDefinitions(word);
-
-      // Apply ranking heuristics even for fallback
-      if (symbols.length > 1) {
-        symbols = disambiguateSymbols(symbols, uri);
-      }
-
-      const results = symbols.length === 0 ? null : symbols.map(sym => ({
-        uri: URI.file(sym.location.uri).toString(),
-        range: {
-          start: { line: sym.range.startLine, character: sym.range.startCharacter },
-          end: { line: sym.range.endLine, character: sym.range.endCharacter }
-        }
-      }));
-
-      const duration = Date.now() - start;
-      profiler.record('definition', duration);
-      statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
-      
-      connection.console.log(`[Server] Definition result (fallback): symbol="${word}", ${symbols.length} locations in ${duration} ms`);
-      return results;
-    } catch (error) {
-      const duration = Date.now() - start;
-      connection.console.error(`[Server] Definition error: ${error}, ${duration} ms`);
-      return null;
-    }
-  }
-);
-
-connection.onReferences(
-  async (params: ReferenceParams): Promise<Location[] | null> => {
-    const uri = URI.parse(params.textDocument.uri).fsPath;
-    const { line, character } = params.position;
-    const start = Date.now();
-    
-    connection.console.log(`[Server] References request: ${uri}:${line}:${character}`);
-    
-    try {
-      const document = documents.get(params.textDocument.uri);
-      if (!document) {
-        connection.console.log(`[Server] References result: document not found, 0 ms`);
-        return null;
-      }
-
-      const text = document.getText();
-
-      // Try to resolve the exact symbol at the cursor position
-      const symbolAtCursor = findSymbolAtPosition(uri, text, line, character);
-      
-      if (symbolAtCursor) {
-        connection.console.log(
-          `[Server] Resolved symbol: name="${symbolAtCursor.name}", kind="${symbolAtCursor.kind}", ` +
-          `container="${symbolAtCursor.containerName || '<none>'}", isStatic=${symbolAtCursor.isStatic}`
-        );
-
-        // NEW: Query actual references (usages) instead of definitions
-        const references = await mergedIndex.findReferencesByName(symbolAtCursor.name);
-        connection.console.log(`[Server] Found ${references.length} references by name`);
-
-        // Filter references to match the exact symbol (by container if available)
-        let filtered = references;
-        if (symbolAtCursor.containerName) {
-          filtered = references.filter(ref => 
-            ref.containerName === symbolAtCursor.containerName || !ref.containerName
-          );
-        }
-
-        // Get definitions to filter out self-references (definition locations showing up as references)
-        const definitions = await mergedIndex.findDefinitions(symbolAtCursor.name);
-        const definitionLocations = new Set<string>();
-        for (const def of definitions) {
-          // Add all definition location keys to filter out
-          const key = `${def.location.uri}:${def.range.startLine}:${def.range.startCharacter}`;
-          definitionLocations.add(key);
-        }
-
-        // Filter out references that point to definition locations (self-references)
-        filtered = filtered.filter(ref => {
-          const key = `${ref.location.uri}:${ref.range.startLine}:${ref.range.startCharacter}`;
-          return !definitionLocations.has(key);
-        });
-
-        connection.console.log(`[Server] Filtered to ${filtered.length} references (after removing definitions)`);
-
-        // Also include the definition itself if requested
-        if (params.context.includeDeclaration) {
-          const matchingDef = definitions.filter(def => {
-            const nameMatch = def.name === symbolAtCursor.name;
-            const containerMatch = !symbolAtCursor.containerName || 
-                                  def.containerName === symbolAtCursor.containerName;
-            return nameMatch && containerMatch;
-          });
-          
-          // Convert definitions to reference format and add them
-          for (const def of matchingDef) {
-            filtered.push({
-              symbolName: def.name,
-              location: def.location,
-              range: def.range,
-              containerName: def.containerName
-            });
-          }
-        }
-
-        // Deduplicate results by exact location (uri:line:char)
-        const seen = new Set<string>();
-        const deduplicated = filtered.filter(ref => {
-          const key = `${ref.location.uri}:${ref.range.startLine}:${ref.range.startCharacter}`;
-          if (seen.has(key)) {
-            return false;
-          }
-          seen.add(key);
-          return true;
-        });
-
-        connection.console.log(`[Server] Deduplicated to ${deduplicated.length} unique references`);
-
-        const results = deduplicated.map(ref => ({
-          uri: URI.file(ref.location.uri).toString(),
-          range: {
-            start: { line: ref.range.startLine, character: ref.range.startCharacter },
-            end: { line: ref.range.endLine, character: ref.range.endCharacter }
-          }
-        }));
-
-        const duration = Date.now() - start;
-        profiler.record('references', duration);
-        statsManager.updateProfilingMetrics({ avgReferencesTimeMs: profiler.getAverageMs('references') });
-
-        connection.console.log(`[Server] References result: ${results.length} locations in ${duration} ms`);
-        return results.length > 0 ? results : null;
-      }
-
-      // Fallback: use simple word-based lookup
-      const offset = document.offsetAt(params.position);
-      const wordRange = getWordRangeAtPosition(text, offset);
-      if (!wordRange) {
-        connection.console.log(`[Server] References result: no word at position, ${Date.now() - start} ms`);
-        return null;
-      }
-
-      const word = text.substring(wordRange.start, wordRange.end);
-      const references = await mergedIndex.findReferencesByName(word);
-
-      // Deduplicate fallback results
-      const seenFallback = new Set<string>();
-      const dedupedRefs = references.filter(ref => {
-        const key = `${ref.location.uri}:${ref.range.startLine}:${ref.range.startCharacter}`;
-        if (seenFallback.has(key)) {
-          return false;
-        }
-        seenFallback.add(key);
-        return true;
-      });
-
-      const results = dedupedRefs.length === 0 ? null : dedupedRefs.map(ref => ({
-        uri: URI.file(ref.location.uri).toString(),
-        range: {
-          start: { line: ref.range.startLine, character: ref.range.startCharacter },
-          end: { line: ref.range.endLine, character: ref.range.endCharacter }
-        }
-      }));
-
-      const duration = Date.now() - start;
-      profiler.record('references', duration);
-      statsManager.updateProfilingMetrics({ avgReferencesTimeMs: profiler.getAverageMs('references') });
-
-      connection.console.log(`[Server] References result (fallback): symbol="${word}", ${dedupedRefs.length} locations in ${duration} ms`);
-      return results;
-    } catch (error) {
-      const duration = Date.now() - start;
-      connection.console.error(`[Server] References error: ${error}, ${duration} ms`);
-      return null;
-    }
-  }
-);
+// NOTE: connection.onDefinition is now handled by DefinitionHandler (registered via HandlerRegistry)
+// NOTE: connection.onReferences is now handled by ReferencesHandler (registered via HandlerRegistry)
 
 connection.onWorkspaceSymbol(
   async (params: WorkspaceSymbolParams): Promise<WorkspaceSymbol[]> => {

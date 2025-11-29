@@ -1,13 +1,10 @@
 import { SqlJsStorage } from './sqlJsStorage.js';
 import { IndexedFileResult, FileInfo, Metadata, IndexedSymbol, IndexStats } from '../types.js';
-import { LRUCache } from 'lru-cache';
 import * as path from 'path';
-import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 
 export class CacheManager {
   private storage: SqlJsStorage;
-  // LRU cache to prevent unbounded memory growth (max 10k symbol names)
-  private symbolCache: LRUCache<string, IndexedSymbol[]>;
   private stats: IndexStats = {
     totalFiles: 0,
     totalSymbols: 0,
@@ -21,14 +18,6 @@ export class CacheManager {
 
   constructor() {
     this.storage = new SqlJsStorage();
-    // Initialize LRU cache with 10k item limit to prevent OOM on large repos
-    this.symbolCache = new LRUCache<string, IndexedSymbol[]>({
-      max: 10000,
-      // Dispose callback for observability (optional)
-      dispose: (_value, key) => {
-        // Silently evict - can add logging if needed for debugging
-      }
-    });
   }
 
   async init(workspaceRoot: string, cacheDir: string, maxCacheSizeBytes?: number): Promise<void> {
@@ -45,55 +34,14 @@ export class CacheManager {
       await this.storage.init(dbPath);
       console.info('[CacheManager] Storage initialized successfully');
       this.isClosed = false;
-      await this.loadInMemoryCache();
-      console.info(`[CacheManager] In-memory cache loaded: ${this.stats.totalFiles} files, ${this.stats.totalSymbols} symbols`);
+      
+      // Load stats using efficient COUNT queries (O(1) instead of O(N))
+      this.stats.totalFiles = await this.storage.getFileCount();
+      this.stats.totalSymbols = await this.storage.getSymbolCount();
+      console.info(`[CacheManager] Stats loaded: ${this.stats.totalFiles} files, ${this.stats.totalSymbols} symbols`);
     } catch (error) {
       console.error(`[CacheManager] Error initializing cache storage: ${error}`);
       throw error;
-    }
-  }
-
-  private async loadInMemoryCache(): Promise<void> {
-    try {
-      const allSymbols = await this.storage.getAllSymbols();
-      this.symbolCache.clear();
-
-      console.info(`[CacheManager] Loading ${allSymbols.length} symbols into memory cache...`);
-
-      for (const sym of allSymbols) {
-        const existing = this.symbolCache.get(sym.name) || [];
-        existing.push({
-          id: sym.id || '',
-          name: sym.name,
-          kind: sym.kind,
-          location: {
-            uri: sym.uri,
-            line: sym.line,
-            character: sym.character
-          },
-          range: {
-            startLine: sym.startLine || sym.line,
-            startCharacter: sym.startCharacter || sym.character,
-            endLine: sym.endLine || sym.line,
-            endCharacter: sym.endCharacter || (sym.character + sym.name.length)
-          },
-          containerName: sym.containerName || undefined,
-          containerKind: sym.containerKind || undefined,
-          fullContainerPath: (sym as any).fullContainerPath || undefined,
-          isStatic: sym.isStatic || undefined,
-          parametersCount: (sym as any).parametersCount || undefined,
-          filePath: sym.uri
-        });
-        this.symbolCache.set(sym.name, existing);
-      }
-
-      // Use efficient COUNT queries instead of loading all rows
-      this.stats.totalFiles = await this.storage.getFileCount();
-      this.stats.totalSymbols = allSymbols.length; // Already loaded, use direct count
-      
-      console.info(`[CacheManager] In-memory cache loaded: ${this.stats.totalFiles} files, ${this.stats.totalSymbols} symbols`);
-    } catch (error) {
-      console.error(`[CacheManager] Error loading in-memory cache: ${error}`);
     }
   }
 
@@ -153,13 +101,6 @@ export class CacheManager {
         await this.storage.insertSymbols(dbSymbols);
       }
 
-      for (const sym of result.symbols) {
-        const existing = this.symbolCache.get(sym.name) || [];
-        const filtered = existing.filter(e => e.location.uri !== result.uri);
-        filtered.push(sym);
-        this.symbolCache.set(sym.name, filtered);
-      }
-
       const prevTotalFiles = this.stats.totalFiles;
       const prevTotalSymbols = this.stats.totalSymbols;
 
@@ -188,18 +129,6 @@ export class CacheManager {
       
       await this.storage.deleteFile(uri);
 
-      for (const sym of symbols) {
-        const existing = this.symbolCache.get(sym.name);
-        if (existing) {
-          const filtered = existing.filter(e => e.location.uri !== uri);
-          if (filtered.length > 0) {
-            this.symbolCache.set(sym.name, filtered);
-          } else {
-            this.symbolCache.delete(sym.name);
-          }
-        }
-      }
-
       // FIX N+1: Use incremental updates instead of O(N) full scans
       this.stats.totalFiles = Math.max(0, this.stats.totalFiles - 1);
       this.stats.totalSymbols = Math.max(0, this.stats.totalSymbols - symbolCount);
@@ -211,10 +140,32 @@ export class CacheManager {
   }
 
   async findSymbolsByName(name: string): Promise<IndexedSymbol[]> {
-    const cached = this.symbolCache.get(name);
-    if (cached) {
+    // Query storage directly - sql.js with prepared statements is fast enough
+    const results = await this.storage.findSymbolsByName(name);
+    if (results.length > 0) {
       this.stats.cacheHits++;
-      return cached;
+      return results.map(sym => ({
+        id: sym.id || '',
+        name: sym.name,
+        kind: sym.kind,
+        location: {
+          uri: sym.uri,
+          line: sym.line,
+          character: sym.character
+        },
+        range: {
+          startLine: sym.startLine || sym.line,
+          startCharacter: sym.startCharacter || sym.character,
+          endLine: sym.endLine || sym.line,
+          endCharacter: sym.endCharacter || (sym.character + sym.name.length)
+        },
+        containerName: sym.containerName || undefined,
+        containerKind: sym.containerKind || undefined,
+        fullContainerPath: sym.fullContainerPath || undefined,
+        isStatic: sym.isStatic || undefined,
+        parametersCount: sym.parametersCount || undefined,
+        filePath: sym.uri
+      }));
     }
 
     this.stats.cacheMisses++;
@@ -222,27 +173,31 @@ export class CacheManager {
   }
 
   async findSymbolsByPrefix(prefix: string, limit: number): Promise<IndexedSymbol[]> {
-    const results: IndexedSymbol[] = [];
-    const seen = new Set<string>();
-
-    for (const [name, symbols] of this.symbolCache.entries()) {
-      if (name.startsWith(prefix) && !seen.has(name)) {
-        results.push(...symbols);
-        seen.add(name);
-        if (results.length >= limit) { break; }
-      }
-    }
-
-    return results.slice(0, limit);
+    // Query storage directly using prepared statement
+    const results = await this.storage.findSymbolsByPrefix(prefix, limit);
+    return results.map(sym => ({
+      id: sym.id || '',
+      name: sym.name,
+      kind: sym.kind,
+      location: {
+        uri: sym.uri,
+        line: sym.line,
+        character: sym.character
+      },
+      range: {
+        startLine: sym.startLine || sym.line,
+        startCharacter: sym.startCharacter || sym.character,
+        endLine: sym.endLine || sym.line,
+        endCharacter: sym.endCharacter || (sym.character + sym.name.length)
+      },
+      containerName: sym.containerName || undefined,
+      containerKind: sym.containerKind || undefined,
+      isStatic: sym.isStatic || undefined,
+      filePath: sym.uri
+    }));
   }
 
-  getAllFiles(): FileInfo[] {
-    // This is synchronous for compatibility, but internally we need async
-    // We'll keep the cached count accurate via loadInMemoryCache
-    return [];
-  }
-
-  async getAllFilesAsync(): Promise<FileInfo[]> {
+  async getAllFiles(): Promise<FileInfo[]> {
     return await this.storage.getAllFiles();
   }
 
@@ -257,7 +212,6 @@ export class CacheManager {
       for (const file of allFiles) {
         await this.storage.deleteFile(file.uri);
       }
-      this.symbolCache.clear();
       this.stats = {
         totalFiles: 0,
         totalSymbols: 0,
@@ -274,18 +228,25 @@ export class CacheManager {
 
   private async checkCacheSizeLimit(): Promise<void> {
     try {
-      if (!this.cacheDirectory || !fs.existsSync(this.cacheDirectory)) {
+      if (!this.cacheDirectory) {
         return;
       }
 
-      const totalSize = await this.getDirectorySize(this.cacheDirectory);
-      const sizeMB = totalSize / (1024 * 1024);
-      const limitMB = this.maxCacheSizeBytes / (1024 * 1024);
+      try {
+        const totalSize = await this.getDirectorySize(this.cacheDirectory);
+        const sizeMB = totalSize / (1024 * 1024);
+        const limitMB = this.maxCacheSizeBytes / (1024 * 1024);
 
-      if (totalSize > this.maxCacheSizeBytes) {
-        console.warn(
-          `[CacheManager] Cache size (${sizeMB.toFixed(2)}MB) exceeds limit (${limitMB.toFixed(2)}MB). Consider increasing smartIndexer.maxCacheSizeMB or clearing old data.`
-        );
+        if (totalSize > this.maxCacheSizeBytes) {
+          console.warn(
+            `[CacheManager] Cache size (${sizeMB.toFixed(2)}MB) exceeds limit (${limitMB.toFixed(2)}MB). Consider increasing smartIndexer.maxCacheSizeMB or clearing old data.`
+          );
+        }
+      } catch (error: any) {
+        if (error.code !== 'ENOENT') {
+          throw error;
+        }
+        // Directory doesn't exist yet, that's fine
       }
     } catch (error) {
       console.error(`[CacheManager] Error checking cache size: ${error}`);
@@ -296,7 +257,7 @@ export class CacheManager {
     let totalSize = 0;
 
     try {
-      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      const entries = await fsPromises.readdir(dirPath, { withFileTypes: true });
       
       for (const entry of entries) {
         const fullPath = path.join(dirPath, entry.name);
@@ -304,7 +265,7 @@ export class CacheManager {
         if (entry.isDirectory()) {
           totalSize += await this.getDirectorySize(fullPath);
         } else if (entry.isFile()) {
-          const stats = fs.statSync(fullPath);
+          const stats = await fsPromises.stat(fullPath);
           totalSize += stats.size;
         }
       }

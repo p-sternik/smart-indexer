@@ -1,7 +1,8 @@
 import { BackgroundIndex } from '../index/backgroundIndex.js';
 import { IndexedSymbol, IndexedReference } from '../types.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
-import * as fs from 'fs';
+import { pluginRegistry } from '../plugins/FrameworkPlugin.js';
+import * as fsPromises from 'fs/promises';
 import { minimatch } from 'minimatch';
 
 export interface DeadCodeCandidate {
@@ -230,20 +231,27 @@ export class DeadCodeDetector {
   }
 
   /**
-   * Check if symbol is a framework lifecycle method or decorated element
+   * Check if symbol is a framework lifecycle method or decorated element.
+   * Delegates to registered plugins first, then falls back to hardcoded checks
+   * for backwards compatibility.
    */
   private isFrameworkMethod(symbol: IndexedSymbol): boolean {
-    // Angular lifecycle hooks
+    // First, check with registered plugins (Open-Closed Principle)
+    if (pluginRegistry.isEntryPoint(symbol)) {
+      return true;
+    }
+    
+    // Fallback: Angular lifecycle hooks (for backwards compatibility)
     if (ANGULAR_LIFECYCLE_HOOKS.has(symbol.name)) {
       return true;
     }
 
-    // Framework decorators (e.g., @Component, @Injectable)
+    // Fallback: Framework decorators (e.g., @Component, @Injectable)
     if (FRAMEWORK_PATTERNS.has(symbol.name)) {
       return true;
     }
 
-    // NgRx-specific patterns (already have metadata)
+    // Legacy: check for ngrxMetadata field (deprecated, use metadata.ngrx)
     if (symbol.ngrxMetadata) {
       // Actions and Effects are part of the framework pattern
       // Only flag if truly unused
@@ -370,7 +378,7 @@ export class DeadCodeDetector {
    */
   private async hasPublicMarker(symbol: IndexedSymbol, fileUri: string): Promise<boolean> {
     try {
-      const content = fs.readFileSync(fileUri, 'utf-8');
+      const content = await fsPromises.readFile(fileUri, 'utf-8');
       const lines = content.split('\n');
       
       // Check a few lines before the symbol for JSDoc
@@ -398,8 +406,10 @@ export class DeadCodeDetector {
       }
       
       return false;
-    } catch (error) {
-      console.error(`[DeadCodeDetector] Error reading file ${fileUri}: ${error}`);
+    } catch (error: any) {
+      if (error.code !== 'ENOENT') {
+        console.error(`[DeadCodeDetector] Error reading file ${fileUri}: ${error}`);
+      }
       return false;
     }
   }

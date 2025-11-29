@@ -48,7 +48,10 @@ export interface IndexedSymbol {
   filePath: string;
   isStatic?: boolean;
   parametersCount?: number;
+  /** @deprecated Use metadata.ngrx instead. Kept for backwards compatibility. */
   ngrxMetadata?: NgRxMetadata; // NgRx-specific information
+  /** Generic metadata for framework plugins (Angular, NgRx, React, etc.) */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -66,7 +69,8 @@ export interface CompactSymbol {
   cp?: string; // fullContainerPath
   s?: boolean; // isStatic
   pc?: number; // parametersCount
-  nx?: NgRxMetadata; // ngrxMetadata
+  nx?: NgRxMetadata; // ngrxMetadata (deprecated, for backwards compat)
+  md?: Record<string, unknown>; // metadata (generic plugin metadata)
 }
 
 export interface IndexedReference {
@@ -200,6 +204,7 @@ export function compactSymbol(sym: IndexedSymbol): CompactSymbol {
   if (sym.isStatic) { compact.s = sym.isStatic; }
   if (sym.parametersCount !== undefined) { compact.pc = sym.parametersCount; }
   if (sym.ngrxMetadata) { compact.nx = sym.ngrxMetadata; }
+  if (sym.metadata && Object.keys(sym.metadata).length > 0) { compact.md = sym.metadata; }
   return compact;
 }
 
@@ -224,7 +229,8 @@ export function hydrateSymbol(compact: CompactSymbol, uri: string): IndexedSymbo
     filePath: uri,
     isStatic: compact.s,
     parametersCount: compact.pc,
-    ngrxMetadata: compact.nx
+    ngrxMetadata: compact.nx,
+    metadata: compact.md
   };
 }
 

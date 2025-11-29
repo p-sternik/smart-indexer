@@ -4,9 +4,17 @@ import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
 import { IndexedFileResult, IndexedSymbol, IndexedReference, ImportInfo, ReExportInfo, PendingReference, SHARD_VERSION, NgRxMetadata } from '../types.js';
 import { createSymbolId } from './symbolResolver.js';
 import { toCamelCase } from '../utils/stringUtils.js';
+import { PluginRegistry, PluginVisitorContext, PluginVisitResult } from '../plugins/FrameworkPlugin.js';
+import { AngularPlugin } from '../plugins/angular/AngularPlugin.js';
+import { NgRxPlugin } from '../plugins/ngrx/NgRxPlugin.js';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
+
+// Initialize plugin registry for worker thread
+const workerPluginRegistry = new PluginRegistry();
+workerPluginRegistry.register(new AngularPlugin());
+workerPluginRegistry.register(new NgRxPlugin());
 
 /**
  * StringInterner - Deduplicates repeated strings to save memory.
@@ -1028,8 +1036,9 @@ function traverseAST(
         node.loc.start.line - 1,
         node.loc.start.column
       );
-      // Build POJO with only primitive values - no AST node references leak
-      symbols.push({
+      
+      // Build the base symbol
+      const newSymbol: IndexedSymbol = {
         id,
         name: symbolName,
         kind: symbolKind,
@@ -1051,7 +1060,36 @@ function traverseAST(
         parametersCount,
         filePath: uri,
         ngrxMetadata: pendingNgRxMetadata
-      });
+      };
+      
+      // Invoke plugins to collect metadata and additional symbols/references
+      const pluginContext: PluginVisitorContext = {
+        uri,
+        containerName,
+        containerKind,
+        containerPath,
+        scopeId: scopeTracker?.getCurrentScopeId() || '<global>',
+        imports: imports.map(imp => ({ localName: imp.localName, moduleSpecifier: imp.moduleSpecifier }))
+      };
+      
+      const pluginResult = workerPluginRegistry.visitNode(node, newSymbol, pluginContext);
+      
+      // Merge plugin metadata into symbol
+      if (pluginResult.metadata && Object.keys(pluginResult.metadata).length > 0) {
+        newSymbol.metadata = { ...(newSymbol.metadata || {}), ...pluginResult.metadata };
+      }
+      
+      // Add plugin-generated symbols
+      if (pluginResult.symbols && pluginResult.symbols.length > 0) {
+        symbols.push(...pluginResult.symbols);
+      }
+      
+      // Add plugin-generated references
+      if (pluginResult.references && pluginResult.references.length > 0) {
+        references.push(...pluginResult.references);
+      }
+      
+      symbols.push(newSymbol);
 
       const newContainer = symbolName;
       const newContainerKind = symbolKind;
@@ -1099,6 +1137,28 @@ function traverseAST(
         scopeTracker.exitScope();
       }
     } else {
+      // Even if no symbol is created, invoke plugins to catch framework-specific patterns
+      const pluginContext: PluginVisitorContext = {
+        uri,
+        containerName,
+        containerKind,
+        containerPath,
+        scopeId: scopeTracker?.getCurrentScopeId() || '<global>',
+        imports: imports.map(imp => ({ localName: imp.localName, moduleSpecifier: imp.moduleSpecifier }))
+      };
+      
+      const pluginResult = workerPluginRegistry.visitNode(node, null, pluginContext);
+      
+      // Add plugin-generated symbols
+      if (pluginResult.symbols && pluginResult.symbols.length > 0) {
+        symbols.push(...pluginResult.symbols);
+      }
+      
+      // Add plugin-generated references
+      if (pluginResult.references && pluginResult.references.length > 0) {
+        references.push(...pluginResult.references);
+      }
+      
       for (const key in node) {
         const child = (node as any)[key];
         if (child && typeof child === 'object') {

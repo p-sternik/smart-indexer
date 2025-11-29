@@ -36,10 +36,10 @@ export class SqlJsStorage {
   async init(dbPath: string): Promise<void> {
     try {
       const dir = path.dirname(dbPath);
-      if (!fs.existsSync(dir)) {
-        console.info(`[SqlJsStorage] Creating cache directory: ${dir}`);
-        fs.mkdirSync(dir, { recursive: true });
-      }
+      await fsPromises.mkdir(dir, { recursive: true }).catch(() => {
+        // Directory may already exist, that's fine
+      });
+      console.info(`[SqlJsStorage] Cache directory ensured: ${dir}`);
 
       this.dbPath = dbPath;
       console.info(`[SqlJsStorage] Initializing sql.js storage at: ${dbPath}`);
@@ -57,11 +57,10 @@ export class SqlJsStorage {
       let wasmPath: string | undefined;
       for (const testPath of possibleWasmPaths) {
         try {
-          if (fs.existsSync(testPath)) {
-            wasmPath = testPath;
-            console.info(`[SqlJsStorage] Found WASM file at: ${wasmPath}`);
-            break;
-          }
+          await fsPromises.access(testPath);
+          wasmPath = testPath;
+          console.info(`[SqlJsStorage] Found WASM file at: ${wasmPath}`);
+          break;
         } catch {
           // Continue trying other paths
         }
@@ -80,18 +79,18 @@ export class SqlJsStorage {
         }
       });
 
-      if (fs.existsSync(dbPath)) {
-        try {
-          const buffer = fs.readFileSync(dbPath);
-          this.db = new SQL.Database(buffer);
-          console.info('[SqlJsStorage] Database loaded from disk');
-        } catch (error) {
+      try {
+        const buffer = await fsPromises.readFile(dbPath);
+        this.db = new SQL.Database(buffer);
+        console.info('[SqlJsStorage] Database loaded from disk');
+      } catch (error: any) {
+        if (error.code === 'ENOENT') {
+          this.db = new SQL.Database();
+          console.info('[SqlJsStorage] Created new database');
+        } else {
           console.warn(`[SqlJsStorage] Could not load existing database, creating new one: ${error}`);
           this.db = new SQL.Database();
         }
-      } else {
-        this.db = new SQL.Database();
-        console.info('[SqlJsStorage] Created new database');
       }
 
       this.isClosed = false;

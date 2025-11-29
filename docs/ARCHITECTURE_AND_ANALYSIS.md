@@ -72,6 +72,13 @@ smart-indexer/
 │   │   │   ├── languageRouter.ts # Multi-language routing
 │   │   │   ├── fileScanner.ts    # Workspace file discovery
 │   │   │   └── textIndexer.ts    # Non-TS/JS text indexing
+│   │   ├── plugins/              # Framework Plugin System
+│   │   │   ├── FrameworkPlugin.ts # Plugin interface & registry
+│   │   │   ├── index.ts          # Plugin exports & initialization
+│   │   │   ├── angular/          # Angular-specific detection
+│   │   │   │   └── AngularPlugin.ts
+│   │   │   └── ngrx/             # NgRx-specific detection
+│   │   │       └── NgRxPlugin.ts
 │   │   ├── profiler/             # Performance instrumentation
 │   │   │   └── profiler.ts
 │   │   ├── typescript/           # TypeScript integration
@@ -104,7 +111,8 @@ smart-indexer/
 |-----------|----------------|
 | `src/` | VS Code Extension API integration, LSP client, UI components |
 | `server/src/index/` | **Core Innovation** - Multi-tiered index architecture (Dynamic → Background → Static) |
-| `server/src/indexer/` | Parsing layer - AST traversal, symbol extraction, NgRx detection |
+| `server/src/indexer/` | Parsing layer - AST traversal, symbol extraction |
+| `server/src/plugins/` | **Framework Plugin System** - Extensible detection for Angular, NgRx, etc. |
 | `server/src/cache/` | Persistence - Sharded JSON storage, Merkle hashing |
 | `server/src/utils/` | Cross-cutting concerns - Worker pool, fuzzy search |
 | `server/src/git/` | VCS integration - Incremental indexing via git diff |
@@ -367,6 +375,107 @@ class ShardPersistenceManager {
   async loadShardNoLock(uri: string): Promise<FileShard | null>;
   async saveShardNoLock(shard: FileShard): Promise<void>;
 }
+```
+
+#### 3.2.7 **Plugin Architecture Pattern** - Framework Extensibility (v1.40.0+)
+
+The plugin system implements the **Open-Closed Principle**: the indexer is open for extension (new framework support) but closed for modification (no changes to core parsing logic).
+
+```typescript
+// plugins/FrameworkPlugin.ts - Core interface
+export interface FrameworkPlugin {
+  readonly name: string;
+  
+  // Called during AST traversal for framework-specific detection
+  visitNode(
+    node: TSESTree.Node,
+    currentSymbol: IndexedSymbol | null,
+    context: PluginVisitorContext
+  ): PluginVisitResult | undefined;
+  
+  // Called during dead code analysis to protect framework entry points
+  isEntryPoint?(symbol: IndexedSymbol): boolean;
+  
+  // Called after indexing for cross-file reference resolution
+  resolveReferences?(
+    symbol: IndexedSymbol,
+    index: ISymbolIndex
+  ): Promise<IndexedReference[]>;
+}
+
+// Plugin Registry for managing framework plugins
+export class PluginRegistry {
+  private plugins: FrameworkPlugin[] = [];
+  
+  register(plugin: FrameworkPlugin): void { /* ... */ }
+  
+  // Aggregate visitNode results from all plugins
+  visitNode(node, symbol, context): PluginVisitResult {
+    const result = { symbols: [], references: [], metadata: {} };
+    for (const plugin of this.plugins) {
+      const pluginResult = plugin.visitNode(node, symbol, context);
+      // Merge results...
+    }
+    return result;
+  }
+  
+  // Check if any plugin considers symbol an entry point
+  isEntryPoint(symbol: IndexedSymbol): boolean {
+    return this.plugins.some(p => p.isEntryPoint?.(symbol) ?? false);
+  }
+}
+```
+
+**Implemented Plugins:**
+
+| Plugin | Location | Responsibility |
+|--------|----------|----------------|
+| `AngularPlugin` | `plugins/angular/AngularPlugin.ts` | `@Component`, `@Directive`, lifecycle hooks |
+| `NgRxPlugin` | `plugins/ngrx/NgRxPlugin.ts` | `createAction`, `createActionGroup`, `createEffect` |
+
+**Plugin Data Flow:**
+
+```
+AST Traversal (worker.ts)
+        │
+        ▼
+┌───────────────────────────────────────────────────────────────────┐
+│  workerPluginRegistry.visitNode(node, currentSymbol, context)     │
+│  ├─ AngularPlugin.visitNode() → { metadata: { angular: {...} } }  │
+│  └─ NgRxPlugin.visitNode() → { symbols: [...], metadata: {...} }  │
+└───────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+  Merged into IndexedSymbol.metadata: Record<string, unknown>
+```
+
+**Generic Metadata Structure:**
+
+```typescript
+// IndexedSymbol now supports generic metadata (types.ts)
+interface IndexedSymbol {
+  // ... existing fields ...
+  
+  /** @deprecated Use metadata.ngrx instead */
+  ngrxMetadata?: NgRxMetadata;
+  
+  /** Generic metadata for framework plugins */
+  metadata?: Record<string, unknown>;
+}
+
+// Example metadata from plugins:
+symbol.metadata = {
+  angular: {
+    decorator: 'Component',
+    isComponent: true,
+    isLifecycleHook: false
+  },
+  ngrx: {
+    type: '[Page] Load',
+    role: 'action',
+    isGroup: false
+  }
+};
 ```
 
 ### 3.3 Concurrency Model

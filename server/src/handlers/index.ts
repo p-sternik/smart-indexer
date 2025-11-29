@@ -46,6 +46,11 @@ export {
   createCompletionHandler
 } from './completionHandler.js';
 
+export {
+  DeadCodeHandler,
+  createDeadCodeHandler
+} from './deadCodeHandler.js';
+
 // Future handlers (to be implemented):
 // export { WorkspaceSymbolHandler, createWorkspaceSymbolHandler } from './WorkspaceSymbolHandler.js';
 // export { DocumentHandler, createDocumentHandler } from './DocumentHandler.js';

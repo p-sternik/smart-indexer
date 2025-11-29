@@ -45,7 +45,9 @@ import {
   ServerState,
   createDefinitionHandler,
   createReferencesHandler,
-  createCompletionHandler
+  createCompletionHandler,
+  createDeadCodeHandler,
+  DeadCodeHandler
 } from './handlers/index.js';
 
 const connection = createConnection(ProposedFeatures.all);
@@ -74,9 +76,8 @@ const typeScriptService = new TypeScriptService();
 // Dead code detector
 let deadCodeDetector: DeadCodeDetector;
 
-// Diagnostic collection for dead code warnings
-const deadCodeDiagnostics = new Map<string, any[]>(); // URI -> Diagnostics
-let deadCodeDebounceTimers = new Map<string, NodeJS.Timeout>(); // URI -> Timer
+// Dead code handler instance (for direct method calls from document events)
+let deadCodeHandler: DeadCodeHandler | null = null;
 
 // File watcher for live synchronization
 let fileWatcher: FileWatcher | null = null;
@@ -145,6 +146,10 @@ const handlerRegistry = new HandlerRegistry(serverServices, serverState);
 handlerRegistry.register(createDefinitionHandler);
 handlerRegistry.register(createReferencesHandler);
 handlerRegistry.register(createCompletionHandler);
+
+// Note: DeadCodeHandler is registered later after initialization,
+// because it needs deadCodeDetector to be created first.
+// See the initialization section where deadCodeHandler is assigned.
 
 // ============================================================================
 
@@ -374,6 +379,11 @@ async function initializeIndexing(): Promise<void> {
     serverState.deadCodeDetector = deadCodeDetector;
     serverServices.deadCodeDetector = deadCodeDetector;
     connection.console.info('[Server] Dead code detector initialized');
+
+    // Register and store DeadCodeHandler (needs detector to be ready)
+    deadCodeHandler = createDeadCodeHandler(serverServices, serverState);
+    deadCodeHandler.register();
+    connection.console.info('[Server] DeadCodeHandler registered');
 
     // Set language router for dynamic index too
     dynamicIndex.setLanguageRouter(languageRouter);
@@ -702,93 +712,23 @@ function updateStats(): void {
 }
 
 /**
- * Analyze a file for dead code and publish diagnostics
- * Uses debouncing to avoid excessive analysis on every keystroke
+ * Analyze a file for dead code and publish diagnostics.
+ * Delegates to DeadCodeHandler for debounced analysis.
  */
 async function analyzeDeadCode(uri: string): Promise<void> {
-  if (!deadCodeDetector || !configManager.isDeadCodeEnabled()) {
-    return;
-  }
-
-  try {
-    // Clear existing timer for this file
-    const existingTimer = deadCodeDebounceTimers.get(uri);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-    }
-
-    const deadCodeConfig = configManager.getDeadCodeConfig();
-    
-    // Debounce the analysis
-    const timer = setTimeout(async () => {
-      try {
-        connection.console.log(`[DeadCode] Analyzing ${uri}`);
-        
-        const candidates = await deadCodeDetector.analyzeFile(uri, {
-          entryPoints: deadCodeConfig.entryPoints,
-          excludePatterns: deadCodeConfig.excludePatterns,
-          checkBarrierFiles: deadCodeConfig.checkBarrierFiles
-        });
-
-        // Convert candidates to diagnostics
-        const diagnostics: any[] = [];
-        
-        for (const candidate of candidates) {
-          const diagnostic = {
-            severity: 4, // Hint (faded text, not intrusive)
-            range: {
-              start: {
-                line: candidate.symbol.range.startLine,
-                character: candidate.symbol.range.startCharacter
-              },
-              end: {
-                line: candidate.symbol.range.endLine,
-                character: candidate.symbol.range.endCharacter
-              }
-            },
-            message: `Unused export: '${candidate.symbol.name}' (${candidate.reason})`,
-            source: 'smart-indexer',
-            code: 'unused-export',
-            tags: [1] // Unnecessary tag (grays out the code)
-          };
-
-          diagnostics.push(diagnostic);
-        }
-
-        // Store diagnostics
-        deadCodeDiagnostics.set(uri, diagnostics);
-
-        // Send diagnostics to client
-        connection.sendDiagnostics({
-          uri: URI.file(uri).toString(),
-          diagnostics
-        });
-
-        if (candidates.length > 0) {
-          connection.console.log(`[DeadCode] Found ${candidates.length} unused exports in ${uri}`);
-        }
-      } catch (error) {
-        connection.console.error(`[DeadCode] Error analyzing ${uri}: ${error}`);
-      } finally {
-        deadCodeDebounceTimers.delete(uri);
-      }
-    }, deadCodeConfig.debounceMs);
-
-    deadCodeDebounceTimers.set(uri, timer);
-  } catch (error) {
-    connection.console.error(`[DeadCode] Error setting up analysis for ${uri}: ${error}`);
+  if (deadCodeHandler) {
+    await deadCodeHandler.analyzeFile(uri);
   }
 }
 
 /**
- * Clear dead code diagnostics for a file
+ * Clear dead code diagnostics for a file.
+ * Delegates to DeadCodeHandler.
  */
 function clearDeadCodeDiagnostics(uri: string): void {
-  deadCodeDiagnostics.delete(uri);
-  connection.sendDiagnostics({
-    uri: URI.file(uri).toString(),
-    diagnostics: []
-  });
+  if (deadCodeHandler) {
+    deadCodeHandler.clearDiagnostics(uri);
+  }
 }
 
 documents.onDidOpen(async (change) => {
@@ -886,15 +826,8 @@ documents.onDidClose(e => {
 
     connection.console.info(`[Server] Document closed: ${uri}`);
     
-    // Clear dead code diagnostics
+    // Clear dead code diagnostics (also cancels pending analysis)
     clearDeadCodeDiagnostics(uri);
-    
-    // Cancel pending dead code analysis
-    const timer = deadCodeDebounceTimers.get(uri);
-    if (timer) {
-      clearTimeout(timer);
-      deadCodeDebounceTimers.delete(uri);
-    }
     
     // Keep in dynamic index for a while, or remove immediately
     // For now, we'll remove to keep memory usage low

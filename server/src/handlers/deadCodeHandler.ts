@@ -16,13 +16,15 @@
 import {
   Diagnostic,
   DiagnosticSeverity,
-  DiagnosticTag
+  DiagnosticTag,
+  CancellationToken
 } from 'vscode-languageserver/node';
 import { URI } from 'vscode-uri';
 
 import { IHandler, ServerServices, ServerState } from './types.js';
 import { IndexedSymbol } from '../types.js';
-import { DeadCodeDetector, DeadCodeCandidate } from '../features/deadCode.js';
+import { DeadCodeDetector, DeadCodeCandidate, DeadCodeAnalysisResult } from '../features/deadCode.js';
+import { CancellationError } from '../utils/asyncUtils.js';
 
 /**
  * Dead code diagnostic configuration.
@@ -179,6 +181,65 @@ export class DeadCodeHandler implements IHandler {
     }
     this.debounceTimers.clear();
     this.diagnosticsCache.clear();
+  }
+
+  /**
+   * Run workspace-wide dead code analysis with progress reporting.
+   * 
+   * This method creates a visible progress bar in VS Code and supports cancellation.
+   * Use this for "Find Dead Code" commands that analyze the entire workspace.
+   * 
+   * @param token - LSP cancellation token for aborting the operation
+   * @param options - Analysis options (excludePatterns, includeTests, etc.)
+   * @returns Analysis result with candidates and statistics
+   */
+  async findDeadCode(
+    token: CancellationToken,
+    options?: { excludePatterns?: string[]; includeTests?: boolean }
+  ): Promise<DeadCodeAnalysisResult> {
+    const { connection } = this.services;
+    const { deadCodeDetector } = this.state;
+    
+    if (!deadCodeDetector) {
+      throw new Error('Dead code detector not initialized');
+    }
+
+    // Create progress indicator visible in VS Code
+    const progress = await connection.window.createWorkDoneProgress();
+    progress.begin('Finding Dead Code', 0, 'Preparing analysis...', true);
+
+    const startTime = Date.now();
+    const config = this.getConfig();
+
+    try {
+      const result = await deadCodeDetector.findDeadCode({
+        ...options,
+        entryPoints: config.entryPoints,
+        checkBarrierFiles: config.checkBarrierFiles,
+        cancellationToken: token,
+        onProgress: (current, total, message) => {
+          const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
+          progress.report(percentage, message || `Analyzing files... (${current}/${total})`);
+        }
+      });
+
+      const duration = Date.now() - startTime;
+      connection.console.info(
+        `[DeadCodeHandler] Workspace analysis complete: ${result.candidates.length} candidates found ` +
+        `(${result.analyzedFiles} files, ${result.totalExports} exports) in ${duration}ms`
+      );
+
+      return result;
+    } catch (error) {
+      // Handle cancellation
+      if (token.isCancellationRequested || error instanceof CancellationError) {
+        connection.console.info('[DeadCodeHandler] Workspace analysis cancelled by user');
+        throw new CancellationError('Dead code analysis cancelled');
+      }
+      throw error;
+    } finally {
+      progress.done();
+    }
   }
 
   /**

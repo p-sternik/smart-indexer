@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.0](https://github.com/p-sternik/smart-indexer/compare/v1.39.0...v1.40.0) (2025-11-29)
+
+
+### Features
+
+* Refactor ShardPersistenceManager to use async file operations and implement lock reference counting ([bd6ce27](https://github.com/p-sternik/smart-indexer/commit/bd6ce27576deb3bc19600e4cc563f77674bb245b))
+
 ## [1.39.0](https://github.com/p-sternik/smart-indexer/compare/v1.38.0...v1.39.0) (2025-11-29)
 
 

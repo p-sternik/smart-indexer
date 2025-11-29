@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.0](https://github.com/p-sternik/smart-indexer/compare/v1.38.0...v1.39.0) (2025-11-29)
+
+
+### Features
+
+* Integrate LRU caching and optimize SQL queries for improved performance ([0a1cdb4](https://github.com/p-sternik/smart-indexer/commit/0a1cdb4b4859668ed8c4856a2d31a86b344169a8))
+
 ## [1.38.0](https://github.com/p-sternik/smart-indexer/compare/v1.37.0...v1.38.0) (2025-11-29)
 
 

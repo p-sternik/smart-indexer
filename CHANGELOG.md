@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.43.0](https://github.com/p-sternik/smart-indexer/compare/v1.42.0...v1.43.0) (2025-11-29)
+
+
+### Features
+
+* Implement workspace-wide dead code analysis with progress reporting and cancellation support ([1b12059](https://github.com/p-sternik/smart-indexer/commit/1b12059faee5469b30b5a6cab501c422287a395c))
+
 ## [1.42.0](https://github.com/p-sternik/smart-indexer/compare/v1.41.0...v1.42.0) (2025-11-29)
 
 

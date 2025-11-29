@@ -10,7 +10,7 @@ export class StringInterner {
   private pool = new Map<string, string>();
   private readonly maxSize: number;
 
-  constructor(maxSize: number = 10000) {
+  constructor(maxSize: number = 50000) {
     this.maxSize = maxSize;
   }
 

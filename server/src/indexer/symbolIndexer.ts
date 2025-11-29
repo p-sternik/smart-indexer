@@ -3,7 +3,7 @@ import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
 import { IndexedFileResult, IndexedSymbol, IndexedReference, ImportInfo, ReExportInfo, SHARD_VERSION } from '../types.js';
 import { createSymbolId } from './symbolResolver.js';
 import * as crypto from 'crypto';
-import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
 /**
@@ -88,7 +88,7 @@ export class SymbolIndexer {
 
   private async readFile(uri: string): Promise<string> {
     try {
-      return fs.readFileSync(uri, 'utf-8');
+      return await fsPromises.readFile(uri, 'utf-8');
     } catch (error) {
       console.error(`[SymbolIndexer] Error reading file ${uri}: ${error}`);
       return '';

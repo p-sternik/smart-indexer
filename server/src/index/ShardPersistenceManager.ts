@@ -170,7 +170,7 @@ export class ShardPersistenceManager {
   private bufferDelayMs: number;
   
   // Memory management limits
-  private readonly maxLocks: number = 10000;
+  private readonly maxLocks: number = 1000;
   private readonly maxPendingWrites: number = 100;
   private lockCleanupCounter: number = 0;
   private readonly lockCleanupInterval: number = 1000; // Cleanup every 1000 operations

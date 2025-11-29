@@ -265,6 +265,12 @@ export class BackgroundIndex implements ISymbolIndex {
    * OPTIMIZED: Uses O(1) reverse indexes for cleanup instead of O(N) scans.
    */
   async updateFile(uri: string, result: IndexedFileResult): Promise<void> {
+    // Capture pending references before the lock to avoid race conditions
+    // where file state changes between update and resolution
+    const pendingRefs = result.pendingReferences && result.pendingReferences.length > 0
+      ? [...result.pendingReferences] // Copy to prevent mutation during async operations
+      : null;
+
     // Wrap entire operation in lock to prevent race conditions
     await this.shardManager.withLock(uri, async () => {
       // CRITICAL: Invalidate cache INSIDE lock to prevent stale cache repopulation
@@ -375,10 +381,11 @@ export class BackgroundIndex implements ISymbolIndex {
       await this.shardManager.saveShardNoLock(shard);
     });
 
-    // Resolve NgRx cross-file references after indexing (outside the lock)
+    // Resolve NgRx cross-file references after indexing (outside the lock to avoid deadlock)
+    // Uses captured pendingRefs snapshot to prevent TOCTOU issues
     // Skip during bulk indexing - will be done in finalizeIndexing() for O(N+M) performance
-    if (!this.isBulkIndexing && result.pendingReferences && result.pendingReferences.length > 0) {
-      await this.resolveNgRxReferences(uri, result.pendingReferences);
+    if (!this.isBulkIndexing && pendingRefs) {
+      await this.resolveNgRxReferences(uri, pendingRefs);
     }
   }
 

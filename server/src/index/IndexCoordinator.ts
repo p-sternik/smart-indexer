@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import { IndexedFileResult, PendingReference, SHARD_VERSION } from '../types.js';
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
@@ -247,9 +246,10 @@ export class IndexCoordinator {
     for (const rawUri of files) {
       const uri = sanitizeFilePath(rawUri);
       
-      if (fs.existsSync(uri)) {
+      try {
+        await fsPromises.access(uri);
         validFiles.push(uri);
-      } else {
+      } catch {
         skippedFiles.push(rawUri);
       }
     }
@@ -384,7 +384,9 @@ export class IndexCoordinator {
     const sanitizedPath = sanitizeFilePath(filePath);
     
     try {
-      if (!fs.existsSync(sanitizedPath)) {
+      try {
+        await fsPromises.access(sanitizedPath);
+      } catch {
         console.warn(`[IndexCoordinator] Skipping non-existent file: ${sanitizedPath}`);
         return;
       }

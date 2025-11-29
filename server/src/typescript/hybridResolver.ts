@@ -405,8 +405,8 @@ export class HybridResolver {
    */
   private async readFileContent(fileName: string): Promise<string | null> {
     try {
-      const fs = await import('fs');
-      return fs.readFileSync(fileName, 'utf-8');
+      const fsPromises = await import('fs/promises');
+      return await fsPromises.readFile(fileName, 'utf-8');
     } catch {
       return null;
     }

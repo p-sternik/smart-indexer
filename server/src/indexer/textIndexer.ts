@@ -1,7 +1,7 @@
 import { IndexedSymbol, IndexedFileResult } from '../types.js';
 import { createSymbolId } from './symbolResolver.js';
 import * as crypto from 'crypto';
-import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
 /**
@@ -75,7 +75,7 @@ export class TextIndexer {
 
   private async readFile(uri: string): Promise<string> {
     try {
-      return fs.readFileSync(uri, 'utf-8');
+      return await fsPromises.readFile(uri, 'utf-8');
     } catch (error) {
       return '';
     }

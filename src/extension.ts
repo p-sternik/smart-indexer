@@ -493,6 +493,121 @@ ${profilingInfo}
     })
   );
 
+  // Command: Find Dead Code in Folder (context menu)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('smart-indexer.findDeadCodeInFolder', async (folderUri: vscode.Uri) => {
+      if (!folderUri) {
+        vscode.window.showErrorMessage('No folder selected');
+        return;
+      }
+
+      const folderName = path.basename(folderUri.fsPath);
+      logChannel.info(`[Client] ========== FIND DEAD CODE IN FOLDER: ${folderUri.fsPath} ==========`);
+      
+      try {
+        logChannel.info('[Client] Sending findDeadCode request to server with scope...');
+        
+        const result = await client.sendRequest('smart-indexer/findDeadCode', {
+          excludePatterns: ['node_modules', '.test.', '.spec.', 'test/', 'tests/'],
+          includeTests: false,
+          scopeUri: folderUri.toString()
+        }) as any;
+        
+        logChannel.info(
+          `[Client] Dead code analysis complete in ${folderName}: ${result.candidates?.length || 0} candidates, ` +
+          `${result.analyzedFiles} files analyzed, ${result.totalExports} exports in ${result.duration}ms`
+        );
+
+        if (!result.candidates || result.candidates.length === 0) {
+          vscode.window.showInformationMessage(`No dead code found in '${folderName}'! All exports are being used.`);
+          return;
+        }
+
+        // Group by confidence
+        const highConfidence = result.candidates.filter((c: any) => c.confidence === 'high');
+        const mediumConfidence = result.candidates.filter((c: any) => c.confidence === 'medium');
+        const lowConfidence = result.candidates.filter((c: any) => c.confidence === 'low');
+
+        // Build quick pick items
+        interface DeadCodeItem extends vscode.QuickPickItem {
+          filePath: string;
+          location: any;
+        }
+
+        const items: (DeadCodeItem | vscode.QuickPickItem)[] = [];
+
+        if (highConfidence.length > 0) {
+          items.push({
+            label: `$(warning) High Confidence (${highConfidence.length})`,
+            kind: vscode.QuickPickItemKind.Separator
+          });
+          
+          for (const candidate of highConfidence) {
+            items.push({
+              label: `$(symbol-${candidate.kind}) ${candidate.name}`,
+              description: candidate.kind,
+              detail: `${candidate.filePath}:${candidate.location.line + 1} - ${candidate.reason}`,
+              filePath: candidate.filePath,
+              location: candidate.location
+            });
+          }
+        }
+
+        if (mediumConfidence.length > 0) {
+          items.push({
+            label: `$(info) Medium Confidence (${mediumConfidence.length})`,
+            kind: vscode.QuickPickItemKind.Separator
+          });
+          
+          for (const candidate of mediumConfidence) {
+            items.push({
+              label: `$(symbol-${candidate.kind}) ${candidate.name}`,
+              description: candidate.kind,
+              detail: `${candidate.filePath}:${candidate.location.line + 1} - ${candidate.reason}`,
+              filePath: candidate.filePath,
+              location: candidate.location
+            });
+          }
+        }
+
+        if (lowConfidence.length > 0) {
+          items.push({
+            label: `$(question) Low Confidence (${lowConfidence.length})`,
+            kind: vscode.QuickPickItemKind.Separator
+          });
+          
+          for (const candidate of lowConfidence.slice(0, 20)) { // Limit low confidence to 20
+            items.push({
+              label: `$(symbol-${candidate.kind}) ${candidate.name}`,
+              description: candidate.kind,
+              detail: `${candidate.filePath}:${candidate.location.line + 1} - ${candidate.reason}`,
+              filePath: candidate.filePath,
+              location: candidate.location
+            });
+          }
+        }
+
+        const selected = await vscode.window.showQuickPick(items, {
+          title: `Dead Code in '${folderName}' - ${result.candidates.length} unused exports found`,
+          placeHolder: 'Select a symbol to navigate to its definition...'
+        });
+
+        if (selected && 'filePath' in selected) {
+          const uri = vscode.Uri.file(selected.filePath);
+          const document = await vscode.workspace.openTextDocument(uri);
+          const editor = await vscode.window.showTextDocument(document);
+          const position = new vscode.Position(selected.location.line, selected.location.character);
+          editor.selection = new vscode.Selection(position, position);
+          editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+        }
+
+      } catch (error) {
+        logChannel.error('[Client] Failed to find dead code in folder:', error);
+        vscode.window.showErrorMessage(`Failed to find dead code in folder: ${error}`);
+      }
+    })
+  );
+
   logChannel.info('[Client] Extension activation complete');
 }
 

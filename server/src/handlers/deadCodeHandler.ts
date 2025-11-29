@@ -190,12 +190,12 @@ export class DeadCodeHandler implements IHandler {
    * Use this for "Find Dead Code" commands that analyze the entire workspace.
    * 
    * @param token - LSP cancellation token for aborting the operation
-   * @param options - Analysis options (excludePatterns, includeTests, etc.)
+   * @param options - Analysis options (excludePatterns, includeTests, scopeUri, etc.)
    * @returns Analysis result with candidates and statistics
    */
   async findDeadCode(
     token: CancellationToken,
-    options?: { excludePatterns?: string[]; includeTests?: boolean }
+    options?: { excludePatterns?: string[]; includeTests?: boolean; scopeUri?: string }
   ): Promise<DeadCodeAnalysisResult> {
     const { connection } = this.services;
     const { deadCodeDetector } = this.state;
@@ -204,9 +204,29 @@ export class DeadCodeHandler implements IHandler {
       throw new Error('Dead code detector not initialized');
     }
 
+    // Determine progress title based on scope
+    let progressTitle = 'Finding Dead Code';
+    let scopePath: string | undefined;
+    
+    if (options?.scopeUri) {
+      // Parse the URI and extract the folder path
+      const scopeUriParsed = URI.parse(options.scopeUri);
+      scopePath = scopeUriParsed.fsPath;
+      
+      // Normalize path for comparison (handle trailing slashes)
+      if (scopePath && !scopePath.endsWith('/') && !scopePath.endsWith('\\')) {
+        scopePath = scopePath + (scopePath.includes('\\') ? '\\' : '/');
+      }
+      
+      // Extract folder name for display
+      const folderName = scopePath.split(/[/\\]/).filter(Boolean).pop() || 'folder';
+      progressTitle = `Finding Dead Code in ${folderName}`;
+      connection.console.info(`[DeadCodeHandler] Scoped analysis to: ${scopePath}`);
+    }
+
     // Create progress indicator visible in VS Code
     const progress = await connection.window.createWorkDoneProgress();
-    progress.begin('Finding Dead Code', 0, 'Preparing analysis...', true);
+    progress.begin(progressTitle, 0, 'Preparing analysis...', true);
 
     const startTime = Date.now();
     const config = this.getConfig();
@@ -214,6 +234,7 @@ export class DeadCodeHandler implements IHandler {
     try {
       const result = await deadCodeDetector.findDeadCode({
         ...options,
+        scopePath,
         entryPoints: config.entryPoints,
         checkBarrierFiles: config.checkBarrierFiles,
         cancellationToken: token,
@@ -224,8 +245,9 @@ export class DeadCodeHandler implements IHandler {
       });
 
       const duration = Date.now() - startTime;
+      const scopeInfo = scopePath ? ` in scope '${scopePath}'` : '';
       connection.console.info(
-        `[DeadCodeHandler] Workspace analysis complete: ${result.candidates.length} candidates found ` +
+        `[DeadCodeHandler] Analysis complete${scopeInfo}: ${result.candidates.length} candidates found ` +
         `(${result.analyzedFiles} files, ${result.totalExports} exports) in ${duration}ms`
       );
 
@@ -233,7 +255,7 @@ export class DeadCodeHandler implements IHandler {
     } catch (error) {
       // Handle cancellation
       if (token.isCancellationRequested || error instanceof CancellationError) {
-        connection.console.info('[DeadCodeHandler] Workspace analysis cancelled by user');
+        connection.console.info('[DeadCodeHandler] Analysis cancelled by user');
         throw new CancellationError('Dead code analysis cancelled');
       }
       throw error;

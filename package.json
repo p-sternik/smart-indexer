@@ -44,8 +44,21 @@
       {
         "command": "smart-indexer.findDeadCode",
         "title": "Smart Indexer: Find Dead Code (Beta)"
+      },
+      {
+        "command": "smart-indexer.findDeadCodeInFolder",
+        "title": "Smart Indexer: Find Dead Code in Folder"
       }
     ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "smart-indexer.findDeadCodeInFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "Smart Indexer",
       "properties": {

@@ -17,7 +17,7 @@ export interface ISymbolIndex {
 
   /**
    * Find all references to a symbol name.
-   * For simplicity, this returns the same as findDefinitions.
+   * Returns symbols from files that contain references to the given name.
    */
   findReferences(name: string): Promise<IndexedSymbol[]>;
 

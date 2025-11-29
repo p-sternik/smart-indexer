@@ -28,6 +28,8 @@ export interface DeadCodeOptions {
   includeTests?: boolean;
   entryPoints?: string[];
   checkBarrierFiles?: boolean;
+  /** Scope path to limit analysis to a specific folder */
+  scopePath?: string;
   /** Cancellation token for aborting the operation */
   cancellationToken?: CancellationToken;
   /** Progress callback for reporting analysis progress */
@@ -183,6 +185,7 @@ export class DeadCodeDetector {
   async findDeadCode(options?: DeadCodeOptions): Promise<DeadCodeAnalysisResult> {
     const excludePatterns = options?.excludePatterns || [];
     const includeTests = options?.includeTests || false;
+    const scopePath = options?.scopePath;
     const cancellationToken = options?.cancellationToken;
     const onProgress = options?.onProgress;
     
@@ -199,6 +202,12 @@ export class DeadCodeDetector {
     // Pre-filter files to get accurate total count
     const filesToAnalyze: string[] = [];
     for (const fileUri of allFiles) {
+      // Apply scope filtering if scopePath is provided
+      // Only analyze files within the specified folder
+      if (scopePath && !this.isFileInScope(fileUri, scopePath)) {
+        continue;
+      }
+      
       if (this.shouldExcludeFile(fileUri, excludePatterns, includeTests)) {
         continue;
       }
@@ -211,7 +220,8 @@ export class DeadCodeDetector {
     const totalFiles = filesToAnalyze.length;
     
     // Report initial progress
-    onProgress?.(0, totalFiles, 'Starting dead code analysis...');
+    const scopeLabel = scopePath ? ` in scope` : '';
+    onProgress?.(0, totalFiles, `Starting dead code analysis${scopeLabel}...`);
     
     // Yield frequency: every 50 files to allow cancellation checks
     const YIELD_INTERVAL = 50;
@@ -230,7 +240,8 @@ export class DeadCodeDetector {
 
       analyzedFiles++;
       
-      // Analyze this file
+      // Analyze this file - NOTE: Reference search is NOT scoped
+      // We check if symbols in this folder are used ANYWHERE in the workspace
       const fileCandidates = await this.analyzeFile(fileUri, options);
       candidates.push(...fileCandidates);
       
@@ -267,6 +278,23 @@ export class DeadCodeDetector {
     }
     
     return false;
+  }
+
+  /**
+   * Check if a file is within the specified scope path.
+   * Performs case-insensitive comparison on Windows/macOS.
+   */
+  private isFileInScope(fileUri: string, scopePath: string): boolean {
+    // Normalize paths for comparison
+    const normalizedFile = fileUri.replace(/\\/g, '/').toLowerCase();
+    const normalizedScope = scopePath.replace(/\\/g, '/').toLowerCase();
+    
+    // Ensure scope path ends with a slash for proper prefix matching
+    const scopePrefix = normalizedScope.endsWith('/') 
+      ? normalizedScope 
+      : normalizedScope + '/';
+    
+    return normalizedFile.startsWith(scopePrefix) || normalizedFile === normalizedScope.replace(/\/$/, '');
   }
 
   /**

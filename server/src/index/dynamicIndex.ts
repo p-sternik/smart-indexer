@@ -327,7 +327,40 @@ export class DynamicIndex implements ISymbolIndex {
   }
 
   async findReferences(name: string): Promise<IndexedSymbol[]> {
-    return this.findDefinitions(name);
+    // Get actual reference locations using findReferencesByName
+    const references = await this.findReferencesByName(name);
+    
+    if (references.length === 0) {
+      return [];
+    }
+    
+    // Collect unique URIs that contain references
+    const urisWithReferences = new Set<string>();
+    for (const ref of references) {
+      urisWithReferences.add(ref.location.uri);
+    }
+    
+    // Load symbols from files that contain references
+    const results: IndexedSymbol[] = [];
+    const seen = new Set<string>();
+    
+    for (const uri of urisWithReferences) {
+      const fileResult = this.fileSymbols.get(uri);
+      if (fileResult) {
+        for (const symbol of fileResult.symbols) {
+          // Return symbols that match the referenced name
+          if (symbol.name === name) {
+            const key = `${symbol.id}`;
+            if (!seen.has(key)) {
+              results.push(symbol);
+              seen.add(key);
+            }
+          }
+        }
+      }
+    }
+    
+    return results;
   }
 
   async findReferencesById(symbolId: string): Promise<IndexedSymbol[]> {

@@ -562,6 +562,11 @@ export class SymbolIndexer {
     if (!parent) {
       return false;
     }
+    // NOTE: ImportSpecifier is intentionally NOT included here.
+    // Import specifiers should be recorded as references so that
+    // dead code detection can find cross-file usages.
+    // The 'imported' identifier in an import specifier is a reference
+    // to an external symbol, not a declaration.
     return [
       'FunctionDeclaration',
       'ClassDeclaration',
@@ -571,7 +576,7 @@ export class SymbolIndexer {
       'TSInterfaceDeclaration',
       'TSTypeAliasDeclaration',
       'TSEnumDeclaration',
-      'ImportSpecifier',
+      // ImportDefaultSpecifier and ImportNamespaceSpecifier define local bindings
       'ImportDefaultSpecifier',
       'ImportNamespaceSpecifier'
     ].includes(parent);

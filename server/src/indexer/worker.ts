@@ -82,9 +82,17 @@ function isDeclarationContext(node: TSESTree.Node, parent: TSESTree.Node | null)
     case AST_NODE_TYPES.TSEnumDeclaration:
       return (parent as TSESTree.TSEnumDeclaration).id === node;
     
+    // Import specifiers: only treat the LOCAL name as a declaration
+    // The IMPORTED name is a reference to an external symbol
     case AST_NODE_TYPES.ImportSpecifier:
+      const importSpec = parent as TSESTree.ImportSpecifier;
+      // local is the declaration (what we're binding to in this file)
+      // imported is a reference (what we're importing from external module)
+      return importSpec.local === node;
+      
     case AST_NODE_TYPES.ImportDefaultSpecifier:
     case AST_NODE_TYPES.ImportNamespaceSpecifier:
+      // For default/namespace imports, the identifier is the local binding
       return true;
     
     // Parameter declarations

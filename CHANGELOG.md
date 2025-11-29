@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.0](https://github.com/p-sternik/smart-indexer/compare/v1.35.0...v1.36.0) (2025-11-29)
+
+
+### Features
+
+* Enhance CompletionHandler and ShardPersistenceManager with async I/O; optimize BackgroundIndex for memory management and performance ([3d00d4d](https://github.com/p-sternik/smart-indexer/commit/3d00d4d6c8dcb55b9dbb7480519a72328eca1098))
+
 ## [1.35.0](https://github.com/p-sternik/smart-indexer/compare/v1.34.0...v1.35.0) (2025-11-29)
 
 

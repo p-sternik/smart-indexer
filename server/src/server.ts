@@ -37,6 +37,7 @@ import { URI } from 'vscode-uri';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 
 // Handler imports
 import { 
@@ -576,7 +577,7 @@ async function indexFilesInBackground(files: string[]): Promise<void> {
 
     let processed = 0;
     const computeHash = async (uri: string): Promise<string> => {
-      const content = fs.readFileSync(uri, 'utf-8');
+      const content = await fsPromises.readFile(uri, 'utf-8');
       return crypto.createHash('sha256').update(content).digest('hex');
     };
 

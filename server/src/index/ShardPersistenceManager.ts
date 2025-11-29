@@ -91,6 +91,43 @@ function toCompactShard(shard: FileShard): CompactShard {
 }
 
 /**
+ * Type guard to validate decoded MessagePack data is a valid CompactShard.
+ * Prevents unsafe casting of arbitrary data.
+ */
+function isCompactShard(obj: unknown): obj is CompactShard {
+  if (typeof obj !== 'object' || obj === null) {
+    return false;
+  }
+  const candidate = obj as Record<string, unknown>;
+  return (
+    typeof candidate.u === 'string' &&
+    typeof candidate.h === 'string' &&
+    Array.isArray(candidate.s) &&
+    Array.isArray(candidate.r) &&
+    Array.isArray(candidate.i) &&
+    typeof candidate.t === 'number' &&
+    typeof candidate.v === 'number'
+  );
+}
+
+/**
+ * Type guard to validate decoded MessagePack data is a legacy FileShard.
+ */
+function isLegacyFileShard(obj: unknown): obj is FileShard {
+  if (typeof obj !== 'object' || obj === null) {
+    return false;
+  }
+  const candidate = obj as Record<string, unknown>;
+  return (
+    typeof candidate.uri === 'string' &&
+    typeof candidate.hash === 'string' &&
+    Array.isArray(candidate.symbols) &&
+    Array.isArray(candidate.references) &&
+    typeof candidate.lastIndexedAt === 'number'
+  );
+}
+
+/**
  * Hydrate a compact shard from storage to full FileShard format.
  */
 function fromCompactShard(compact: CompactShard): FileShard {
@@ -295,19 +332,24 @@ export class ShardPersistenceManager {
       // Try MessagePack format first (preferred) - use async I/O
       try {
         const buffer = await fsPromises.readFile(binPath);
-        const decoded = decode(buffer) as any;
+        const decoded = decode(buffer);
         
-        // Check if this is compact format (has 'u' field) or legacy format (has 'uri' field)
-        if ('u' in decoded) {
+        // Type-safe validation before casting
+        if (isCompactShard(decoded)) {
           // Compact format - hydrate to full FileShard
-          return fromCompactShard(decoded as CompactShard);
-        } else {
+          return fromCompactShard(decoded);
+        } else if (isLegacyFileShard(decoded)) {
           // Legacy format - return as-is but schedule migration on next save
-          return decoded as FileShard;
+          return decoded;
+        } else {
+          // Invalid shard format - treat as missing
+          console.warn(`[ShardPersistenceManager] Invalid shard format for ${uri}, ignoring`);
+          return null;
         }
-      } catch (binError: any) {
+      } catch (binError: unknown) {
+        const err = binError as { code?: string };
         // File doesn't exist or read error - try JSON fallback
-        if (binError.code !== 'ENOENT') {
+        if (err.code !== 'ENOENT') {
           throw binError;
         }
       }

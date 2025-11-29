@@ -15,7 +15,7 @@ import {
   Location
 } from 'vscode-languageserver/node';
 import { URI } from 'vscode-uri';
-import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 
 import { IHandler, ServerServices, ServerState } from './types.js';
 import { IndexedSymbol } from '../types.js';
@@ -90,7 +90,7 @@ export class DefinitionHandler implements IHandler {
           // Step 2: Recursively resolve the property chain
           const fileResolver = async (fileUri: string) => {
             try {
-              return fs.readFileSync(fileUri, 'utf-8');
+              return await fsPromises.readFile(fileUri, 'utf-8');
             } catch {
               return '';
             }

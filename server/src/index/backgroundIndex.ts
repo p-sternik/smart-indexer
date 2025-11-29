@@ -680,8 +680,10 @@ export class BackgroundIndex implements ISymbolIndex {
   /**
    * Check if file needs reindexing based on mtime.
    * Returns true if file should be indexed (cache miss or stale).
+   * 
+   * ASYNC: Uses fsPromises.stat to avoid blocking the event loop.
    */
-  private needsReindexing(uri: string): boolean {
+  private async needsReindexing(uri: string): Promise<boolean> {
     const metadata = this.fileMetadata.get(uri);
     if (!metadata) {
       return true; // No cache entry
@@ -693,7 +695,7 @@ export class BackgroundIndex implements ISymbolIndex {
     }
 
     try {
-      const stats = fs.statSync(uri);
+      const stats = await fsPromises.stat(uri);
       const currentMtime = stats.mtimeMs;
       
       // If mtime matches, file is unchanged
@@ -913,7 +915,7 @@ export class BackgroundIndex implements ISymbolIndex {
         }
 
         // STEP 2: Check mtime-based cache (fast path)
-        if (!this.needsReindexing(uri)) {
+        if (!(await this.needsReindexing(uri))) {
           // File is unchanged based on mtime - skip indexing
           checked++;
           if (onProgress) {

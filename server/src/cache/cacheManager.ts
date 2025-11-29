@@ -1,11 +1,13 @@
 import { SqlJsStorage } from './sqlJsStorage.js';
 import { IndexedFileResult, FileInfo, Metadata, IndexedSymbol, IndexStats } from '../types.js';
+import { LRUCache } from 'lru-cache';
 import * as path from 'path';
 import * as fs from 'fs';
 
 export class CacheManager {
   private storage: SqlJsStorage;
-  private symbolCache: Map<string, IndexedSymbol[]> = new Map();
+  // LRU cache to prevent unbounded memory growth (max 10k symbol names)
+  private symbolCache: LRUCache<string, IndexedSymbol[]>;
   private stats: IndexStats = {
     totalFiles: 0,
     totalSymbols: 0,
@@ -19,6 +21,14 @@ export class CacheManager {
 
   constructor() {
     this.storage = new SqlJsStorage();
+    // Initialize LRU cache with 10k item limit to prevent OOM on large repos
+    this.symbolCache = new LRUCache<string, IndexedSymbol[]>({
+      max: 10000,
+      // Dispose callback for observability (optional)
+      dispose: (_value, key) => {
+        // Silently evict - can add logging if needed for debugging
+      }
+    });
   }
 
   async init(workspaceRoot: string, cacheDir: string, maxCacheSizeBytes?: number): Promise<void> {
@@ -77,9 +87,9 @@ export class CacheManager {
         this.symbolCache.set(sym.name, existing);
       }
 
-      const allFiles = await this.storage.getAllFiles();
-      this.stats.totalFiles = allFiles.length;
-      this.stats.totalSymbols = allSymbols.length;
+      // Use efficient COUNT queries instead of loading all rows
+      this.stats.totalFiles = await this.storage.getFileCount();
+      this.stats.totalSymbols = allSymbols.length; // Already loaded, use direct count
       
       console.info(`[CacheManager] In-memory cache loaded: ${this.stats.totalFiles} files, ${this.stats.totalSymbols} symbols`);
     } catch (error) {
@@ -113,6 +123,10 @@ export class CacheManager {
     const now = Date.now();
 
     try {
+      // Get old symbol count for this file BEFORE deleting (for incremental stats)
+      const oldSymbolCount = await this.storage.getSymbolCountByUri(result.uri);
+      const isNewFile = oldSymbolCount === -1;
+      
       await this.storage.deleteSymbolsByUri(result.uri);
 
       await this.storage.upsertFile(result.uri, result.hash, now);
@@ -149,10 +163,13 @@ export class CacheManager {
       const prevTotalFiles = this.stats.totalFiles;
       const prevTotalSymbols = this.stats.totalSymbols;
 
-      const allFiles = await this.storage.getAllFiles();
-      const allSymbols = await this.storage.getAllSymbols();
-      this.stats.totalFiles = allFiles.length;
-      this.stats.totalSymbols = allSymbols.length;
+      // FIX N+1: Use O(1) COUNT queries instead of O(N) getAllFiles()/getAllSymbols()
+      if (isNewFile) {
+        this.stats.totalFiles++;
+      }
+      // Increment by new symbols, decrement by old symbols
+      const symbolDelta = result.symbols.length - Math.max(0, oldSymbolCount);
+      this.stats.totalSymbols += symbolDelta;
       this.stats.lastUpdateTime = now;
 
       console.info(`[CacheManager] File indexed: ${result.uri} (${result.symbols.length} symbols) | Stats: ${prevTotalFiles}->${this.stats.totalFiles} files, ${prevTotalSymbols}->${this.stats.totalSymbols} symbols`);
@@ -167,6 +184,7 @@ export class CacheManager {
   async removeFile(uri: string): Promise<void> {
     try {
       const symbols = await this.storage.getSymbolsByUri(uri);
+      const symbolCount = symbols.length;
       
       await this.storage.deleteFile(uri);
 
@@ -182,10 +200,9 @@ export class CacheManager {
         }
       }
 
-      const allFiles = await this.storage.getAllFiles();
-      const allSymbols = await this.storage.getAllSymbols();
-      this.stats.totalFiles = allFiles.length;
-      this.stats.totalSymbols = allSymbols.length;
+      // FIX N+1: Use incremental updates instead of O(N) full scans
+      this.stats.totalFiles = Math.max(0, this.stats.totalFiles - 1);
+      this.stats.totalSymbols = Math.max(0, this.stats.totalSymbols - symbolCount);
       this.stats.lastUpdateTime = Date.now();
     } catch (error) {
       console.error(`[CacheManager] Error removing file ${uri}: ${error}`);

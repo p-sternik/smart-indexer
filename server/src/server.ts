@@ -15,7 +15,9 @@ import {
   ProposedFeatures,
   WorkspaceSymbol,
   WorkspaceSymbolParams,
-  SymbolKind
+  SymbolKind,
+  CancellationToken,
+  ResponseError
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -38,6 +40,7 @@ import * as path from 'path';
 // Core module imports
 import { ServerInitializer, DocumentEventHandler } from './core/index.js';
 import { FileSystemService } from './utils/FileSystemService.js';
+import { CancellationError } from './utils/asyncUtils.js';
 
 // Plugin system initialization
 import { initializeDefaultPlugins } from './plugins/index.js';
@@ -415,10 +418,10 @@ connection.onRequest('smart-indexer/inspectIndex', async () => {
   }
 });
 
-connection.onRequest('smart-indexer/findDeadCode', async (options?: {
+connection.onRequest('smart-indexer/findDeadCode', async (options: {
   excludePatterns?: string[];
   includeTests?: boolean;
-}) => {
+} | undefined, token: CancellationToken) => {
   try {
     connection.console.info('[Server] ========== FIND DEAD CODE REQUEST ==========');
     
@@ -427,29 +430,52 @@ connection.onRequest('smart-indexer/findDeadCode', async (options?: {
       throw new Error('Dead code detector not initialized');
     }
     
+    // Create progress indicator
+    const progress = await connection.window.createWorkDoneProgress();
+    progress.begin('Finding Dead Code', 0, 'Preparing analysis...', true);
+    
     const start = Date.now();
-    const result = await deadCodeDetector.findDeadCode(options);
-    const duration = Date.now() - start;
     
-    connection.console.info(
-      `[Server] Dead code analysis complete: ${result.candidates.length} candidates found ` +
-      `(${result.analyzedFiles} files analyzed, ${result.totalExports} exports checked) in ${duration}ms`
-    );
-    
-    return {
-      candidates: result.candidates.map(c => ({
-        name: c.symbol.name,
-        kind: c.symbol.kind,
-        filePath: c.symbol.filePath,
-        location: c.symbol.location,
-        reason: c.reason,
-        confidence: c.confidence
-      })),
-      totalExports: result.totalExports,
-      analyzedFiles: result.analyzedFiles,
-      duration
-    };
+    try {
+      const result = await deadCodeDetector.findDeadCode({
+        ...options,
+        cancellationToken: token,
+        onProgress: (current, total, message) => {
+          const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
+          progress.report(percentage, message || `${current}/${total} files`);
+        }
+      });
+      
+      const duration = Date.now() - start;
+      
+      connection.console.info(
+        `[Server] Dead code analysis complete: ${result.candidates.length} candidates found ` +
+        `(${result.analyzedFiles} files analyzed, ${result.totalExports} exports checked) in ${duration}ms`
+      );
+      
+      return {
+        candidates: result.candidates.map(c => ({
+          name: c.symbol.name,
+          kind: c.symbol.kind,
+          filePath: c.symbol.filePath,
+          location: c.symbol.location,
+          reason: c.reason,
+          confidence: c.confidence
+        })),
+        totalExports: result.totalExports,
+        analyzedFiles: result.analyzedFiles,
+        duration
+      };
+    } finally {
+      progress.done();
+    }
   } catch (error) {
+    // Handle cancellation specifically
+    if (error instanceof CancellationError || token.isCancellationRequested) {
+      connection.console.info('[Server] Dead code analysis cancelled by user');
+      throw new ResponseError(-32800, 'Dead code analysis cancelled');
+    }
+    
     connection.console.error(`[Server] Error finding dead code: ${error}`);
     throw error;
   }

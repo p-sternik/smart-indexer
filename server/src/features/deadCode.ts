@@ -4,6 +4,12 @@ import { ConfigurationManager } from '../config/configurationManager.js';
 import { pluginRegistry } from '../plugins/FrameworkPlugin.js';
 import * as fsPromises from 'fs/promises';
 import { minimatch } from 'minimatch';
+import { 
+  CancellationToken, 
+  ProgressCallback, 
+  throwIfCancelled, 
+  yieldToEventLoop 
+} from '../utils/asyncUtils.js';
 
 export interface DeadCodeCandidate {
   symbol: IndexedSymbol;
@@ -22,6 +28,10 @@ export interface DeadCodeOptions {
   includeTests?: boolean;
   entryPoints?: string[];
   checkBarrierFiles?: boolean;
+  /** Cancellation token for aborting the operation */
+  cancellationToken?: CancellationToken;
+  /** Progress callback for reporting analysis progress */
+  onProgress?: ProgressCallback;
 }
 
 /**
@@ -167,29 +177,55 @@ export class DeadCodeDetector {
    * Find unused exports across the workspace.
    * (Batch analysis - used for workspace-wide reports)
    * 
-   * @param options Analysis options
+   * @param options Analysis options including cancellation and progress
    * @returns List of dead code candidates
    */
   async findDeadCode(options?: DeadCodeOptions): Promise<DeadCodeAnalysisResult> {
     const excludePatterns = options?.excludePatterns || [];
     const includeTests = options?.includeTests || false;
+    const cancellationToken = options?.cancellationToken;
+    const onProgress = options?.onProgress;
     
     const candidates: DeadCodeCandidate[] = [];
     let totalExports = 0;
     let analyzedFiles = 0;
 
+    // Check for cancellation before starting
+    throwIfCancelled(cancellationToken);
+
     // Get all files from the background index
     const allFiles = await this.backgroundIndex.getAllFiles();
     
+    // Pre-filter files to get accurate total count
+    const filesToAnalyze: string[] = [];
     for (const fileUri of allFiles) {
-      // Skip excluded patterns
       if (this.shouldExcludeFile(fileUri, excludePatterns, includeTests)) {
         continue;
       }
-
-      // Skip entry points
       if (this.isEntryPoint(fileUri, options?.entryPoints)) {
         continue;
+      }
+      filesToAnalyze.push(fileUri);
+    }
+    
+    const totalFiles = filesToAnalyze.length;
+    
+    // Report initial progress
+    onProgress?.(0, totalFiles, 'Starting dead code analysis...');
+    
+    // Yield frequency: every 50 files to allow cancellation checks
+    const YIELD_INTERVAL = 50;
+    
+    for (let i = 0; i < filesToAnalyze.length; i++) {
+      const fileUri = filesToAnalyze[i];
+      
+      // Yield to event loop periodically to allow cancellation processing
+      if (i % YIELD_INTERVAL === 0 && i > 0) {
+        await yieldToEventLoop();
+        throwIfCancelled(cancellationToken);
+        
+        // Report progress
+        onProgress?.(analyzedFiles, totalFiles, `Analyzing usage... (${analyzedFiles}/${totalFiles} files)`);
       }
 
       analyzedFiles++;
@@ -206,6 +242,9 @@ export class DeadCodeDetector {
         ).length;
       }
     }
+
+    // Final progress update
+    onProgress?.(totalFiles, totalFiles, 'Analysis complete');
 
     return {
       candidates,

@@ -47,6 +47,120 @@ export interface ShardMetadataEntry {
 }
 
 /**
+ * Interface for shard persistence operations.
+ * Allows mocking disk I/O in unit tests.
+ */
+export interface IShardPersistence {
+  /**
+   * Initialize the persistence manager.
+   */
+  init(workspaceRoot: string, cacheDirectory: string): Promise<void>;
+
+  /**
+   * Get the shards directory path.
+   */
+  getShardsDirectory(): string;
+
+  /**
+   * Execute a task with exclusive access to a shard file.
+   */
+  withLock<T>(uri: string, task: () => Promise<T>): Promise<T>;
+
+  /**
+   * Load a shard from disk (with lock).
+   */
+  loadShard(uri: string): Promise<FileShard | null>;
+
+  /**
+   * Load a shard from disk WITHOUT acquiring a lock.
+   * Use only when already holding a lock.
+   */
+  loadShardNoLock(uri: string): Promise<FileShard | null>;
+
+  /**
+   * Save a shard to disk.
+   */
+  saveShard(shard: FileShard): Promise<void>;
+
+  /**
+   * Save a shard to disk WITHOUT acquiring a lock.
+   * Use only when already holding a lock.
+   */
+  saveShardNoLock(shard: FileShard): Promise<void>;
+
+  /**
+   * Delete a shard from disk.
+   */
+  deleteShard(uri: string): Promise<void>;
+
+  /**
+   * Check if a shard exists on disk.
+   */
+  shardExists(uri: string): Promise<boolean>;
+
+  /**
+   * Flush all pending buffered writes.
+   */
+  flush(): Promise<void>;
+
+  /**
+   * Clear all shards from the index directory.
+   */
+  clearAll(): Promise<void>;
+
+  /**
+   * Collect all shard files from nested directory structure.
+   */
+  collectShardFiles(dir?: string): Promise<string[]>;
+
+  /**
+   * Load metadata summary from disk.
+   */
+  loadMetadataSummary(): Promise<ShardMetadataEntry[] | null>;
+
+  /**
+   * Save metadata summary to disk.
+   */
+  saveMetadataSummary(): Promise<void>;
+
+  /**
+   * Update metadata entry for a shard.
+   */
+  updateMetadataEntry(entry: ShardMetadataEntry): void;
+
+  /**
+   * Remove metadata entry for a shard.
+   */
+  removeMetadataEntry(uri: string): void;
+
+  /**
+   * Get cached metadata for a URI.
+   */
+  getMetadataEntry(uri: string): ShardMetadataEntry | undefined;
+
+  /**
+   * Get all cached metadata entries.
+   */
+  getAllMetadataEntries(): ShardMetadataEntry[];
+
+  /**
+   * Get statistics about the persistence manager.
+   */
+  getStats(): {
+    shardsDirectory: string;
+    activeLocks: number;
+    activeLockCounters: number;
+    pendingWrites: number;
+    bufferEnabled: boolean;
+  };
+
+  /**
+   * Cleanup resources.
+   */
+  dispose(): Promise<void>;
+}
+
+/**
  * Metadata summary file structure.
  */
 interface MetadataSummary {
@@ -180,7 +294,7 @@ function fromCompactShard(compact: CompactShard): FileShard {
  * - Reduces disk I/O by coalescing rapid successive writes
  * - Centralizes error handling and logging for I/O operations
  */
-export class ShardPersistenceManager {
+export class ShardPersistenceManager implements IShardPersistence {
   private shardsDirectory: string = '';
   private shardLocks: Map<string, Promise<void>> = new Map();
   private lockCounters: Map<string, number> = new Map(); // Track active lock count per URI

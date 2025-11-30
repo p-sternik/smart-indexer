@@ -1,4 +1,4 @@
-import { ShardPersistenceManager, FileShard } from '../ShardPersistenceManager.js';
+import { IShardPersistence, FileShard } from '../ShardPersistenceManager.js';
 import { IndexedReference, PendingReference } from '../../types.js';
 import { toCamelCase, toPascalCase } from '../../utils/stringUtils.js';
 
@@ -46,10 +46,10 @@ export interface NgRxResolutionStats {
  * This is extracted from BackgroundIndex to adhere to Single Responsibility Principle.
  */
 export class NgRxLinkResolver {
-  private shardManager: ShardPersistenceManager;
+  private shardManager: IShardPersistence;
   private lastStats: NgRxResolutionStats | null = null;
 
-  constructor(shardManager: ShardPersistenceManager) {
+  constructor(shardManager: IShardPersistence) {
     this.shardManager = shardManager;
   }
 

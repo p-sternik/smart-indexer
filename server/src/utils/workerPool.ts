@@ -34,7 +34,56 @@ interface WorkerState {
   currentTask?: CurrentTask;
 }
 
-export class WorkerPool {
+/**
+ * Worker pool statistics.
+ */
+export interface WorkerPoolStats {
+  poolSize: number;
+  idleWorkers: number;
+  queuedTasks: number;
+  highPriorityQueuedTasks: number;
+  totalProcessed: number;
+  totalErrors: number;
+  activeTasks: number;
+}
+
+/**
+ * Interface for worker pool operations.
+ * Allows mocking thread pool in unit tests.
+ */
+export interface IWorkerPool {
+  /**
+   * Run a task on a worker thread.
+   */
+  runTask(taskData: { uri: string; content?: string; priority?: 'high' | 'normal' }): Promise<any>;
+
+  /**
+   * Terminate all workers.
+   */
+  terminate(): Promise<void>;
+
+  /**
+   * Get pool statistics.
+   */
+  getStats(): WorkerPoolStats;
+
+  /**
+   * Get the number of currently active tasks.
+   */
+  getActiveTasks(): number;
+
+  /**
+   * Validate and reset counters if desynchronized.
+   */
+  validateCounters(): boolean;
+
+  /**
+   * Force reset the active tasks counter.
+   */
+  reset(): void;
+}
+
+export class WorkerPool implements IWorkerPool {
   private workers: WorkerState[] = [];
   private taskQueue: QueuedTask[] = [];
   private highPriorityQueue: QueuedTask[] = []; // Separate queue for high-priority tasks
@@ -235,15 +284,7 @@ export class WorkerPool {
     this.activeTasks = 0;
   }
 
-  getStats(): { 
-    poolSize: number; 
-    idleWorkers: number; 
-    queuedTasks: number;
-    highPriorityQueuedTasks: number;
-    totalProcessed: number;
-    totalErrors: number;
-    activeTasks: number;
-  } {
+  getStats(): WorkerPoolStats {
     return {
       poolSize: this.workers.length,
       idleWorkers: this.workers.filter(w => w.idle).length,

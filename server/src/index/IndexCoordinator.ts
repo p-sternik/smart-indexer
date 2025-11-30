@@ -3,7 +3,7 @@ import { IndexedFileResult, PendingReference, SHARD_VERSION } from '../types.js'
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
-import { WorkerPool } from '../utils/workerPool.js';
+import { WorkerPool, IWorkerPool } from '../utils/workerPool.js';
 import { ShardStore } from './ShardStore.js';
 import { FileShard } from './ShardPersistenceManager.js';
 import { sanitizeFilePath } from '../utils/stringUtils.js';
@@ -30,7 +30,7 @@ export interface FileMetadata {
  * - Purge excluded files
  */
 export class IndexCoordinator {
-  private workerPool: WorkerPool | null = null;
+  private workerPool: IWorkerPool | null = null;
   private maxConcurrentJobs: number;
   private isBulkIndexing: boolean = false;
   private progressCallback: ProgressCallback | null = null;
@@ -89,7 +89,7 @@ export class IndexCoordinator {
   /**
    * Get the worker pool (for stats, validation, etc.).
    */
-  getWorkerPool(): WorkerPool | null {
+  getWorkerPool(): IWorkerPool | null {
     return this.workerPool;
   }
 

@@ -4,9 +4,9 @@ import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { fuzzyScore } from '../utils/fuzzySearch.js';
 import { sanitizeFilePath, toCamelCase, toPascalCase } from '../utils/stringUtils.js';
-import { WorkerPool } from '../utils/workerPool.js';
+import { WorkerPool, IWorkerPool } from '../utils/workerPool.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
-import { ShardPersistenceManager, FileShard, ShardMetadataEntry } from './ShardPersistenceManager.js';
+import { ShardPersistenceManager, FileShard, ShardMetadataEntry, IShardPersistence } from './ShardPersistenceManager.js';
 import { NgRxLinkResolver } from './resolvers/NgRxLinkResolver.js';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
@@ -42,7 +42,7 @@ export class BackgroundIndex implements ISymbolIndex {
   private symbolIndexer: SymbolIndexer;
   private languageRouter: LanguageRouter | null = null;
   private configManager: ConfigurationManager | null = null;
-  private shardManager: ShardPersistenceManager;
+  private shardManager: IShardPersistence;
   private fileMetadata: Map<string, { hash: string; lastIndexedAt: number; symbolCount: number; mtime?: number }> = new Map();
   private symbolNameIndex: Map<string, Set<string>> = new Map(); // name -> Set of URIs
   private symbolIdIndex: Map<string, string> = new Map(); // symbolId -> URI
@@ -52,7 +52,7 @@ export class BackgroundIndex implements ISymbolIndex {
   private referenceMap: Map<string, Set<string>> = new Map(); // symbolName -> Set of URIs containing references
   private isInitialized: boolean = false;
   private maxConcurrentJobs: number = 4;
-  private workerPool: WorkerPool | null = null;
+  private workerPool: IWorkerPool | null = null;
   private progressCallback: ProgressCallback | null = null;
   private isBulkIndexing: boolean = false; // Flag to defer NgRx resolution during bulk indexing
   

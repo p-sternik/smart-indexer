@@ -1,4 +1,4 @@
-import { ShardPersistenceManager, FileShard } from './ShardPersistenceManager.js';
+import { ShardPersistenceManager, FileShard, IShardPersistence } from './ShardPersistenceManager.js';
 
 /**
  * ShardStore - Manages shard storage and LRU caching.
@@ -10,7 +10,7 @@ import { ShardPersistenceManager, FileShard } from './ShardPersistenceManager.js
  * - Handle shard deletion
  */
 export class ShardStore {
-  private shardManager: ShardPersistenceManager;
+  private shardManager: IShardPersistence;
   private shardCache: Map<string, FileShard> = new Map();
   private readonly maxCacheSize: number;
 
@@ -29,7 +29,7 @@ export class ShardStore {
   /**
    * Get the underlying ShardPersistenceManager (for advanced operations).
    */
-  getShardManager(): ShardPersistenceManager {
+  getShardManager(): IShardPersistence {
     return this.shardManager;
   }
 

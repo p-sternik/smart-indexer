@@ -209,7 +209,8 @@ function traverseAST(
   scopeTracker?: ScopeTracker,
   parent: TSESTree.Node | null = null,
   pendingNgRxMetadata?: NgRxMetadata,
-  pendingReferences?: PendingReference[]
+  pendingReferences?: PendingReference[],
+  pluginRegistry?: PluginRegistry
 ): void {
   if (!node || !node.loc) {return;}
 
@@ -797,21 +798,24 @@ function traverseAST(
         imports: imports.map(imp => ({ localName: imp.localName, moduleSpecifier: imp.moduleSpecifier }))
       };
       
-      const pluginResult = workerPluginRegistry.visitNode(node, newSymbol, pluginContext);
-      
-      // Merge plugin metadata into symbol
-      if (pluginResult.metadata && Object.keys(pluginResult.metadata).length > 0) {
-        newSymbol.metadata = { ...(newSymbol.metadata || {}), ...pluginResult.metadata };
-      }
-      
-      // Add plugin-generated symbols
-      if (pluginResult.symbols && pluginResult.symbols.length > 0) {
-        symbols.push(...pluginResult.symbols);
-      }
-      
-      // Add plugin-generated references
-      if (pluginResult.references && pluginResult.references.length > 0) {
-        references.push(...pluginResult.references);
+      // Use injected pluginRegistry if available, otherwise skip plugin enrichment
+      if (pluginRegistry) {
+        const pluginResult = pluginRegistry.visitNode(node, newSymbol, pluginContext);
+        
+        // Merge plugin metadata into symbol
+        if (pluginResult.metadata && Object.keys(pluginResult.metadata).length > 0) {
+          newSymbol.metadata = { ...(newSymbol.metadata || {}), ...pluginResult.metadata };
+        }
+        
+        // Add plugin-generated symbols
+        if (pluginResult.symbols && pluginResult.symbols.length > 0) {
+          symbols.push(...pluginResult.symbols);
+        }
+        
+        // Add plugin-generated references
+        if (pluginResult.references && pluginResult.references.length > 0) {
+          references.push(...pluginResult.references);
+        }
       }
       
       symbols.push(newSymbol);
@@ -849,11 +853,11 @@ function traverseAST(
           if (Array.isArray(child)) {
             for (const item of child) {
               if (item && typeof item === 'object' && item.type) {
-                traverseAST(item, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node, undefined, pendingReferences);
+                traverseAST(item, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node, undefined, pendingReferences, pluginRegistry);
               }
             }
           } else if (child.type) {
-            traverseAST(child, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node, undefined, pendingReferences);
+            traverseAST(child, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node, undefined, pendingReferences, pluginRegistry);
           }
         }
       }
@@ -872,16 +876,19 @@ function traverseAST(
         imports: imports.map(imp => ({ localName: imp.localName, moduleSpecifier: imp.moduleSpecifier }))
       };
       
-      const pluginResult = workerPluginRegistry.visitNode(node, null, pluginContext);
-      
-      // Add plugin-generated symbols
-      if (pluginResult.symbols && pluginResult.symbols.length > 0) {
-        symbols.push(...pluginResult.symbols);
-      }
-      
-      // Add plugin-generated references
-      if (pluginResult.references && pluginResult.references.length > 0) {
-        references.push(...pluginResult.references);
+      // Use injected pluginRegistry if available
+      if (pluginRegistry) {
+        const pluginResult = pluginRegistry.visitNode(node, null, pluginContext);
+        
+        // Add plugin-generated symbols
+        if (pluginResult.symbols && pluginResult.symbols.length > 0) {
+          symbols.push(...pluginResult.symbols);
+        }
+        
+        // Add plugin-generated references
+        if (pluginResult.references && pluginResult.references.length > 0) {
+          references.push(...pluginResult.references);
+        }
       }
       
       for (const key in node) {
@@ -890,11 +897,11 @@ function traverseAST(
           if (Array.isArray(child)) {
             for (const item of child) {
               if (item && typeof item === 'object' && item.type) {
-                traverseAST(item, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node, undefined, pendingReferences);
+                traverseAST(item, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node, undefined, pendingReferences, pluginRegistry);
               }
             }
           } else if (child.type) {
-            traverseAST(child, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node, undefined, pendingReferences);
+            traverseAST(child, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node, undefined, pendingReferences, pluginRegistry);
           }
         }
       }
@@ -926,7 +933,8 @@ function extractCodeSymbolsAndReferences(uri: string, content: string): {
     const reExports = importExtractor.extractReExports(ast);
 
     const scopeTracker = new ScopeTracker();
-    traverseAST(ast, symbols, references, uri, undefined, undefined, [], imports, scopeTracker, null, undefined, pendingReferences);
+    // Use the global workerPluginRegistry for worker thread execution
+    traverseAST(ast, symbols, references, uri, undefined, undefined, [], imports, scopeTracker, null, undefined, pendingReferences, workerPluginRegistry);
     
     return { symbols, references, imports, reExports, pendingReferences };
   } catch (error) {
@@ -1130,12 +1138,10 @@ function traverseASTWithPlugins(
   parent: TSESTree.Node | null = null,
   pendingNgRxMetadata?: NgRxMetadata,
   pendingReferences?: PendingReference[],
-  pluginRegistry: PluginRegistry = workerPluginRegistry
+  pluginRegistry?: PluginRegistry
 ): void {
-  // For now, delegate to the existing traverseAST
-  // The pluginRegistry parameter is passed but the current traverseAST uses the global workerPluginRegistry
-  // TODO: Full refactor to thread pluginRegistry through traverseAST
-  traverseAST(node, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, parent, pendingNgRxMetadata, pendingReferences);
+  // Delegate to traverseAST with the injected pluginRegistry
+  traverseAST(node, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, parent, pendingNgRxMetadata, pendingReferences, pluginRegistry);
 }
 
 // Re-export default plugins for testing

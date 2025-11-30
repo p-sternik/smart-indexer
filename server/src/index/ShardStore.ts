@@ -1,11 +1,11 @@
-import { ShardPersistenceManager, FileShard, IShardPersistence } from './ShardPersistenceManager.js';
+import { FileShard, IShardPersistence } from './ShardPersistenceManager.js';
 
 /**
  * ShardStore - Manages shard storage and LRU caching.
  * Extracted from BackgroundIndex for single-responsibility.
  * 
  * Responsibilities:
- * - Load/save shards via ShardPersistenceManager
+ * - Load/save shards via injected IShardPersistence
  * - Maintain an LRU cache to reduce disk I/O
  * - Handle shard deletion
  */
@@ -14,9 +14,13 @@ export class ShardStore {
   private shardCache: Map<string, FileShard> = new Map();
   private readonly maxCacheSize: number;
 
-  constructor(maxCacheSize: number = 50, enableBuffering: boolean = true, bufferDelayMs: number = 100) {
+  /**
+   * @param shardManager - Injected persistence manager (DI pattern)
+   * @param maxCacheSize - Maximum number of shards to cache in memory
+   */
+  constructor(shardManager: IShardPersistence, maxCacheSize: number = 50) {
+    this.shardManager = shardManager;
     this.maxCacheSize = maxCacheSize;
-    this.shardManager = new ShardPersistenceManager(enableBuffering, bufferDelayMs);
   }
 
   /**

@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.52.0](https://github.com/p-sternik/smart-indexer/compare/v1.51.0...v1.52.0) (2025-11-30)
+
+
+### Features
+
+* refactor ShardStore and worker to use dependency injection for persistence and plugin registry ([6ebb36f](https://github.com/p-sternik/smart-indexer/commit/6ebb36fc2d5730f39990cc984aadb21cf4dca2da))
+
 ## [1.51.0](https://github.com/p-sternik/smart-indexer/compare/v1.50.0...v1.51.0) (2025-11-30)
 
 

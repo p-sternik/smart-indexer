@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.46.0](https://github.com/p-sternik/smart-indexer/compare/v1.45.0...v1.46.0) (2025-11-30)
+
+
+### Features
+
+* implement deduplication of definition results to ensure unique locations per file ([f644fe5](https://github.com/p-sternik/smart-indexer/commit/f644fe54a369efe034337e2f165f069994f41b7c))
+
 ## [1.45.0](https://github.com/p-sternik/smart-indexer/compare/v1.44.0...v1.45.0) (2025-11-29)
 
 

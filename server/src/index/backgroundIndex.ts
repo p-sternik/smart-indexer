@@ -3,10 +3,11 @@ import { IndexedSymbol, IndexedFileResult, IndexedReference, ImportInfo, ReExpor
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { fuzzyScore } from '../utils/fuzzySearch.js';
-import { toCamelCase, toPascalCase, sanitizeFilePath } from '../utils/stringUtils.js';
+import { sanitizeFilePath, toCamelCase, toPascalCase } from '../utils/stringUtils.js';
 import { WorkerPool } from '../utils/workerPool.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
 import { ShardPersistenceManager, FileShard, ShardMetadataEntry } from './ShardPersistenceManager.js';
+import { NgRxLinkResolver } from './resolvers/NgRxLinkResolver.js';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
@@ -59,10 +60,14 @@ export class BackgroundIndex implements ISymbolIndex {
   private shardCache: Map<string, FileShard> = new Map();
   private readonly MAX_CACHE_SIZE = 50;
 
+  // Specialized resolver for NgRx action group references
+  private ngrxResolver: NgRxLinkResolver;
+
   constructor(symbolIndexer: SymbolIndexer, maxConcurrentJobs: number = 4) {
     this.symbolIndexer = symbolIndexer;
     this.maxConcurrentJobs = maxConcurrentJobs;
     this.shardManager = new ShardPersistenceManager(true, 100); // Enable buffering with 100ms coalescing
+    this.ngrxResolver = new NgRxLinkResolver(this.shardManager);
   }
 
   /**
@@ -1316,252 +1321,21 @@ export class BackgroundIndex implements ISymbolIndex {
 
   /**
    * Finalize indexing by resolving all deferred cross-file references in batch.
-   * 
-   * OPTIMIZED APPROACH:
-   * 1. Single pass through all files to build NgRx lookup AND collect pending refs
-   * 2. Resolve all references in-memory (no I/O)
-   * 3. Batch write: one load + one save per file with pending refs
-   * 
-   * This achieves O(N) I/O instead of O(N*M) for significant performance gains.
+   * Delegates to NgRxLinkResolver for NgRx action group resolution.
    */
   async finalizeIndexing(): Promise<void> {
-    const startTime = Date.now();
-    
     console.info('[Finalize] Starting finalization phase...');
     
-    // STEP 1: Single pass to build NgRx lookup AND collect pending references
-    // This combines the previous Step 1 and Step 2 into one pass
-    console.info('[Finalize] Step 1: Scanning files for action groups and pending refs...');
-    
-    const actionGroupLookup = new Map<string, { uri: string; events: Record<string, string> }>();
-    const pendingByFile = new Map<string, PendingReference[]>();
-    
     const files = Array.from(this.fileMetadata.keys());
-    const totalFiles = files.length;
-    let symbolsScanned = 0;
-    let totalPending = 0;
     
-    for (let i = 0; i < files.length; i++) {
-      const uri = files[i];
-      if (i % 100 === 0) {
-        console.info(`[Finalize] Step 1 progress: ${i}/${totalFiles} files scanned`);
-      }
-      
-      const shard = await this.loadShard(uri);
-      if (!shard) {
-        continue;
-      }
-      
-      // Collect NgRx action groups
-      for (const symbol of shard.symbols) {
-        symbolsScanned++;
-        if (symbol.ngrxMetadata?.isGroup === true && symbol.ngrxMetadata?.events) {
-          actionGroupLookup.set(symbol.name, {
-            uri,
-            events: symbol.ngrxMetadata.events
-          });
-        }
-      }
-      
-      // Collect pending references
-      if (shard.pendingReferences && shard.pendingReferences.length > 0) {
-        pendingByFile.set(uri, [...shard.pendingReferences]);
-        totalPending += shard.pendingReferences.length;
-      }
-    }
-    
-    console.info(
-      `[Finalize] Step 1 complete: Found ${actionGroupLookup.size} action groups, ` +
-      `${totalPending} pending refs in ${pendingByFile.size} files ` +
-      `(scanned ${symbolsScanned} symbols in ${totalFiles} files)`
+    // Delegate NgRx resolution to specialized resolver
+    await this.ngrxResolver.resolveAll(
+      files,
+      (uri: string) => this.loadShard(uri),
+      this.referenceMap
     );
     
-    if (totalPending === 0) {
-      console.info(`[Finalize] No pending references to resolve. Done.`);
-      return;
-    }
-    
-    // STEP 2: Resolve all references in-memory (no I/O)
-    // Build a map of: uri -> { newRefs: IndexedReference[], resolvedPendingKeys: Set<string> }
-    console.info('[Finalize] Step 2: Resolving references in-memory...');
-    
-    interface FileUpdate {
-      newRefs: IndexedReference[];
-      resolvedKeys: Set<string>;
-      ngrxCount: number;
-      fallbackCount: number;
-    }
-    
-    const updatesByFile = new Map<string, FileUpdate>();
-    let ngrxResolved = 0;
-    let fallbackResolved = 0;
-    
-    for (const [uri, pendingRefs] of pendingByFile) {
-      const update: FileUpdate = {
-        newRefs: [],
-        resolvedKeys: new Set(),
-        ngrxCount: 0,
-        fallbackCount: 0
-      };
-      
-      for (const pending of pendingRefs) {
-        const pendingKey = `${pending.container}:${pending.member}:${pending.location.line}:${pending.location.character}`;
-        
-        // Try NgRx resolution first
-        const actionGroup = actionGroupLookup.get(pending.container);
-        let resolvedAsNgRx = false;
-        
-        if (actionGroup) {
-          // Check if the member exists in the events map
-          let matchedMember: string | null = null;
-          
-          if (pending.member in actionGroup.events) {
-            matchedMember = pending.member;
-          } else {
-            const camelMember = toCamelCase(pending.member);
-            if (camelMember in actionGroup.events) {
-              matchedMember = camelMember;
-            } else {
-              const pascalMember = toPascalCase(pending.member);
-              if (pascalMember in actionGroup.events) {
-                matchedMember = pascalMember;
-              }
-            }
-          }
-          
-          if (matchedMember) {
-            update.newRefs.push({
-              symbolName: pending.member,
-              location: pending.location,
-              range: pending.range,
-              containerName: pending.containerName,
-              isLocal: false
-            });
-            update.resolvedKeys.add(pendingKey);
-            update.ngrxCount++;
-            resolvedAsNgRx = true;
-            
-            // Update in-memory referenceMap
-            let refUriSet = this.referenceMap.get(pending.member);
-            if (!refUriSet) {
-              refUriSet = new Set();
-              this.referenceMap.set(pending.member, refUriSet);
-            }
-            refUriSet.add(uri);
-          }
-        }
-        
-        // Fallback: Non-NgRx imported member access
-        if (!resolvedAsNgRx) {
-          const qualifiedName = `${pending.container}.${pending.member}`;
-          update.newRefs.push({
-            symbolName: qualifiedName,
-            location: pending.location,
-            range: pending.range,
-            containerName: pending.containerName,
-            isLocal: false
-          });
-          update.resolvedKeys.add(pendingKey);
-          update.fallbackCount++;
-          
-          // Update in-memory referenceMap
-          let refUriSet = this.referenceMap.get(qualifiedName);
-          if (!refUriSet) {
-            refUriSet = new Set();
-            this.referenceMap.set(qualifiedName, refUriSet);
-          }
-          refUriSet.add(uri);
-        }
-      }
-      
-      if (update.newRefs.length > 0) {
-        updatesByFile.set(uri, update);
-        ngrxResolved += update.ngrxCount;
-        fallbackResolved += update.fallbackCount;
-      }
-    }
-    
-    console.info(
-      `[Finalize] Step 2 complete: Resolved ${ngrxResolved} NgRx + ${fallbackResolved} fallback refs in-memory`
-    );
-    
-    // STEP 3: Batch write - single load + save per file
-    // CRITICAL FIX: Use shardManager.loadShardNoLock() to avoid nested lock deadlock
-    // Previously: withLock() -> loadShard() -> shardManager.loadShard() -> withLock() = DEADLOCK
-    console.info('[Finalize] Step 3: Batch writing updates to disk...');
-    
-    let shardsModified = 0;
-    const totalUpdates = updatesByFile.size;
-    let processedCount = 0;
-    
-    for (const [uri, update] of updatesByFile) {
-      processedCount++;
-      
-      // Verbose debug logging for every reference to identify hangs
-      console.info(`[Finalize] Step 3 processing ${processedCount}/${totalUpdates}: ${uri}`);
-      
-      try {
-        // Use Promise.race with timeout to prevent infinite hangs
-        const timeoutMs = 5000;
-        const result = await Promise.race([
-          this.shardManager.withLock(uri, async () => {
-            // CRITICAL: Use loadShardNoLock to avoid nested lock acquisition
-            const shard = await this.shardManager.loadShardNoLock(uri);
-            if (!shard) {
-              console.warn(`[Finalize] Step 3: Shard not found for ${uri}`);
-              return false;
-            }
-            
-            // Ensure arrays exist
-            shard.references = shard.references || [];
-            
-            // Build set of existing ref keys for deduplication
-            const existingRefKeys = new Set(
-              shard.references.map(r => `${r.symbolName}:${r.location.line}:${r.location.character}`)
-            );
-            
-            // Add only new references (avoid duplicates)
-            for (const newRef of update.newRefs) {
-              const refKey = `${newRef.symbolName}:${newRef.location.line}:${newRef.location.character}`;
-              if (!existingRefKeys.has(refKey)) {
-                shard.references.push(newRef);
-                existingRefKeys.add(refKey);
-              }
-            }
-            
-            // Remove resolved pending references
-            if (shard.pendingReferences) {
-              shard.pendingReferences = shard.pendingReferences.filter(pr => {
-                const key = `${pr.container}:${pr.member}:${pr.location.line}:${pr.location.character}`;
-                return !update.resolvedKeys.has(key);
-              });
-            }
-            
-            // CRITICAL: Use saveShardNoLock to avoid nested lock
-            await this.shardManager.saveShardNoLock(shard);
-            return true;
-          }),
-          new Promise<boolean>((_, reject) => 
-            setTimeout(() => reject(new Error(`TIMEOUT after ${timeoutMs}ms`)), timeoutMs)
-          )
-        ]);
-        
-        if (result) {
-          shardsModified++;
-        }
-        console.info(`[Finalize] Step 3 done ${processedCount}/${totalUpdates}: ${uri}`);
-      } catch (error) {
-        console.error(`[Finalize] Step 3 FAILED for ${uri}: ${error}`);
-        // Continue processing other files even if one fails
-      }
-    }
-    
-    const duration = Date.now() - startTime;
-    console.info(
-      `[Finalize] Complete: ` +
-      `NgRx=${ngrxResolved}, Fallback=${fallbackResolved}, Total=${totalPending} ` +
-      `(${shardsModified} shards modified) in ${duration}ms`
-    );
+    console.info(`[Finalize] Complete. ${this.ngrxResolver.getStats()}`);
   }
 
   /**

@@ -62,7 +62,9 @@ smart-indexer/
 │   │   │   ├── staticIndex.ts    # Pre-generated index support
 │   │   │   ├── mergedIndex.ts    # Index aggregation layer
 │   │   │   ├── fileWatcher.ts    # Live file synchronization
-│   │   │   └── statsManager.ts   # Statistics tracking
+│   │   │   ├── statsManager.ts   # Statistics tracking
+│   │   │   └── resolvers/        # Specialized cross-file resolvers
+│   │   │       └── NgRxLinkResolver.ts # NgRx action group resolution
 │   │   ├── indexer/              # Parsing & symbol extraction
 │   │   │   ├── worker.ts         # Worker thread parser
 │   │   │   ├── symbolIndexer.ts  # Main indexing logic
@@ -112,6 +114,7 @@ smart-indexer/
 |-----------|----------------|
 | `src/` | VS Code Extension API integration, LSP client, UI components |
 | `server/src/index/` | **Core Innovation** - Multi-tiered index architecture (Dynamic → Background → Static) |
+| `server/src/index/resolvers/` | **Specialized Resolvers** - NgRxLinkResolver for cross-file NgRx action group resolution |
 | `server/src/indexer/` | Parsing layer - AST traversal, symbol extraction |
 | `server/src/plugins/` | **Framework Plugin System** - Extensible detection for Angular, NgRx, etc. |
 | `server/src/cache/` | Persistence - Sharded JSON storage, Merkle hashing |
@@ -1225,7 +1228,8 @@ interface RankingContext {
 
 ### 5.2 NgRx Cross-File Resolution
 
-The NgRx linking system handles action groups defined in one file and used in another:
+The NgRx linking system handles action groups defined in one file and used in another.
+This logic is encapsulated in `NgRxLinkResolver` (`server/src/index/resolvers/NgRxLinkResolver.ts`).
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -1254,7 +1258,7 @@ The NgRx linking system handles action groups defined in one file and used in an
 │       ▼ traverseAST() → MemberExpression                            │
 │  Creates pendingReference: { container: 'PageActions', member: 'load' } │
 │                                                                      │
-│  Step 3: Deferred batch resolution (finalizeIndexing)                │
+│  Step 3: Deferred batch resolution (NgRxLinkResolver.resolveAll)     │
 │  ┌─────────────────────────────────────────────────────────────┐    │
 │  │ 1. Build actionGroupLookup map from all indexed files        │    │
 │  │ 2. For each pendingReference:                                │    │

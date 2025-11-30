@@ -156,7 +156,7 @@ smart-indexer/
 | `chokidar` | File watching | Robust cross-platform filesystem events |
 | `simple-git` | Git operations | Git diff-based incremental indexing |
 | `minimatch` | Glob matching | Exclusion pattern filtering |
-| `sql.js` | In-memory SQL | Optional SQLite-based storage |
+| `@msgpack/msgpack` | Binary serialization | Efficient shard persistence |
 
 ### 2.3 Build Tooling
 

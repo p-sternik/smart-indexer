@@ -108,7 +108,6 @@ private fileIndex: Map<string, IndexedSymbol[]>
   │   │   └── 4c/
   │   │       └── b74c9f2a...json    # Shard for file3.ts
   │   └── ...
-  ├── index.sqlite         # SQLite cache for fast queries
   └── metadata.json        # Git hash, folder hashes, timestamps
 ```
 

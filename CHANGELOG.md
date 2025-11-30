@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.49.0](https://github.com/p-sternik/smart-indexer/compare/v1.48.0...v1.49.0) (2025-11-30)
+
+
+### Features
+
+* refactor shard management to use interfaces for improved testability and flexibility ([2a44252](https://github.com/p-sternik/smart-indexer/commit/2a442526619e439fb25ad5f5f825a08bae715c7a))
+
 ## [1.48.0](https://github.com/p-sternik/smart-indexer/compare/v1.47.0...v1.48.0) (2025-11-30)
 
 

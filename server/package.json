@@ -6,7 +6,8 @@
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -p . --watch",
-    "test:worker": "tsc -p . && node out/test/workerTest.js"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "vscode-languageserver": "^9.0.1",
@@ -16,6 +17,7 @@
   "devDependencies": {
     "@types/node": "22.x",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
   }
 }

@@ -69,6 +69,28 @@ const DEFAULT_CONFIG: SmartIndexerConfig = {
   deadCode: DEFAULT_DEAD_CODE_CONFIG
 };
 
+/**
+ * Settings interface matching VS Code extension configuration.
+ * Used for type-safe settings updates from the client.
+ */
+export interface ISmartIndexerSettings {
+  cacheDirectory?: string;
+  enableGitIntegration?: boolean;
+  excludePatterns?: string[];
+  maxIndexedFileSize?: number;
+  maxFileSizeMB?: number;
+  maxCacheSizeMB?: number;
+  maxConcurrentIndexJobs?: number;
+  enableBackgroundIndex?: boolean;
+  textIndexingEnabled?: boolean;
+  staticIndexEnabled?: boolean;
+  staticIndexPath?: string;
+  maxConcurrentWorkers?: number;
+  batchSize?: number;
+  useFolderHashing?: boolean;
+  deadCode?: Partial<DeadCodeConfig>;
+}
+
 export class ConfigurationManager {
   private config: SmartIndexerConfig;
 
@@ -80,7 +102,7 @@ export class ConfigurationManager {
     return { ...this.config };
   }
 
-  updateFromInitializationOptions(opts: any): void {
+  updateFromInitializationOptions(opts: Partial<ISmartIndexerSettings> | null | undefined): void {
     if (!opts) {return;}
 
     if (typeof opts.cacheDirectory === 'string') {
@@ -130,7 +152,7 @@ export class ConfigurationManager {
     }
   }
 
-  updateFromSettings(settings: any): void {
+  updateFromSettings(settings: Partial<ISmartIndexerSettings> | null | undefined): void {
     if (!settings) {return;}
 
     if (typeof settings.cacheDirectory === 'string') {

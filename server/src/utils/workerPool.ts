@@ -1,28 +1,35 @@
 import { Worker } from 'worker_threads';
 import * as os from 'os';
-import * as path from 'path';
+import { IndexedFileResult } from '../types.js';
 
-interface WorkerTaskData {
+/**
+ * Data structure for worker task input.
+ */
+export interface WorkerTaskData {
   uri: string;
   content?: string;
   priority?: 'high' | 'normal'; // High priority for self-healing repairs
 }
 
-interface WorkerResult {
+/**
+ * Generic result from a worker thread.
+ * @template T - The type of the result payload (defaults to IndexedFileResult)
+ */
+export interface WorkerResult<T = IndexedFileResult> {
   success: boolean;
-  result?: any;
+  result?: T;
   error?: string;
 }
 
-interface QueuedTask {
+interface QueuedTask<T> {
   taskData: WorkerTaskData;
-  resolve: (result: any) => void;
+  resolve: (result: T) => void;
   reject: (error: Error) => void;
   priority: 'high' | 'normal';
 }
 
-interface CurrentTask {
-  resolve: (result: any) => void;
+interface CurrentTask<T> {
+  resolve: (result: T) => void;
   reject: (error: Error) => void;
   taskData: WorkerTaskData;
   timeoutId: NodeJS.Timeout;
@@ -31,7 +38,7 @@ interface CurrentTask {
 interface WorkerState {
   worker: Worker;
   idle: boolean;
-  currentTask?: CurrentTask;
+  currentTask?: CurrentTask<IndexedFileResult>;
 }
 
 /**
@@ -55,7 +62,7 @@ export interface IWorkerPool {
   /**
    * Run a task on a worker thread.
    */
-  runTask(taskData: { uri: string; content?: string; priority?: 'high' | 'normal' }): Promise<any>;
+  runTask(taskData: WorkerTaskData): Promise<IndexedFileResult>;
 
   /**
    * Terminate all workers.
@@ -85,8 +92,8 @@ export interface IWorkerPool {
 
 export class WorkerPool implements IWorkerPool {
   private workers: WorkerState[] = [];
-  private taskQueue: QueuedTask[] = [];
-  private highPriorityQueue: QueuedTask[] = []; // Separate queue for high-priority tasks
+  private taskQueue: QueuedTask<IndexedFileResult>[] = [];
+  private highPriorityQueue: QueuedTask<IndexedFileResult>[] = []; // Separate queue for high-priority tasks
   private workerScriptPath: string;
   private poolSize: number;
   private totalTasksProcessed: number = 0;
@@ -161,13 +168,13 @@ export class WorkerPool implements IWorkerPool {
     return this.workers.find(w => w.idle) || null;
   }
 
-  async runTask(taskData: WorkerTaskData): Promise<any> {
+  async runTask(taskData: WorkerTaskData): Promise<IndexedFileResult> {
     // Increment active tasks counter IMMEDIATELY when task is submitted
     this.activeTasks++;
     
-    return new Promise((resolve, reject) => {
+    return new Promise<IndexedFileResult>((resolve, reject) => {
       // Wrap resolve/reject to decrement counter on completion
-      const wrappedResolve = (result: any) => {
+      const wrappedResolve = (result: IndexedFileResult) => {
         this.activeTasks--;
         resolve(result);
       };
@@ -183,7 +190,7 @@ export class WorkerPool implements IWorkerPool {
         this.executeTask(idleWorker, taskData, wrappedResolve, wrappedReject);
       } else {
         // Add to appropriate queue based on priority
-        const queuedTask = { taskData, resolve: wrappedResolve, reject: wrappedReject, priority };
+        const queuedTask: QueuedTask<IndexedFileResult> = { taskData, resolve: wrappedResolve, reject: wrappedReject, priority };
         if (priority === 'high') {
           this.highPriorityQueue.push(queuedTask);
         } else {
@@ -196,7 +203,7 @@ export class WorkerPool implements IWorkerPool {
   private executeTask(
     workerState: WorkerState,
     taskData: WorkerTaskData,
-    resolve: (result: any) => void,
+    resolve: (result: IndexedFileResult) => void,
     reject: (error: Error) => void
   ): void {
     workerState.idle = false;
@@ -210,14 +217,14 @@ export class WorkerPool implements IWorkerPool {
     // Track the current task for crash recovery
     workerState.currentTask = { resolve, reject, taskData, timeoutId };
 
-    const messageHandler = (result: WorkerResult) => {
+    const messageHandler = (result: WorkerResult<IndexedFileResult>) => {
       // Clear timeout and task tracking on successful completion
       clearTimeout(timeoutId);
       workerState.worker.off('message', messageHandler);
       workerState.idle = true;
       workerState.currentTask = undefined;
 
-      if (result.success) {
+      if (result.success && result.result) {
         this.totalTasksProcessed++;
         resolve(result.result);
       } else {

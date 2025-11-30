@@ -725,61 +725,25 @@ function traverseAST(
       case AST_NODE_TYPES.PropertyDefinition:
         if ((node as TSESTree.PropertyDefinition).key.type === AST_NODE_TYPES.Identifier) {
           const propNode = node as TSESTree.PropertyDefinition;
-          // Intern the property name
-          const propName = interner.intern((propNode.key as TSESTree.Identifier).name);
-          const propStatic = propNode.static;
-          const fullContainerPath = containerPath.length > 0 ? containerPath.join('.') : undefined;
+          // Intern the property name and set shared variables for plugin enrichment
+          symbolName = interner.intern((propNode.key as TSESTree.Identifier).name);
+          symbolKind = 'property';
+          isStatic = propNode.static;
           
           // Check for NgRx legacy @Effect decorator or modern createEffect
-          let ngrxMetadata: NgRxMetadata | undefined;
           if (hasEffectDecorator(propNode)) {
-            ngrxMetadata = {
-              type: propName,
+            pendingNgRxMetadata = {
+              type: symbolName,
               role: 'effect'
             };
           } else if (propNode.value && 
                      propNode.value.type === AST_NODE_TYPES.CallExpression &&
                      isNgRxCreateEffectCall(propNode.value as TSESTree.CallExpression)) {
-            ngrxMetadata = {
-              type: propName,
+            pendingNgRxMetadata = {
+              type: symbolName,
               role: 'effect'
             };
           }
-          
-          const id = createSymbolId(
-            uri,
-            propName,
-            containerName,
-            fullContainerPath,
-            'property',
-            propStatic,
-            undefined,
-            propNode.key.loc.start.line - 1,
-            propNode.key.loc.start.column
-          );
-          // Build POJO with only primitive values
-          symbols.push({
-            id,
-            name: propName,
-            kind: 'property',
-            location: {
-              uri,
-              line: propNode.key.loc.start.line - 1,
-              character: propNode.key.loc.start.column
-            },
-            range: {
-              startLine: node.loc.start.line - 1,
-              startCharacter: node.loc.start.column,
-              endLine: node.loc.end.line - 1,
-              endCharacter: node.loc.end.column
-            },
-            containerName,
-            containerKind,
-            fullContainerPath,
-            isStatic: propStatic,
-            filePath: uri,
-            ngrxMetadata
-          });
         }
         break;
     }

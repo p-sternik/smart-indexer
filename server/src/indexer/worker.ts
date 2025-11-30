@@ -106,6 +106,22 @@ function isDeclarationContext(node: TSESTree.Node, parent: TSESTree.Node | null)
       const prop = parent as TSESTree.Property;
       return prop.key === node && !prop.computed;
     
+    // MemberExpression: skip object identifiers here - they are handled in dedicated MemberExpression block
+    // This prevents double-counting enum/namespace references like InfoboxType.POPUP
+    case AST_NODE_TYPES.MemberExpression:
+      const memberExpr = parent as TSESTree.MemberExpression;
+      return memberExpr.object === node;
+    
+    // TSTypeReference: skip type name identifiers here - they are handled in dedicated TSTypeReference block
+    // This prevents double-counting type references like let x: MyEnum
+    case AST_NODE_TYPES.TSTypeReference:
+      const typeRef = parent as TSESTree.TSTypeReference;
+      return typeRef.typeName === node;
+    
+    // TSQualifiedName: skip identifiers that are part of qualified names (handled in TSTypeReference block)
+    case AST_NODE_TYPES.TSQualifiedName:
+      return true;
+    
     default:
       return false;
   }
@@ -223,11 +239,102 @@ function traverseAST(
       }
     }
     
-    // Handle MemberExpression (e.g., SigningActions.createSigningStepStart)
+    // Handle TSTypeReference (e.g., let x: MyEnum, function foo(): MyInterface)
+    // This captures type-position usages of enums, interfaces, type aliases, and classes
+    if (node.type === AST_NODE_TYPES.TSTypeReference) {
+      const typeRef = node as TSESTree.TSTypeReference;
+      // Handle simple type references (e.g., MyEnum)
+      if (typeRef.typeName.type === AST_NODE_TYPES.Identifier && typeRef.typeName.loc) {
+        const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
+        const typeName = interner.intern(typeRef.typeName.name);
+        const isImportRef = imports.some(imp => imp.localName === typeName);
+        
+        references.push({
+          symbolName: typeName,
+          location: {
+            uri,
+            line: typeRef.typeName.loc.start.line - 1,
+            character: typeRef.typeName.loc.start.column
+          },
+          range: {
+            startLine: typeRef.typeName.loc.start.line - 1,
+            startCharacter: typeRef.typeName.loc.start.column,
+            endLine: typeRef.typeName.loc.end.line - 1,
+            endCharacter: typeRef.typeName.loc.end.column
+          },
+          containerName,
+          isImport: isImportRef,
+          scopeId,
+          isLocal: false
+        });
+      }
+      // Handle qualified type references (e.g., Namespace.MyEnum)
+      else if (typeRef.typeName.type === AST_NODE_TYPES.TSQualifiedName) {
+        // Capture the leftmost identifier (the namespace/module name)
+        let leftmost: TSESTree.EntityName = typeRef.typeName;
+        while (leftmost.type === AST_NODE_TYPES.TSQualifiedName) {
+          leftmost = leftmost.left;
+        }
+        if (leftmost.type === AST_NODE_TYPES.Identifier && leftmost.loc) {
+          const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
+          const leftName = interner.intern(leftmost.name);
+          const isImportRef = imports.some(imp => imp.localName === leftName);
+          
+          references.push({
+            symbolName: leftName,
+            location: {
+              uri,
+              line: leftmost.loc.start.line - 1,
+              character: leftmost.loc.start.column
+            },
+            range: {
+              startLine: leftmost.loc.start.line - 1,
+              startCharacter: leftmost.loc.start.column,
+              endLine: leftmost.loc.end.line - 1,
+              endCharacter: leftmost.loc.end.column
+            },
+            containerName,
+            isImport: isImportRef,
+            scopeId,
+            isLocal: false
+          });
+        }
+      }
+    }
+    
+    // Handle MemberExpression (e.g., SigningActions.createSigningStepStart, MyEnum.Value)
     if (node.type === AST_NODE_TYPES.MemberExpression) {
       const memberExpr = node as TSESTree.MemberExpression;
+      const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
+      
+      // Capture the object identifier (e.g., "InfoboxType" in InfoboxType.POPUP)
+      // This is critical for capturing enum usages where the enum name is the object
+      if (memberExpr.object.type === AST_NODE_TYPES.Identifier && memberExpr.object.loc) {
+        const objectName = interner.intern(memberExpr.object.name);
+        const isImportRef = imports.some(imp => imp.localName === objectName);
+        const isLocal = scopeTracker?.isLocalVariable(memberExpr.object.name) || false;
+        
+        references.push({
+          symbolName: objectName,
+          location: {
+            uri,
+            line: memberExpr.object.loc.start.line - 1,
+            character: memberExpr.object.loc.start.column
+          },
+          range: {
+            startLine: memberExpr.object.loc.start.line - 1,
+            startCharacter: memberExpr.object.loc.start.column,
+            endLine: memberExpr.object.loc.end.line - 1,
+            endCharacter: memberExpr.object.loc.end.column
+          },
+          containerName,
+          isImport: isImportRef,
+          scopeId,
+          isLocal
+        });
+      }
+      
       if (memberExpr.property.type === AST_NODE_TYPES.Identifier && memberExpr.property.loc) {
-        const scopeId = scopeTracker?.getCurrentScopeId() || '<global>';
         // Intern the property name
         const propName = interner.intern(memberExpr.property.name);
         

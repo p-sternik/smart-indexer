@@ -6,6 +6,7 @@
  * - Handle member expression chains (e.g., myStore.actions.opened)
  * - Resolve imports and re-exports
  * - TypeScript-based disambiguation for multiple candidates
+ * - Deduplicate results to prevent duplicate locations in the same file
  * 
  * This handler implements the core "Go to Definition" functionality.
  */
@@ -23,6 +24,106 @@ import { findSymbolAtPosition } from '../indexer/symbolResolver.js';
 import { parseMemberAccess, resolvePropertyRecursively } from '../indexer/recursiveResolver.js';
 import { disambiguateSymbols } from '../utils/disambiguation.js';
 import { getWordRangeAtPosition } from '../utils/textUtils.js';
+
+/**
+ * Symbol kinds that represent primary definitions (classes, functions, etc.)
+ * These are prioritized over secondary kinds like decorators.
+ */
+const PRIMARY_DEFINITION_KINDS = new Set([
+  'class',
+  'interface',
+  'function',
+  'method',
+  'enum',
+  'type',
+  'variable',
+  'constant'
+]);
+
+/**
+ * Deduplicate definition results to ensure only one location per file.
+ * 
+ * When multiple symbols in the same file match (e.g., @Component decorator and 
+ * the class declaration), this function picks the best one:
+ * 1. Prioritize class/interface/function over decorators or unclassified symbols
+ * 2. If kinds are similar and locations are close (within 10 lines), pick the later one
+ *    (class declaration usually follows the decorator)
+ * 3. Otherwise, pick the one with the primary definition kind
+ * 
+ * @param symbols - Array of indexed symbols to deduplicate
+ * @returns Deduplicated array with at most one symbol per file
+ */
+function deduplicateByFile(symbols: IndexedSymbol[]): IndexedSymbol[] {
+  if (symbols.length <= 1) {
+    return symbols;
+  }
+  
+  // Group symbols by file URI
+  const byFile = new Map<string, IndexedSymbol[]>();
+  for (const symbol of symbols) {
+    const uri = symbol.location.uri;
+    const existing = byFile.get(uri);
+    if (existing) {
+      existing.push(symbol);
+    } else {
+      byFile.set(uri, [symbol]);
+    }
+  }
+  
+  // Pick the best symbol from each file
+  const results: IndexedSymbol[] = [];
+  for (const fileSymbols of byFile.values()) {
+    if (fileSymbols.length === 1) {
+      results.push(fileSymbols[0]);
+      continue;
+    }
+    
+    // Multiple symbols in the same file - pick the best one
+    let best = fileSymbols[0];
+    for (let i = 1; i < fileSymbols.length; i++) {
+      const candidate = fileSymbols[i];
+      best = pickBetterSymbol(best, candidate);
+    }
+    results.push(best);
+  }
+  
+  return results;
+}
+
+/**
+ * Compare two symbols and return the "better" one for Go to Definition.
+ * 
+ * Priority logic:
+ * 1. Primary definition kinds (class, interface, function) win over secondary kinds
+ * 2. If both are primary or both are secondary and within 10 lines, pick the later one
+ * 3. Otherwise, prefer primary definition kinds
+ */
+function pickBetterSymbol(a: IndexedSymbol, b: IndexedSymbol): IndexedSymbol {
+  const aIsPrimary = PRIMARY_DEFINITION_KINDS.has(a.kind);
+  const bIsPrimary = PRIMARY_DEFINITION_KINDS.has(b.kind);
+  
+  // If one is primary and the other isn't, pick the primary one
+  if (aIsPrimary && !bIsPrimary) {
+    return a;
+  }
+  if (bIsPrimary && !aIsPrimary) {
+    return b;
+  }
+  
+  // Both are primary or both are secondary - use proximity heuristic
+  const lineDiff = Math.abs(a.location.line - b.location.line);
+  const PROXIMITY_THRESHOLD = 10;
+  
+  if (lineDiff <= PROXIMITY_THRESHOLD) {
+    // Close together (e.g., decorator + class) - pick the later one (usually the class name)
+    return a.location.line >= b.location.line ? a : b;
+  }
+  
+  // Far apart - prefer primary kinds, otherwise pick the first one
+  if (aIsPrimary) return a;
+  if (bIsPrimary) return b;
+  return a;
+}
 
 /**
  * Handler for textDocument/definition requests.
@@ -185,7 +286,9 @@ export class DefinitionHandler implements IHandler {
               }
               
               if (matchingSymbols.length > 0) {
-                const results = matchingSymbols.map(sym => ({
+                // Deduplicate to ensure one location per file
+                const deduplicated = deduplicateByFile(matchingSymbols);
+                const results = deduplicated.map(sym => ({
                   uri: URI.file(sym.location.uri).toString(),
                   range: {
                     start: { line: sym.range.startLine, character: sym.range.startCharacter },
@@ -197,7 +300,7 @@ export class DefinitionHandler implements IHandler {
                 profiler.record('definition', duration);
                 statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
                 
-                connection.console.log(`[Server] Definition result (import-resolved): ${results.length} locations in ${duration} ms`);
+                connection.console.log(`[Server] Definition result (import-resolved): ${matchingSymbols.length} → ${results.length} locations in ${duration} ms`);
                 return results;
               }
             } else {
@@ -244,7 +347,9 @@ export class DefinitionHandler implements IHandler {
           // Apply disambiguation heuristics as final ranking
           const ranked = disambiguateSymbols(finalCandidates, uri, symbolAtCursor.containerName);
           
-          const results = ranked.map(sym => ({
+          // Deduplicate to ensure one location per file
+          const deduplicated = deduplicateByFile(ranked);
+          const results = deduplicated.map(sym => ({
             uri: URI.file(sym.location.uri).toString(),
             range: {
               start: { line: sym.range.startLine, character: sym.range.startCharacter },
@@ -256,7 +361,7 @@ export class DefinitionHandler implements IHandler {
           profiler.record('definition', duration);
           statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
           
-          connection.console.log(`[Server] Definition result: ${results.length} locations (ranked) in ${duration} ms`);
+          connection.console.log(`[Server] Definition result: ${ranked.length} → ${results.length} locations (deduplicated) in ${duration} ms`);
           return results;
         }
       }
@@ -276,8 +381,11 @@ export class DefinitionHandler implements IHandler {
       if (symbols.length > 1) {
         symbols = disambiguateSymbols(symbols, uri);
       }
+      
+      // Deduplicate to ensure one location per file
+      const deduplicated = deduplicateByFile(symbols);
 
-      const results = symbols.length === 0 ? null : symbols.map(sym => ({
+      const results = deduplicated.length === 0 ? null : deduplicated.map(sym => ({
         uri: URI.file(sym.location.uri).toString(),
         range: {
           start: { line: sym.range.startLine, character: sym.range.startCharacter },
@@ -289,7 +397,7 @@ export class DefinitionHandler implements IHandler {
       profiler.record('definition', duration);
       statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
       
-      connection.console.log(`[Server] Definition result (fallback): symbol="${word}", ${symbols.length} locations in ${duration} ms`);
+      connection.console.log(`[Server] Definition result (fallback): symbol="${word}", ${symbols.length} → ${deduplicated.length} locations in ${duration} ms`);
       return results;
     } catch (error) {
       const duration = Date.now() - start;

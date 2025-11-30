@@ -5,7 +5,8 @@
   "main": "./out/server.js",
   "scripts": {
     "compile": "tsc -p .",
-    "watch": "tsc -p . --watch"
+    "watch": "tsc -p . --watch",
+    "test:worker": "tsc -p . && node out/test/workerTest.js"
   },
   "dependencies": {
     "vscode-languageserver": "^9.0.1",
@@ -14,6 +15,7 @@
   },
   "devDependencies": {
     "@types/node": "22.x",
+    "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   }
 }

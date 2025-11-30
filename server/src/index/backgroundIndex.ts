@@ -4,9 +4,9 @@ import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { fuzzyScore } from '../utils/fuzzySearch.js';
 import { sanitizeFilePath, toCamelCase, toPascalCase } from '../utils/stringUtils.js';
-import { WorkerPool, IWorkerPool } from '../utils/workerPool.js';
+import { IWorkerPool } from '../utils/workerPool.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
-import { ShardPersistenceManager, FileShard, ShardMetadataEntry, IShardPersistence } from './ShardPersistenceManager.js';
+import { FileShard, ShardMetadataEntry, IShardPersistence } from './ShardPersistenceManager.js';
 import { NgRxLinkResolver } from './resolvers/NgRxLinkResolver.js';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
@@ -52,7 +52,7 @@ export class BackgroundIndex implements ISymbolIndex {
   private referenceMap: Map<string, Set<string>> = new Map(); // symbolName -> Set of URIs containing references
   private isInitialized: boolean = false;
   private maxConcurrentJobs: number = 4;
-  private workerPool: IWorkerPool | null = null;
+  private workerPool: IWorkerPool;
   private progressCallback: ProgressCallback | null = null;
   private isBulkIndexing: boolean = false; // Flag to defer NgRx resolution during bulk indexing
   
@@ -63,11 +63,27 @@ export class BackgroundIndex implements ISymbolIndex {
   // Specialized resolver for NgRx action group references
   private ngrxResolver: NgRxLinkResolver;
 
-  constructor(symbolIndexer: SymbolIndexer, maxConcurrentJobs: number = 4) {
+  /**
+   * Create a BackgroundIndex with injected dependencies.
+   * 
+   * @param symbolIndexer - Symbol indexer for parsing
+   * @param shardManager - Persistence manager for shard I/O
+   * @param workerPool - Worker pool for parallel indexing
+   * @param ngrxResolver - Resolver for NgRx action group references
+   * @param maxConcurrentJobs - Maximum concurrent indexing jobs (default: 4)
+   */
+  constructor(
+    symbolIndexer: SymbolIndexer,
+    shardManager: IShardPersistence,
+    workerPool: IWorkerPool,
+    ngrxResolver: NgRxLinkResolver,
+    maxConcurrentJobs: number = 4
+  ) {
     this.symbolIndexer = symbolIndexer;
+    this.shardManager = shardManager;
+    this.workerPool = workerPool;
+    this.ngrxResolver = ngrxResolver;
     this.maxConcurrentJobs = maxConcurrentJobs;
-    this.shardManager = new ShardPersistenceManager(true, 100); // Enable buffering with 100ms coalescing
-    this.ngrxResolver = new NgRxLinkResolver(this.shardManager);
   }
 
   /**
@@ -104,11 +120,8 @@ export class BackgroundIndex implements ISymbolIndex {
   async init(workspaceRoot: string, cacheDirectory: string): Promise<void> {
     // Initialize the centralized shard persistence manager
     await this.shardManager.init(workspaceRoot, cacheDirectory);
-
-    const workerScriptPath = path.join(__dirname, 'indexer', 'worker.js');
-    this.workerPool = new WorkerPool(workerScriptPath, this.maxConcurrentJobs);
     
-    console.info(`[BackgroundIndex] Initialized worker pool with ${this.maxConcurrentJobs} workers`);
+    console.info(`[BackgroundIndex] Initialized with ${this.maxConcurrentJobs} max concurrent jobs`);
 
     await this.loadShardMetadata();
     this.isInitialized = true;
@@ -681,14 +694,8 @@ export class BackgroundIndex implements ISymbolIndex {
       // STEP B: Process - index the file
       let result: IndexedFileResult;
       
-      if (this.workerPool) {
-        // Use worker pool for parallel processing
-        result = await this.workerPool.runTask({ uri: filePath });
-      } else {
-        // Fallback to synchronous indexing
-        const indexer = this.languageRouter || this.symbolIndexer;
-        result = await indexer.indexFile(filePath);
-      }
+      // Use worker pool for parallel processing
+      result = await this.workerPool.runTask({ uri: filePath });
 
       // STEP C & D: Merge and Persist - handled by updateFile()
       await this.updateFile(filePath, result);
@@ -1216,15 +1223,8 @@ export class BackgroundIndex implements ISymbolIndex {
     const indexFile = async (uri: string): Promise<void> => {
       console.info(`[Debug] Starting task for: ${uri}`);
       try {
-        let result: IndexedFileResult;
-        
-        if (this.workerPool) {
-          // Pass only URI to minimize data transfer between threads
-          result = await this.workerPool.runTask({ uri });
-        } else {
-          const indexer = this.languageRouter || this.symbolIndexer;
-          result = await indexer.indexFile(uri);
-        }
+        // Pass only URI to minimize data transfer between threads
+        const result = await this.workerPool.runTask({ uri });
         
         // Skip saving shard for files that failed to read
         if (result.isSkipped) {
@@ -1281,12 +1281,10 @@ export class BackgroundIndex implements ISymbolIndex {
 
     // SAFETY NET: Validate and reset worker pool counters after all tasks complete
     // This ensures the status bar reaches "Ready" even if counters got desynchronized
-    if (this.workerPool) {
-      this.workerPool.validateCounters();
-      // If processed count matches total, force reset to ensure clean state
-      if (processed === total) {
-        this.workerPool.reset();
-      }
+    this.workerPool.validateCounters();
+    // If processed count matches total, force reset to ensure clean state
+    if (processed === total) {
+      this.workerPool.reset();
     }
 
     // FIX: Emit idle state AFTER finalization completes - explicit "Ready" signal
@@ -1308,15 +1306,11 @@ export class BackgroundIndex implements ISymbolIndex {
     const duration = Date.now() - startTime;
     const filesPerSecond = (total / (duration / 1000)).toFixed(2);
     
-    if (this.workerPool) {
-      const stats = this.workerPool.getStats();
-      console.info(
-        `[BackgroundIndex] Completed indexing ${total} files in ${duration}ms (${filesPerSecond} files/sec) - ` +
-        `Pool stats: ${stats.totalProcessed} processed, ${stats.totalErrors} errors, active=${stats.activeTasks}`
-      );
-    } else {
-      console.info(`[BackgroundIndex] Completed indexing ${total} files in ${duration}ms (${filesPerSecond} files/sec)`);
-    }
+    const stats = this.workerPool.getStats();
+    console.info(
+      `[BackgroundIndex] Completed indexing ${total} files in ${duration}ms (${filesPerSecond} files/sec) - ` +
+      `Pool stats: ${stats.totalProcessed} processed, ${stats.totalErrors} errors, active=${stats.activeTasks}`
+    );
   }
 
   /**
@@ -1420,10 +1414,7 @@ export class BackgroundIndex implements ISymbolIndex {
    * Cleanup resources including worker pool and shard manager.
    */
   async dispose(): Promise<void> {
-    if (this.workerPool) {
-      await this.workerPool.terminate();
-      this.workerPool = null;
-    }
+    await this.workerPool.terminate();
     await this.shardManager.dispose();
   }
 

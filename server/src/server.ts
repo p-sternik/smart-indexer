@@ -30,6 +30,9 @@ import { DynamicIndex } from './index/dynamicIndex.js';
 import { BackgroundIndex } from './index/backgroundIndex.js';
 import { MergedIndex } from './index/mergedIndex.js';
 import { StatsManager } from './index/statsManager.js';
+import { ShardPersistenceManager } from './index/ShardPersistenceManager.js';
+import { NgRxLinkResolver } from './index/resolvers/NgRxLinkResolver.js';
+import { WorkerPool } from './utils/workerPool.js';
 import { Profiler } from './profiler/profiler.js';
 import { FolderHasher } from './cache/folderHasher.js';
 import { RankingContext } from './utils/fuzzySearch.js';
@@ -78,9 +81,15 @@ const folderHasher = new FolderHasher();
 const typeScriptService = new TypeScriptService();
 const fileSystem = new FileSystemService();
 
+// Infrastructure components (injected into BackgroundIndex)
+const shardManager = new ShardPersistenceManager(true, 100); // Enable buffering with 100ms coalescing
+const workerScriptPath = path.join(__dirname, 'indexer', 'worker.js');
+const workerPool = new WorkerPool(workerScriptPath, 4);
+const ngrxResolver = new NgRxLinkResolver(shardManager);
+
 // Index architecture (clangd-inspired 3-tier)
 const dynamicIndex = new DynamicIndex(symbolIndexer);
-const backgroundIndex = new BackgroundIndex(symbolIndexer, 4);
+const backgroundIndex = new BackgroundIndex(symbolIndexer, shardManager, workerPool, ngrxResolver, 4);
 const mergedIndex = new MergedIndex(dynamicIndex, backgroundIndex);
 const statsManager = new StatsManager();
 

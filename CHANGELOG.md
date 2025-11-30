@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.47.0](https://github.com/p-sternik/smart-indexer/compare/v1.46.0...v1.47.0) (2025-11-30)
+
+
+### Features
+
+* enhance AST traversal to handle TSTypeReference and MemberExpression for improved symbol reference capturing ([3a6cc2f](https://github.com/p-sternik/smart-indexer/commit/3a6cc2fa6be29f4067f25bc5492fb63b178fd895))
+
 ## [1.46.0](https://github.com/p-sternik/smart-indexer/compare/v1.45.0...v1.46.0) (2025-11-30)
 
 

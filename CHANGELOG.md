@@ -5,6 +5,18 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.54.0](https://github.com/p-sternik/smart-indexer/compare/v1.53.0...v1.54.0) (2025-12-01)
+
+
+### Features
+
+* consolidate CI workflows into a single pipeline.yml and remove legacy release.yml ([eda017f](https://github.com/p-sternik/smart-indexer/commit/eda017f287097c73ae382a94252a463802d12fff))
+
+
+### Bug Fixes
+
+* run tests inside virtual display to resolve "Missing X server or $DISPLAY" error ([ed3d5c1](https://github.com/p-sternik/smart-indexer/commit/ed3d5c1c10457edc095dad13c18332ad19ac7af0))
+
 ## [1.53.0](https://github.com/p-sternik/smart-indexer/compare/v1.52.0...v1.53.0) (2025-11-30)
 
 

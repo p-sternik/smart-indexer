@@ -1004,6 +1004,21 @@ export async function processFileContent(
   const ext = path.extname(uri).toLowerCase();
   const isCodeFile = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'].includes(ext);
   
+  // Early exit for unsupported file types to prevent RangeError
+  if (!isCodeFile && ext !== '.json' && ext !== '.md' && ext !== '.txt') {
+    return {
+      uri,
+      hash,
+      symbols: [],
+      references: [],
+      imports: [],
+      reExports: [],
+      isSkipped: true,
+      skipReason: `Unsupported file extension: ${ext}`,
+      shardVersion: SHARD_VERSION
+    };
+  }
+  
   if (isCodeFile) {
     const result = extractCodeSymbolsAndReferencesWithPlugins(uri, fileContent, pluginRegistry);
     

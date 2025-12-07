@@ -99,10 +99,11 @@ export class BackgroundIndex implements ISymbolIndex {
 
   /**
    * Update the maximum number of concurrent indexing jobs.
-   * @deprecated This is now managed by IndexScheduler/WorkerPool
+   * Forwards to IndexScheduler for concurrency control.
    */
-  setMaxConcurrentJobs(_max: number): void {
-    this.logger.warn(`${LOG_PREFIX.BACKGROUND_INDEX} setMaxConcurrentJobs is deprecated - worker pool manages concurrency`);
+  setMaxConcurrentJobs(max: number): void {
+    this.scheduler.setMaxConcurrentJobs(max);
+    this.logger.info(`${LOG_PREFIX.BACKGROUND_INDEX} Updated max concurrent jobs to ${max}`);
   }
 
   /**

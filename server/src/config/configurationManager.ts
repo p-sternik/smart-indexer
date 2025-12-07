@@ -53,7 +53,8 @@ const DEFAULT_CONFIG: SmartIndexerConfig = {
     '**/*.min.js',
     '**/.angular/**',
     '**/.nx/**',
-    '**/coverage/**'
+    '**/coverage/**',
+    '**/.vscode-test/**'
   ],
   maxIndexedFileSize: 1048576,
   maxFileSizeMB: 50,
@@ -225,6 +226,7 @@ export class ConfigurationManager {
       'github.copilot-chat',
       'commandEmbeddings.json',
       '.vscode/extensions',
+      '.vscode-test',
       'User/globalStorage',
       'User/workspaceStorage',
       // Angular/Nx build artifacts

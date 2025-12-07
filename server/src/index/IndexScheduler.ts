@@ -4,6 +4,7 @@ import { sanitizeFilePath } from '../utils/stringUtils.js';
 import { PROGRESS_CONFIG, LOG_PREFIX } from '../constants.js';
 import { ILogger, NullLogger } from '../utils/Logger.js';
 import * as fsPromises from 'fs/promises';
+import pLimit from 'p-limit';
 
 /**
  * Progress callback for indexing operations.
@@ -47,6 +48,7 @@ export class IndexScheduler {
   private progressCallback: ProgressCallback | null = null;
   private isBulkMode: boolean = false;
   private logger: ILogger;
+  private maxConcurrentJobs: number = 4;
   
   /**
    * Create an IndexScheduler.
@@ -57,6 +59,14 @@ export class IndexScheduler {
   constructor(workerPool: IWorkerPool, logger?: ILogger) {
     this.workerPool = workerPool;
     this.logger = logger || new NullLogger();
+  }
+
+  /**
+   * Set maximum concurrent indexing jobs.
+   * Controls memory pressure by limiting active promises.
+   */
+  setMaxConcurrentJobs(max: number): void {
+    this.maxConcurrentJobs = Math.max(1, Math.min(16, max));
   }
 
   /**
@@ -184,9 +194,11 @@ export class IndexScheduler {
    * 
    * This is the core execution loop that:
    * - Pre-validates all files (filters non-existent files)
-   * - Submits tasks to the worker pool
+   * - Submits tasks to the worker pool with bounded concurrency
    * - Tracks progress and reports updates
    * - Handles errors gracefully
+   * 
+   * Uses p-limit to prevent unbounded Promise.all() memory spikes.
    * 
    * @param files - Array of file URIs to index
    * @param handler - Result handler to process indexed data
@@ -243,7 +255,10 @@ export class IndexScheduler {
       });
     }
     
-    // Process all files in parallel (worker pool handles concurrency limits)
+    // Create semaphore to limit concurrent promises
+    const limit = pLimit(this.maxConcurrentJobs);
+    
+    // Process files with bounded concurrency
     const indexFile = async (uri: string): Promise<void> => {
       try {
         const result = await this.workerPool.runTask({ uri });
@@ -281,8 +296,8 @@ export class IndexScheduler {
       }
     };
     
-    // Execute all tasks in parallel
-    await Promise.allSettled(validFiles.map(indexFile));
+    // Execute tasks with concurrency limit (prevents memory spike)
+    await Promise.allSettled(validFiles.map(uri => limit(() => indexFile(uri))));
     
     const duration = Date.now() - startTime;
     const filesPerSecond = (total / (duration / 1000)).toFixed(2);

@@ -48,6 +48,14 @@ export class SqlJsStorage implements IIndexStorage {
     }
 
     // Initialize sql.js WASM module
+    // Note: Code is bundled by esbuild, so __dirname points to server/out (not server/out/storage)
+    const wasmPath = path.join(__dirname, 'sql-wasm.wasm');
+    
+    // Verify WASM file exists before initialization
+    if (!fs.existsSync(wasmPath)) {
+      throw new Error(`WASM file not found at expected path: ${wasmPath}`);
+    }
+
     this.SQL = await initSqlJs({
       locateFile: (file) => path.join(__dirname, file)
     });

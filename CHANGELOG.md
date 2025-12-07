@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.61.0](https://github.com/p-sternik/smart-indexer/compare/v1.60.0...v1.61.0) (2025-12-07)
+
+
+### Features
+
+* **storage:** enhance crash recovery and implement atomic writes for SqlJsStorage ([a545fcb](https://github.com/p-sternik/smart-indexer/commit/a545fcb33965b03c3ee95fcb693ce58ec1e86770))
+
 ## [1.60.0](https://github.com/p-sternik/smart-indexer/compare/v1.59.1...v1.60.0) (2025-12-07)
 
 

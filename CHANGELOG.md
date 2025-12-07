@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.59.1](https://github.com/p-sternik/smart-indexer/compare/v1.59.0...v1.59.1) (2025-12-07)
+
+
+### Code Refactoring
+
+* remove unused variables and parameters across multiple files ([87e3992](https://github.com/p-sternik/smart-indexer/commit/87e399288c1771c53d9e3b9de09dcb401fd6526b))
+
 ## [1.59.0](https://github.com/p-sternik/smart-indexer/compare/v1.58.0...v1.59.0) (2025-12-07)
 
 

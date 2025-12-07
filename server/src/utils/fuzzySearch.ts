@@ -15,13 +15,13 @@ export interface FuzzyMatch {
  * Score a symbol name against a query string.
  * Returns null if no match, otherwise returns score and match positions.
  * 
- * Higher scores are better. Scoring factors:
- * - Consecutive matches: +15 per consecutive char after first
- * - CamelCase/acronym matches: +25 for uppercase boundary matches
- * - Start-of-word matches: +10 for matches after delimiters
- * - Position: +5 for earlier matches
- * - Case match: +2 for exact case match
- * - Prefix match: +50 bonus
+ * Weighted Scoring System (NEW - Strict Priority Tiers):
+ * - 100 pts: Exact Match (Case sensitive)
+ * - 90 pts:  Exact Match (Case insensitive)
+ * - 80 pts:  CamelCase Acronym Match (e.g., "US" matches "UserService")
+ * - 70 pts:  Starts With
+ * - 50 pts:  Contains
+ * - <40 pts: Fuzzy match with bonuses
  */
 export function fuzzyScore(symbolName: string, query: string): FuzzyMatch | null {
   if (!query) {
@@ -31,6 +31,39 @@ export function fuzzyScore(symbolName: string, query: string): FuzzyMatch | null
   const lowerSymbol = symbolName.toLowerCase();
   const lowerQuery = query.toLowerCase();
   
+  // TIER 1: Exact match (case-sensitive) = 100 points
+  if (symbolName === query) {
+    const matches = Array.from({ length: query.length }, (_, i) => i);
+    return { score: 100, matches };
+  }
+  
+  // TIER 2: Exact match (case-insensitive) = 90 points
+  if (lowerSymbol === lowerQuery) {
+    const matches = Array.from({ length: query.length }, (_, i) => i);
+    return { score: 90, matches };
+  }
+  
+  // TIER 3: CamelCase Acronym Match = 80 points
+  // Example: "US" matches "UserService" by matching U and S at CamelCase boundaries
+  const camelCaseMatch = matchCamelCaseAcronym(symbolName, query);
+  if (camelCaseMatch) {
+    return { score: 80, matches: camelCaseMatch };
+  }
+  
+  // TIER 4: Starts with (case-insensitive) = 70 points
+  if (lowerSymbol.startsWith(lowerQuery)) {
+    const matches = Array.from({ length: query.length }, (_, i) => i);
+    return { score: 70, matches };
+  }
+  
+  // TIER 5: Contains (case-sensitive exact substring) = 50 points
+  const containsIndex = symbolName.indexOf(query);
+  if (containsIndex !== -1) {
+    const matches = Array.from({ length: query.length }, (_, i) => containsIndex + i);
+    return { score: 50, matches };
+  }
+  
+  // TIER 6: Fuzzy match with smart scoring (< 40 points max)
   let score = 0;
   const matches: number[] = [];
   let symbolIndex = 0;
@@ -48,34 +81,33 @@ export function fuzzyScore(symbolName: string, query: string): FuzzyMatch | null
         matches.push(symbolIndex);
 
         // Base score for match
-        score += 10;
+        score += 2;
 
-        // Bonus for consecutive matches (higher score)
+        // Bonus for consecutive matches
         if (lastMatchIndex === symbolIndex - 1) {
           consecutiveMatches++;
-          score += 15 * consecutiveMatches;
+          score += 3 * consecutiveMatches;
         } else {
           consecutiveMatches = 0;
         }
 
-        // Bonus for CamelCase boundary match (acronym support)
-        // e.g., "CFA" matching "CompatFieldAdapter"
+        // Bonus for CamelCase boundary match
         if (symbolIndex > 0 && isCamelCaseBoundary(symbolName, symbolIndex)) {
-          score += 25; // Increased from 10 for better acronym matching
+          score += 5;
         }
 
-        // Bonus for start-of-word match (after delimiter like _, -, etc.)
+        // Bonus for start-of-word match
         if (symbolIndex > 0 && isWordBoundary(symbolName, symbolIndex)) {
-          score += 10;
+          score += 3;
         }
 
         // Bonus for early position
-        const positionBonus = Math.max(0, 5 * (1 - symbolIndex / symbolName.length));
+        const positionBonus = Math.max(0, 2 * (1 - symbolIndex / symbolName.length));
         score += positionBonus;
 
         // Bonus for exact case match
         if (symbolName[symbolIndex] === query[queryIndex]) {
-          score += 2;
+          score += 1;
         }
 
         lastMatchIndex = symbolIndex;
@@ -90,7 +122,7 @@ export function fuzzyScore(symbolName: string, query: string): FuzzyMatch | null
   }
 
   // Bonus for complete prefix match
-  if (matches.length > 0 && matches[0] === 0 && matches.length === query.length) {
+  if (matches.length > 0 && matches[0] === 0) {
     let isPrefix = true;
     for (let i = 0; i < matches.length; i++) {
       if (matches[i] !== i) {
@@ -99,11 +131,40 @@ export function fuzzyScore(symbolName: string, query: string): FuzzyMatch | null
       }
     }
     if (isPrefix) {
-      score += 50;
+      score += 10;
     }
   }
 
+  // Cap fuzzy score at 39 to ensure it's always lower than TIER 5
+  score = Math.min(score, 39);
+
   return { score, matches };
+}
+
+/**
+ * Check if a query matches the CamelCase acronym of a symbol.
+ * Example: "US" matches "UserService" (U + S at CamelCase boundaries)
+ * Example: "CFA" matches "CompatFieldAdapter" (C + F + A)
+ */
+function matchCamelCaseAcronym(symbolName: string, query: string): number[] | null {
+  const upperQuery = query.toUpperCase();
+  const matches: number[] = [];
+  let queryIndex = 0;
+  
+  for (let i = 0; i < symbolName.length && queryIndex < upperQuery.length; i++) {
+    const char = symbolName[i];
+    
+    // Check if this is a CamelCase boundary (uppercase letter at start or after lowercase)
+    if (isCamelCaseBoundary(symbolName, i)) {
+      if (char.toUpperCase() === upperQuery[queryIndex]) {
+        matches.push(i);
+        queryIndex++;
+      }
+    }
+  }
+  
+  // Only return if we matched the entire query
+  return queryIndex === upperQuery.length ? matches : null;
 }
 
 /**

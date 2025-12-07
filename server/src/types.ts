@@ -52,6 +52,8 @@ export interface IndexedSymbol {
   ngrxMetadata?: NgRxMetadata; // NgRx-specific information
   /** Generic metadata for framework plugins (Angular, NgRx, React, etc.) */
   metadata?: Record<string, unknown>;
+  /** Flag to distinguish definitions (true) from usages/references (false). Used for precise "Go to Definition" filtering. */
+  isDefinition?: boolean;
 }
 
 /**
@@ -71,6 +73,7 @@ export interface CompactSymbol {
   pc?: number; // parametersCount
   nx?: NgRxMetadata; // ngrxMetadata (deprecated, for backwards compat)
   md?: Record<string, unknown>; // metadata (generic plugin metadata)
+  d?: boolean; // isDefinition (true for definitions, false/undefined for references)
 }
 
 export interface IndexedReference {
@@ -161,7 +164,7 @@ export interface Metadata {
 }
 
 // Bump when storage format changes - forces re-indexing
-export const SHARD_VERSION = 3;
+export const SHARD_VERSION = 4;
 
 /**
  * Compact shard format for storage - significantly smaller than full format
@@ -205,6 +208,7 @@ export function compactSymbol(sym: IndexedSymbol): CompactSymbol {
   if (sym.parametersCount !== undefined) { compact.pc = sym.parametersCount; }
   if (sym.ngrxMetadata) { compact.nx = sym.ngrxMetadata; }
   if (sym.metadata && Object.keys(sym.metadata).length > 0) { compact.md = sym.metadata; }
+  if (sym.isDefinition !== undefined) { compact.d = sym.isDefinition; }
   return compact;
 }
 
@@ -230,7 +234,8 @@ export function hydrateSymbol(compact: CompactSymbol, uri: string): IndexedSymbo
     isStatic: compact.s,
     parametersCount: compact.pc,
     ngrxMetadata: compact.nx,
-    metadata: compact.md
+    metadata: compact.md,
+    isDefinition: compact.d
   };
 }
 

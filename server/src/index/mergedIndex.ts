@@ -95,8 +95,21 @@ export class MergedIndex implements ISymbolIndex {
     // Apply fuzzy ranking with batching for large result sets
     const ranked = await this.rankSymbolsWithBatching(merged, query, context, limit);
 
-    // Return top N results
-    return ranked.slice(0, limit).map(r => r.symbol);
+    // STRICT DEDUPLICATION: Use composite key (uri::line::character) to eliminate exact duplicates
+    // This prevents the same symbol from appearing multiple times in search results
+    const deduped: Array<{ symbol: IndexedSymbol; score: number; matches: number[] }> = [];
+    const seen = new Set<string>();
+    
+    for (const item of ranked) {
+      const key = `${item.symbol.location.uri}::${item.symbol.range.startLine}::${item.symbol.range.startCharacter}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(item);
+      }
+    }
+
+    // Return top N results after strict deduplication
+    return deduped.slice(0, limit).map(r => r.symbol);
   }
 
   /**

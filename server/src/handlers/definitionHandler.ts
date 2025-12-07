@@ -120,8 +120,12 @@ function pickBetterSymbol(a: IndexedSymbol, b: IndexedSymbol): IndexedSymbol {
   }
   
   // Far apart - prefer primary kinds, otherwise pick the first one
-  if (aIsPrimary) return a;
-  if (bIsPrimary) return b;
+  if (aIsPrimary) {
+    return a;
+  }
+  if (bIsPrimary) {
+    return b;
+  }
   return a;
 }
 
@@ -261,7 +265,12 @@ export class DefinitionHandler implements IHandler {
               
               // Search only in the resolved file
               let targetSymbols = await mergedIndex.getFileSymbols(resolvedPath);
+              
+              // CRITICAL FIX: Filter by isDefinition === true to get only the actual definition
+              targetSymbols = targetSymbols.filter(sym => sym.isDefinition === true);
+              
               let matchingSymbols = targetSymbols.filter(sym => sym.name === symbolAtCursor.name);
+              connection.console.log(`[Server] Found ${matchingSymbols.length} definition symbols in ${resolvedPath}`);
               
               // If not found, check if it's a re-export (barrel file)
               if (matchingSymbols.length === 0) {
@@ -313,8 +322,21 @@ export class DefinitionHandler implements IHandler {
         const candidates = await mergedIndex.findDefinitions(symbolAtCursor.name);
         connection.console.log(`[Server] Found ${candidates.length} candidates by name`);
 
+        // PRECISION FILTER 1: Only return symbols marked as definitions
+        let definitionCandidates = candidates.filter(candidate => candidate.isDefinition === true);
+        connection.console.log(`[Server] Filtered to ${definitionCandidates.length} definition symbols (isDefinition=true)`);
+        
+        // PRECISION FILTER 2: Exclude the cursor position itself (prevents self-reference)
+        definitionCandidates = definitionCandidates.filter(candidate => {
+          const isSameFile = candidate.location.uri === uri;
+          const isSameLine = candidate.location.line === line;
+          const isSameChar = candidate.location.character === character;
+          return !(isSameFile && isSameLine && isSameChar);
+        });
+        connection.console.log(`[Server] Excluded cursor position, now ${definitionCandidates.length} candidates`);
+
         // Filter candidates to match the exact symbol
-        const filtered = candidates.filter(candidate => {
+        const filtered = definitionCandidates.filter(candidate => {
           const nameMatch = candidate.name === symbolAtCursor.name;
           const kindMatch = candidate.kind === symbolAtCursor.kind || 
                            (symbolAtCursor.kind === 'function' && candidate.kind === 'method') ||
@@ -446,12 +468,13 @@ export class DefinitionHandler implements IHandler {
     
     connection.console.log(`[Server] Following re-export to: ${resolvedPath} (depth ${depth})`);
     
-    // Get symbols from the target file
-    const targetSymbols = await mergedIndex.getFileSymbols(resolvedPath);
+    // Get symbols from the target file and filter by isDefinition === true
+    let targetSymbols = await mergedIndex.getFileSymbols(resolvedPath);
+    targetSymbols = targetSymbols.filter(sym => sym.isDefinition === true);
     const matchingSymbols = targetSymbols.filter(sym => sym.name === symbolName);
     
     if (matchingSymbols.length > 0) {
-      connection.console.log(`[Server] Found ${matchingSymbols.length} symbols in re-export target`);
+      connection.console.log(`[Server] Found ${matchingSymbols.length} definition symbols in re-export target`);
       return matchingSymbols;
     }
     

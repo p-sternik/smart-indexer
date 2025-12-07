@@ -228,7 +228,8 @@ export function processCreateActionGroup(
       ngrxMetadata: {
         type: internedEventKey,
         role: 'action'
-      }
+      },
+      isDefinition: true
     });
   }
 

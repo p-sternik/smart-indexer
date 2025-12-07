@@ -116,15 +116,87 @@ export class BackgroundIndex implements ISymbolIndex {
 
   /**
    * Initialize the background index.
+   * Validates shard version and clears incompatible cache.
    */
   async init(workspaceRoot: string, cacheDirectory: string): Promise<void> {
     // Initialize the centralized shard persistence manager
     await this.shardManager.init(workspaceRoot, cacheDirectory);
     
+    // MIGRATION SAFETY: Validate shard version compatibility
+    const isCompatible = await this.validateShardVersion();
+    if (!isCompatible) {
+      console.warn(`[BackgroundIndex] Shard version mismatch detected. Current version: ${SHARD_VERSION}. Clearing incompatible cache...`);
+      await this.clearAllShards();
+      console.info(`[BackgroundIndex] Cache cleared. Full re-indexing will be triggered.`);
+    }
+    
     console.info(`[BackgroundIndex] Initialized with ${this.maxConcurrentJobs} max concurrent jobs`);
 
     await this.loadShardMetadata();
     this.isInitialized = true;
+  }
+
+  /**
+   * Validate that existing shards match the current SHARD_VERSION.
+   * Returns false if any shard has a mismatched version, triggering a full re-index.
+   */
+  private async validateShardVersion(): Promise<boolean> {
+    try {
+      // Load a sample of shards to check version
+      const summaryEntries = await this.shardManager.loadMetadataSummary();
+      
+      if (!summaryEntries || summaryEntries.length === 0) {
+        // No existing shards - fresh start
+        return true;
+      }
+      
+      // Check the first shard's version
+      const firstEntry = summaryEntries[0];
+      const shard = await this.shardManager.loadShard(firstEntry.uri);
+      
+      if (!shard) {
+        // Couldn't load shard - assume incompatible
+        return false;
+      }
+      
+      // Compare shard version
+      const shardVersion = shard.shardVersion || 0;
+      if (shardVersion !== SHARD_VERSION) {
+        console.warn(`[BackgroundIndex] Version mismatch: shard has ${shardVersion}, expected ${SHARD_VERSION}`);
+        return false;
+      }
+      
+      return true;
+    } catch (error) {
+      console.error(`[BackgroundIndex] Error validating shard version: ${error}`);
+      // On error, assume incompatible to be safe
+      return false;
+    }
+  }
+
+  /**
+   * Clear all shards from disk (for migration/version mismatch).
+   */
+  private async clearAllShards(): Promise<void> {
+    try {
+      // Clear in-memory structures
+      this.fileMetadata.clear();
+      this.symbolNameIndex.clear();
+      this.symbolIdIndex.clear();
+      this.fileToSymbolIds.clear();
+      this.fileToSymbolNames.clear();
+      this.fileToReferenceNames.clear();
+      this.referenceMap.clear();
+      this.shardCache.clear();
+      
+      // Clear disk storage via shard manager
+      await this.shardManager.clearAll();
+      
+      console.info(`[BackgroundIndex] All shards cleared successfully`);
+    } catch (error) {
+      console.error(`[BackgroundIndex] Error clearing shards: ${error}`);
+      throw error;
+    }
   }
 
   /**

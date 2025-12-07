@@ -143,7 +143,8 @@ export class TextIndexer {
             endLine: line,
             endCharacter: Math.max(0, character) + symbolName.length
           },
-          filePath: uri
+          filePath: uri,
+          isDefinition: false // Text symbols are not true definitions
         });
       }
     }

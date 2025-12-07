@@ -89,18 +89,14 @@ function isDeclarationContext(node: TSESTree.Node, parent: TSESTree.Node | null)
     case AST_NODE_TYPES.TSEnumDeclaration:
       return (parent as TSESTree.TSEnumDeclaration).id === node;
     
-    // Import specifiers: only treat the LOCAL name as a declaration
-    // The IMPORTED name is a reference to an external symbol
+    // Import specifiers: These are REFERENCES to external symbols, NOT definitions
+    // When we write "import { User } from './user'", "User" is a reference to the
+    // User class defined elsewhere, not a definition of User in this file.
     case AST_NODE_TYPES.ImportSpecifier:
-      const importSpec = parent as TSESTree.ImportSpecifier;
-      // local is the declaration (what we're binding to in this file)
-      // imported is a reference (what we're importing from external module)
-      return importSpec.local === node;
-      
     case AST_NODE_TYPES.ImportDefaultSpecifier:
     case AST_NODE_TYPES.ImportNamespaceSpecifier:
-      // For default/namespace imports, the identifier is the local binding
-      return true;
+      // All import identifiers are references, never definitions
+      return false;
     
     // Parameter declarations
     case AST_NODE_TYPES.FunctionExpression:
@@ -179,7 +175,8 @@ function indexObjectProperties(
           containerName,
           containerKind,
           fullContainerPath,
-          filePath: uri
+          filePath: uri,
+          isDefinition: true
         });
         
         if (prop.value.type === AST_NODE_TYPES.ObjectExpression) {
@@ -663,7 +660,8 @@ function traverseAST(
               containerKind,
               fullContainerPath,
               filePath: uri,
-              ngrxMetadata
+              ngrxMetadata,
+              isDefinition: true
             });
             
             if (decl.init && decl.init.type === AST_NODE_TYPES.ObjectExpression) {
@@ -717,7 +715,8 @@ function traverseAST(
             fullContainerPath,
             isStatic: methodStatic,
             parametersCount: methodParams,
-            filePath: uri
+            filePath: uri,
+            isDefinition: true
           });
           needsScopeTracking = true;
         }
@@ -785,7 +784,8 @@ function traverseAST(
         isStatic,
         parametersCount,
         filePath: uri,
-        ngrxMetadata: pendingNgRxMetadata
+        ngrxMetadata: pendingNgRxMetadata,
+        isDefinition: true
       };
       
       // Invoke plugins to collect metadata and additional symbols/references
@@ -976,7 +976,8 @@ function extractTextSymbols(uri: string, content: string): IndexedSymbol[] {
               endLine: i,
               endCharacter: index + word.length
             },
-            filePath: uri
+            filePath: uri,
+            isDefinition: false // Text symbols are not true definitions
           });
         }
       }

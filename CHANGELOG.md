@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.58.0](https://github.com/p-sternik/smart-indexer/compare/v1.57.0...v1.58.0) (2025-12-07)
+
+
+### Features
+
+* **logging:** Implement unified LoggerService for centralized logging ([2e5340a](https://github.com/p-sternik/smart-indexer/commit/2e5340aeb8b32b60fb81eccc6bb90afebb7b401c))
+
 ## [1.57.0](https://github.com/p-sternik/smart-indexer/compare/v1.56.0...v1.57.0) (2025-12-07)
 
 

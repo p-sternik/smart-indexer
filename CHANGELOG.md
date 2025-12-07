@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.60.0](https://github.com/p-sternik/smart-indexer/compare/v1.59.1...v1.60.0) (2025-12-07)
+
+
+### Features
+
+* **indexing:** add support for limiting concurrent indexing jobs and handle unsupported file types ([6b2a431](https://github.com/p-sternik/smart-indexer/commit/6b2a4318f25f27d1f9b86540b2c3ec11a03af8df))
+
 ## [1.59.1](https://github.com/p-sternik/smart-indexer/compare/v1.59.0...v1.59.1) (2025-12-07)
 
 

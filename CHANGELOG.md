@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.56.0](https://github.com/p-sternik/smart-indexer/compare/v1.55.0...v1.56.0) (2025-12-07)
+
+
+### Features
+
+* introduce application-wide constants and refactor indexing logic with IndexScheduler ([2d52026](https://github.com/p-sternik/smart-indexer/commit/2d52026be16a09138a45c9e64104b0839f0e27ad))
+
 ## [1.55.0](https://github.com/p-sternik/smart-indexer/compare/v1.54.0...v1.55.0) (2025-12-07)
 
 

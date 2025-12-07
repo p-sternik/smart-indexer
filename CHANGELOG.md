@@ -5,6 +5,18 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.61.2](https://github.com/p-sternik/smart-indexer/compare/v1.61.1...v1.61.2) (2025-12-07)
+
+
+### Bug Fixes
+
+* run server tests inside virtual display to resolve missing X server error ([ca00c81](https://github.com/p-sternik/smart-indexer/commit/ca00c8185349c8e4da3a16690194719b209f17b0))
+
+
+### Code Refactoring
+
+* remove pnpm configuration for onlyBuiltDependencies in package.json ([9db1fbc](https://github.com/p-sternik/smart-indexer/commit/9db1fbc852d9af66d149bfe31da57d44b5f47fbd))
+
 ## [1.61.1](https://github.com/p-sternik/smart-indexer/compare/v1.61.0...v1.61.1) (2025-12-07)
 
 

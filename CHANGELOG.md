@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.57.0](https://github.com/p-sternik/smart-indexer/compare/v1.56.0...v1.57.0) (2025-12-07)
+
+
+### Features
+
+* update package dependencies and improve WASM file handling in SqlJsStorage ([4447a77](https://github.com/p-sternik/smart-indexer/commit/4447a77ecd1dea6c4da07f6ecccbf483971f2e72))
+
 ## [1.56.0](https://github.com/p-sternik/smart-indexer/compare/v1.55.0...v1.56.0) (2025-12-07)
 
 

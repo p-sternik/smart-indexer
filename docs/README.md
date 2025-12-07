@@ -193,7 +193,7 @@
 5. **Run verification:**
    ```powershell
    .\verify-parser-improvements.ps1
-   npm run compile
+   pnpm run compile
    ```
 
 ---

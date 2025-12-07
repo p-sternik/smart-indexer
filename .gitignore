@@ -5,3 +5,7 @@ node_modules
 *.vsix
 .smart-index/
 server/out/
+
+# npm artifacts (legacy - for cleanup)
+package-lock.json
+server/package-lock.json

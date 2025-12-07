@@ -119,7 +119,7 @@ Write-Host ""
 
 # Build verification
 Write-Host "5. Running build verification..." -ForegroundColor Yellow
-$buildOutput = npm run compile 2>&1
+$buildOutput = pnpm run compile 2>&1
 if ($LASTEXITCODE -eq 0) {
     Write-Host "   ✓ Build successful" -ForegroundColor Green
 } else {

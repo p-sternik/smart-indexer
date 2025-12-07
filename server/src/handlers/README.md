@@ -195,12 +195,12 @@ npm test -- definitionHandler.test.ts
 
 ### Run tests in watch mode
 ```bash
-npm run test:watch
+pnpm run test:watch
 ```
 
 ### Run tests with coverage
 ```bash
-npm run test:coverage
+pnpm run test:coverage
 ```
 
 ## Test Results

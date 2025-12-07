@@ -34,7 +34,7 @@ foreach ($file in $compiledFiles) {
     if (Test-Path $file) {
         Write-Host "  ✓ $file compiled" -ForegroundColor Green
     } else {
-        Write-Host "  ✗ $file not compiled (run npm run compile)" -ForegroundColor Red
+        Write-Host "  ✗ $file not compiled (run pnpm run compile)" -ForegroundColor Red
         $errors++
     }
 }
@@ -100,6 +100,6 @@ if ($errors -eq 0) {
 } else {
     Write-Host "✗ $errors CHECK(S) FAILED" -ForegroundColor Red
     Write-Host ""
-    Write-Host "Fix the errors above and run 'npm run compile' again" -ForegroundColor Yellow
+    Write-Host "Fix the errors above and run 'pnpm run compile' again" -ForegroundColor Yellow
 }
 Write-Host "================================================" -ForegroundColor Cyan

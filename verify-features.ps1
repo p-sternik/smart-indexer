@@ -12,7 +12,7 @@ if ($distExists -and $serverExists) {
     Write-Host "   ✓ Build artifacts found" -ForegroundColor Green
 } else {
     Write-Host "   ✗ Build artifacts missing" -ForegroundColor Red
-    Write-Host "   Run 'npm run build' first" -ForegroundColor Red
+    Write-Host "   Run 'pnpm run build' first" -ForegroundColor Red
     exit 1
 }
 

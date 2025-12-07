@@ -31,7 +31,7 @@ if (Test-Path "node_modules\sql.js\dist\sql-wasm.wasm") {
     Write-Host "  ✅ PASS: sql-wasm.wasm found" -ForegroundColor Green
 } else {
     Write-Host "  ❌ FAIL: sql-wasm.wasm not found" -ForegroundColor Red
-    Write-Host "  Run 'npm install' to install dependencies" -ForegroundColor Yellow
+    Write-Host "  Run 'pnpm install' to install dependencies" -ForegroundColor Yellow
     exit 1
 }
 
@@ -69,13 +69,13 @@ foreach ($file in $buildFiles) {
     }
 }
 if (-not $allExist) {
-    Write-Host "  Run 'npm run build' to compile the extension" -ForegroundColor Yellow
+    Write-Host "  Run 'pnpm run build' to compile the extension" -ForegroundColor Yellow
 }
 
 # Check 7: TypeScript compilation
 Write-Host ""
 Write-Host "✓ Check 7: Running TypeScript type check..." -ForegroundColor Yellow
-$typeCheck = npm run check-types 2>&1
+$typeCheck = pnpm run check-types 2>&1
 if ($LASTEXITCODE -eq 0) {
     Write-Host "  ✅ PASS: TypeScript type check passed" -ForegroundColor Green
 } else {

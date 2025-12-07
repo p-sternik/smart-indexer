@@ -120,7 +120,7 @@ Write-Host ""
 
 # Check build
 Write-Host "6. Running TypeScript compilation..." -ForegroundColor Yellow
-$buildOutput = npm run compile 2>&1 | Out-String
+$buildOutput = pnpm run compile 2>&1 | Out-String
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "   ✓ Build successful" -ForegroundColor Green

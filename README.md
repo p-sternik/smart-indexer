@@ -135,10 +135,10 @@ Want to contribute or build from source?
 # Clone and install
 git clone https://github.com/p-sternik/smart-indexer.git
 cd smart-indexer
-npm install
+pnpm install
 
 # Compile
-npm run compile
+pnpm run compile
 
 # Debug in VS Code
 # Press F5 to launch Extension Development Host

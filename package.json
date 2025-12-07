@@ -158,25 +158,25 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run package",
+    "vscode:prepublish": "pnpm run package",
     "clean": "node -e \"const fs=require('fs');['dist','out','server/out'].forEach(d=>{if(fs.existsSync(d))fs.rmSync(d,{recursive:true,force:true})})\"",
-    "compile": "npm run check-types && npm run lint && npm run compile:client && npm run compile:server",
+    "compile": "pnpm run check-types && pnpm run lint && pnpm run compile:client && pnpm run compile:server",
     "compile:client": "node esbuild.js",
     "compile:server": "node esbuild.server.js",
-    "watch": "npm-run-all -p watch:*",
+    "watch": "pnpm run -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "watch:server": "node esbuild.server.js --watch",
-    "package": "npm run check-types && npm run lint && node esbuild.js --production && npm run compile:server",
+    "package": "pnpm run check-types && pnpm run lint && node esbuild.js --production && pnpm run compile:server",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "pretest": "pnpm run compile-tests && pnpm run compile && pnpm run lint",
     "check-types": "tsc --noEmit && tsc -p server/tsconfig.json --noEmit",
     "lint": "eslint src server/src",
     "test": "vscode-test",
-    "build": "npm run compile",
-    "rebuild": "npm run clean && npm run build",
-    "vsix": "npm run clean && npm run package && node scripts/publish.js package",
+    "build": "pnpm run compile",
+    "rebuild": "pnpm run clean && pnpm run build",
+    "vsix": "pnpm run clean && pnpm run package && node scripts/publish.js package",
     "publish": "node scripts/publish.js publish"
   },
   "devDependencies": {
@@ -213,5 +213,13 @@
     "vscode-languageserver": "^9.0.1",
     "vscode-languageserver-textdocument": "^1.0.12",
     "vscode-uri": "^3.1.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@vscode/vsce-sign",
+      "esbuild",
+      "keytar",
+      "sql.js"
+    ]
   }
 }

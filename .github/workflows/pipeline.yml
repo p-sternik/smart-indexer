@@ -27,24 +27,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-          cache: 'npm'
+          cache: 'pnpm'
 
-      - name: Install root dependencies
-        run: npm ci
-
-      - name: Install server dependencies
-        run: npm ci
-        working-directory: server
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Type check (root)
-        run: npm run check-types
+        run: pnpm run check-types
 
       - name: Lint
-        run: npm run lint
+        run: pnpm run lint
 
       # 🔧 FIX: Install xvfb and run tests inside virtual display
       # This solves the "Missing X server or $DISPLAY" error
@@ -52,11 +53,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
-          xvfb-run -a npm test
+          xvfb-run -a pnpm test
 
       - name: Run server tests (Unit Tests)
-        run: npm test
-        working-directory: server
+        run: pnpm test --filter smart-indexer-server
 
   # ------------------------------------------------------------------
   # JOB 2: BUILD
@@ -73,21 +73,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
       - name: Setup Node.js for build
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
+          cache: 'pnpm'
 
-      - name: Install root dependencies
-        run: npm ci
-
-      - name: Install server dependencies
-        run: npm ci
-        working-directory: server
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Compile
-        run: npm run compile
+        run: pnpm run compile
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -99,9 +100,9 @@ jobs:
             client/out/**
             server/out/**
             package.json
-            package-lock.json
+            pnpm-lock.yaml
+            pnpm-workspace.yaml
             server/package.json
-            server/package-lock.json
             README.md
             LICENSE
             .vscodeignore
@@ -130,14 +131,19 @@ jobs:
         with:
           fetch-depth: 0 # Required for semantic-release to analyze commit history
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
       - name: Setup Node.js for release
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
+          cache: 'pnpm'
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       # Download compiled files and extract them to the current directory
       - name: Download build artifact
@@ -150,4 +156,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VSCE_PAT: ${{ secrets.VSCODE_MARKETPLACE_TOKEN }}
-        run: npx semantic-release
+        run: pnpm exec semantic-release

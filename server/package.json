@@ -4,7 +4,7 @@
   "description": "Language server for Smart Indexer",
   "main": "./out/server.js",
   "scripts": {
-    "compile": "tsc -p . && npm run copy-wasm",
+    "compile": "tsc -p . && pnpm run copy-wasm",
     "copy-wasm": "shx cp node_modules/sql.js/dist/sql-wasm.wasm out/",
     "watch": "tsc -p . --watch",
     "test": "vitest run",
@@ -22,5 +22,10 @@
     "ts-node": "^10.9.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.9"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "sql.js"
+    ]
   }
 }

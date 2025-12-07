@@ -106,7 +106,7 @@ if (Test-Path "server\out\indexer\worker.js") {
         $errors++
     }
 } else {
-    Write-Host "  ✗ Worker bundle NOT found - run 'npm run compile'" -ForegroundColor Red
+    Write-Host "  ✗ Worker bundle NOT found - run 'pnpm run compile'" -ForegroundColor Red
     $errors++
 }
 
@@ -114,7 +114,7 @@ if (Test-Path "server\out\indexer\worker.js") {
 if (Test-Path "server\out\server.js") {
     Write-Host "  ✓ Server bundle (server\out\server.js)" -ForegroundColor Green
 } else {
-    Write-Host "  ✗ Server bundle NOT found - run 'npm run compile'" -ForegroundColor Red
+    Write-Host "  ✗ Server bundle NOT found - run 'pnpm run compile'" -ForegroundColor Red
     $errors++
 }
 

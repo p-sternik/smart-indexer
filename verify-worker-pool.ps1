@@ -17,7 +17,7 @@ if (Test-Path $workerPath) {
     Write-Host "  ✓ Worker compiled: $workerPath ($([math]::Round($workerSize/1MB, 2)) MB)" -ForegroundColor Green
 } else {
     Write-Host "  ✗ Worker not found: $workerPath" -ForegroundColor Red
-    Write-Host "    Run: npm run compile:server" -ForegroundColor Yellow
+    Write-Host "    Run: pnpm run compile:server" -ForegroundColor Yellow
     $errors++
 }
 
@@ -28,7 +28,7 @@ if (Test-Path $serverPath) {
     Write-Host "  ✓ Server compiled: $serverPath" -ForegroundColor Green
 } else {
     Write-Host "  ✗ Server not found: $serverPath" -ForegroundColor Red
-    Write-Host "    Run: npm run compile:server" -ForegroundColor Yellow
+    Write-Host "    Run: pnpm run compile:server" -ForegroundColor Yellow
     $errors++
 }
 
@@ -39,13 +39,13 @@ if (Test-Path $extensionPath) {
     Write-Host "  ✓ Extension compiled: $extensionPath" -ForegroundColor Green
 } else {
     Write-Host "  ✗ Extension not found: $extensionPath" -ForegroundColor Red
-    Write-Host "    Run: npm run compile:client" -ForegroundColor Yellow
+    Write-Host "    Run: pnpm run compile:client" -ForegroundColor Yellow
     $errors++
 }
 
 # 4. Check TypeScript compilation
 Write-Host "[4/7] Running TypeScript type check..." -ForegroundColor Yellow
-$tscResult = npm run check-types 2>&1
+$tscResult = pnpm run check-types 2>&1
 if ($LASTEXITCODE -eq 0) {
     Write-Host "  ✓ TypeScript types valid" -ForegroundColor Green
 } else {
@@ -56,7 +56,7 @@ if ($LASTEXITCODE -eq 0) {
 
 # 5. Check linting
 Write-Host "[5/7] Running ESLint..." -ForegroundColor Yellow
-$lintResult = npm run lint 2>&1
+$lintResult = pnpm run lint 2>&1
 if ($LASTEXITCODE -eq 0) {
     Write-Host "  ✓ No linting errors" -ForegroundColor Green
 } else {

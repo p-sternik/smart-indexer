@@ -6,7 +6,7 @@ Write-Host "=" * 60
 
 # Build the project first
 Write-Host "`nBuilding project..." -ForegroundColor Yellow
-npm run compile:server 2>&1 | Out-Null
+pnpm run compile:server 2>&1 | Out-Null
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Build failed!" -ForegroundColor Red

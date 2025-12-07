@@ -45,7 +45,7 @@ async function main() {
         : ['vsce', 'publish'];
 
     try {
-        await runCommand('npx', vsceArgs);
+        await runCommand('pnpm', ['exec', ...vsceArgs]);
         console.log('✅ Build completed successfully');
     } catch (error) {
         console.error('❌ Error:', error.message);

@@ -56,7 +56,7 @@ jobs:
           xvfb-run -a pnpm test
 
       - name: Run server tests (Unit Tests)
-        run: pnpm test --filter smart-indexer-server
+        run: xvfb-run -a pnpm test --filter smart-indexer-server
 
   # ------------------------------------------------------------------
   # JOB 2: BUILD

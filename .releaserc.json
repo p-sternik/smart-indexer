@@ -62,7 +62,7 @@
       {
         "packageVsix": true,
         "publish": true,
-        "packageVsixArgs": ["--no-dependencies"]
+        "packageVsixArgs": ["--no-dependencies", "--no-yarn"]
       }
     ],
     [

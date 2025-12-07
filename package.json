@@ -185,7 +185,6 @@
     "@semantic-release/github": "^9.2.6",
     "@semantic-release/npm": "^11.0.3",
     "@semantic-release/release-notes-generator": "^14.1.0",
-    "@types/minimatch": "^5.1.2",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "@types/sql.js": "^1.4.9",
@@ -205,7 +204,7 @@
   "dependencies": {
     "@msgpack/msgpack": "^3.1.2",
     "@typescript-eslint/typescript-estree": "^8.48.0",
-    "chokidar": "^3.6.0",
+    "chokidar": "^4.0.0",
     "minimatch": "^10.1.1",
     "simple-git": "^3.30.0",
     "sql.js": "^1.13.0",

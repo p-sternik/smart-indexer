@@ -15,6 +15,14 @@ import * as path from 'path';
  * - Auto-save mechanism with debouncing (2000ms default)
  * - Per-URI mutex locks for thread safety
  * - JSON-serialized indexed data
+ * - Atomic writes via temp file + rename (crash-safe)
+ * - Automatic corruption recovery on startup
+ * 
+ * Crash Safety:
+ * - Writes use atomic rename operation to prevent partial writes
+ * - Detects and recovers from corrupted database files
+ * - Handles zero-byte files from crashed writes
+ * - Gracefully resets and triggers re-indexing on corruption
  * 
  * Schema:
  * - files table: (uri PRIMARY KEY, json_data TEXT, updated_at INTEGER)
@@ -67,10 +75,30 @@ export class SqlJsStorage implements IIndexStorage {
     }
     this.dbPath = path.join(cacheDir, 'index.db');
 
-    // Load existing database or create new one
+    // Load existing database or create new one with corruption recovery
     if (fs.existsSync(this.dbPath)) {
-      const buffer = fs.readFileSync(this.dbPath);
-      this.db = new this.SQL.Database(buffer);
+      try {
+        // Check for zero-byte file (crashed write)
+        const stats = fs.statSync(this.dbPath);
+        if (stats.size === 0) {
+          console.warn(`[SqlJsStorage] Database file is empty (0 bytes), treating as corrupt: ${this.dbPath}`);
+          fs.unlinkSync(this.dbPath);
+          this.db = new this.SQL.Database();
+        } else {
+          const buffer = fs.readFileSync(this.dbPath);
+          this.db = new this.SQL.Database(buffer);
+        }
+      } catch (error: any) {
+        // Database is corrupted or unreadable - recover by creating fresh DB
+        console.warn(`[SqlJsStorage] Database corrupted, resetting: ${error.message}`);
+        try {
+          fs.unlinkSync(this.dbPath);
+        } catch (unlinkError) {
+          // Ignore unlink errors - file might already be gone
+        }
+        this.db = new this.SQL.Database();
+        // Note: Starting with empty DB will trigger re-indexing logic in BackgroundIndex
+      }
     } else {
       this.db = new this.SQL.Database();
     }
@@ -298,6 +326,7 @@ export class SqlJsStorage implements IIndexStorage {
 
   /**
    * Flush any pending writes to persistent storage.
+   * Uses atomic write via temp file to prevent corruption on crash.
    */
   async flush(): Promise<void> {
     if (!this.isInitialized || !this.db || !this.isDirty) {
@@ -310,12 +339,31 @@ export class SqlJsStorage implements IIndexStorage {
       this.autoSaveTimer = null;
     }
 
-    // Export database to buffer and write to disk
+    // Export database to buffer
     const data = this.db.export();
     const buffer = Buffer.from(data);
-    fs.writeFileSync(this.dbPath, buffer);
 
-    this.isDirty = false;
+    // Atomic write: temp file -> rename
+    const tmpPath = this.dbPath + '.tmp';
+    try {
+      // Write to temp file
+      fs.writeFileSync(tmpPath, buffer);
+      
+      // Atomic rename (overwrites target)
+      fs.renameSync(tmpPath, this.dbPath);
+      
+      this.isDirty = false;
+    } catch (error: any) {
+      // Clean up temp file on error
+      try {
+        if (fs.existsSync(tmpPath)) {
+          fs.unlinkSync(tmpPath);
+        }
+      } catch (cleanupError) {
+        // Ignore cleanup errors
+      }
+      throw error;
+    }
   }
 
   /**

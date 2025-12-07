@@ -108,7 +108,11 @@ export class InitializationHandler implements IHandler {
           },
           definitionProvider: true,
           referencesProvider: true,
-          workspaceSymbolProvider: true
+          workspaceSymbolProvider: true,
+          hoverProvider: true,
+          renameProvider: {
+            prepareProvider: true
+          }
         }
       };
 

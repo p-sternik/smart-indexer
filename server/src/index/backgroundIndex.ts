@@ -6,16 +6,16 @@ import { fuzzyScore } from '../utils/fuzzySearch.js';
 import { sanitizeFilePath, toCamelCase, toPascalCase } from '../utils/stringUtils.js';
 import { IWorkerPool } from '../utils/workerPool.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
-import { FileShard, ShardMetadataEntry, IShardPersistence } from './ShardPersistenceManager.js';
+import { IIndexStorage, FileIndexData, FileMetadata } from '../storage/IIndexStorage.js';
 import { NgRxLinkResolver } from './resolvers/NgRxLinkResolver.js';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
 /**
- * Represents a single shard (per-file index) on disk.
- * Re-exported from ShardPersistenceManager for backward compatibility.
+ * Represents a single file's indexed data.
+ * Type alias for FileIndexData for backward compatibility.
  */
-export { FileShard } from './ShardPersistenceManager.js';
+export type FileShard = FileIndexData;
 
 /**
  * Progress callback for indexing operations.
@@ -42,7 +42,7 @@ export class BackgroundIndex implements ISymbolIndex {
   private symbolIndexer: SymbolIndexer;
   private languageRouter: LanguageRouter | null = null;
   private configManager: ConfigurationManager | null = null;
-  private shardManager: IShardPersistence;
+  private storage: IIndexStorage;
   private fileMetadata: Map<string, { hash: string; lastIndexedAt: number; symbolCount: number; mtime?: number }> = new Map();
   private symbolNameIndex: Map<string, Set<string>> = new Map(); // name -> Set of URIs
   private symbolIdIndex: Map<string, string> = new Map(); // symbolId -> URI
@@ -67,20 +67,20 @@ export class BackgroundIndex implements ISymbolIndex {
    * Create a BackgroundIndex with injected dependencies.
    * 
    * @param symbolIndexer - Symbol indexer for parsing
-   * @param shardManager - Persistence manager for shard I/O
+   * @param storage - Storage backend for index persistence
    * @param workerPool - Worker pool for parallel indexing
    * @param ngrxResolver - Resolver for NgRx action group references
    * @param maxConcurrentJobs - Maximum concurrent indexing jobs (default: 4)
    */
   constructor(
     symbolIndexer: SymbolIndexer,
-    shardManager: IShardPersistence,
+    storage: IIndexStorage,
     workerPool: IWorkerPool,
     ngrxResolver: NgRxLinkResolver,
     maxConcurrentJobs: number = 4
   ) {
     this.symbolIndexer = symbolIndexer;
-    this.shardManager = shardManager;
+    this.storage = storage;
     this.workerPool = workerPool;
     this.ngrxResolver = ngrxResolver;
     this.maxConcurrentJobs = maxConcurrentJobs;
@@ -119,8 +119,8 @@ export class BackgroundIndex implements ISymbolIndex {
    * Validates shard version and clears incompatible cache.
    */
   async init(workspaceRoot: string, cacheDirectory: string): Promise<void> {
-    // Initialize the centralized shard persistence manager
-    await this.shardManager.init(workspaceRoot, cacheDirectory);
+    // Initialize the storage backend
+    await this.storage.init(workspaceRoot, cacheDirectory);
     
     // MIGRATION SAFETY: Validate shard version compatibility
     const isCompatible = await this.validateShardVersion();
@@ -143,7 +143,7 @@ export class BackgroundIndex implements ISymbolIndex {
   private async validateShardVersion(): Promise<boolean> {
     try {
       // Load a sample of shards to check version
-      const summaryEntries = await this.shardManager.loadMetadataSummary();
+      const summaryEntries = await this.storage.getAllMetadata();
       
       if (!summaryEntries || summaryEntries.length === 0) {
         // No existing shards - fresh start
@@ -152,7 +152,7 @@ export class BackgroundIndex implements ISymbolIndex {
       
       // Check the first shard's version
       const firstEntry = summaryEntries[0];
-      const shard = await this.shardManager.loadShard(firstEntry.uri);
+      const shard = await this.storage.getFile(firstEntry.uri);
       
       if (!shard) {
         // Couldn't load shard - assume incompatible
@@ -189,8 +189,8 @@ export class BackgroundIndex implements ISymbolIndex {
       this.referenceMap.clear();
       this.shardCache.clear();
       
-      // Clear disk storage via shard manager
-      await this.shardManager.clearAll();
+      // Clear disk storage
+      await this.storage.clear();
       
       console.info(`[BackgroundIndex] All shards cleared successfully`);
     } catch (error) {
@@ -207,7 +207,7 @@ export class BackgroundIndex implements ISymbolIndex {
   private async loadShardMetadata(): Promise<void> {
     try {
       // OPTIMIZATION: Try loading metadata summary first (O(1) startup)
-      const summaryEntries = await this.shardManager.loadMetadataSummary();
+      const summaryEntries = await this.storage.getAllMetadata();
       
       if (summaryEntries && summaryEntries.length > 0) {
         // Fast path: use cached metadata summary
@@ -226,7 +226,7 @@ export class BackgroundIndex implements ISymbolIndex {
    * Load index data from metadata summary entries.
    * This is the fast O(1) startup path.
    */
-  private async loadFromMetadataSummary(entries: ShardMetadataEntry[]): Promise<void> {
+  private async loadFromMetadataSummary(entries: FileMetadata[]): Promise<void> {
     const startTime = Date.now();
     let loadedShards = 0;
     
@@ -246,7 +246,7 @@ export class BackgroundIndex implements ISymbolIndex {
           });
           
           // Load full shard to build symbol indexes
-          const shard = await this.shardManager.loadShard(entry.uri);
+          const shard = await this.storage.getFile(entry.uri);
           if (!shard) {
             return;
           }
@@ -307,38 +307,25 @@ export class BackgroundIndex implements ISymbolIndex {
    * This is the fallback O(N) startup path when metadata.json is missing.
    */
   private async loadFromShardScan(): Promise<void> {
-    const shardsDirectory = this.shardManager.getShardsDirectory();
+    const storageDirectory = this.storage.getStoragePath();
     try {
-      await fsPromises.access(shardsDirectory);
+      await fsPromises.access(storageDirectory);
     } catch {
       return; // Directory doesn't exist yet
     }
 
-    const shardFiles = await this.shardManager.collectShardFiles();
+    const fileUris = await this.storage.collectAllFiles();
     let loadedShards = 0;
 
     // Process shards in batches to avoid blocking event loop
     const BATCH_SIZE = 100;
-    for (let i = 0; i < shardFiles.length; i += BATCH_SIZE) {
-      const batch = shardFiles.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < fileUris.length; i += BATCH_SIZE) {
+      const batch = fileUris.slice(i, i + BATCH_SIZE);
       
-      await Promise.all(batch.map(async (shardFile) => {
+      await Promise.all(batch.map(async (uri) => {
         try {
-          // Load shard via ShardPersistenceManager for proper format handling
-          // Extract URI from shard file path by loading it
-          const buffer = await fsPromises.readFile(shardFile);
-          const { decode } = await import('@msgpack/msgpack');
-          const decoded = decode(buffer) as any;
-          
-          // Handle both compact ('u') and legacy ('uri') formats
-          const uri = decoded.u || decoded.uri;
-          if (!uri) {
-            console.warn(`[BackgroundIndex] Shard file missing URI: ${shardFile}`);
-            return;
-          }
-          
-          // Load via ShardPersistenceManager for proper hydration
-          const shard = await this.shardManager.loadShard(uri);
+          // Load via storage backend
+          const shard = await this.storage.getFile(uri);
           if (!shard) {
             return;
           }
@@ -351,7 +338,7 @@ export class BackgroundIndex implements ISymbolIndex {
           });
           
           // Update metadata cache for next startup
-          this.shardManager.updateMetadataEntry({
+          await this.storage.updateMetadata({
             uri: shard.uri,
             hash: shard.hash,
             mtime: shard.mtime,
@@ -396,18 +383,18 @@ export class BackgroundIndex implements ISymbolIndex {
 
           loadedShards++;
         } catch (error) {
-          console.error(`[BackgroundIndex] Error loading shard ${shardFile}: ${error}`);
+          console.error(`[BackgroundIndex] Error loading shard ${uri}: ${error}`);
         }
       }));
       
       // Yield to event loop after each batch
-      if (i + BATCH_SIZE < shardFiles.length) {
+      if (i + BATCH_SIZE < fileUris.length) {
         await new Promise(resolve => setImmediate(resolve));
       }
     }
 
     // Save metadata summary for fast startup next time
-    await this.shardManager.saveMetadataSummary();
+    await this.storage.saveMetadataSummary();
     
     console.info(`[BackgroundIndex] Loaded metadata from ${loadedShards} shards (scanned)`);
   }
@@ -426,8 +413,8 @@ export class BackgroundIndex implements ISymbolIndex {
       return cached;
     }
 
-    // Cache miss: load from disk
-    const shard = await this.shardManager.loadShard(uri);
+    // Cache miss: load from storage
+    const shard = await this.storage.getFile(uri);
     if (shard) {
       // Enforce LRU eviction before adding new entry
       if (this.shardCache.size >= this.MAX_CACHE_SIZE) {
@@ -444,17 +431,17 @@ export class BackgroundIndex implements ISymbolIndex {
   }
 
   /**
-   * Save a shard to disk via ShardPersistenceManager.
+   * Save a shard to storage.
    */
   private async saveShard(shard: FileShard): Promise<void> {
-    return this.shardManager.saveShard(shard);
+    return this.storage.storeFile(shard);
   }
 
   /**
-   * Delete a shard from disk via ShardPersistenceManager.
+   * Delete a shard from storage.
    */
   private async deleteShard(uri: string): Promise<void> {
-    return this.shardManager.deleteShard(uri);
+    return this.storage.deleteFile(uri);
   }
 
   /**
@@ -473,7 +460,7 @@ export class BackgroundIndex implements ISymbolIndex {
       : null;
 
     // Wrap entire operation in lock to prevent race conditions
-    await this.shardManager.withLock(uri, async () => {
+    await this.storage.withLock(uri, async () => {
       // CRITICAL: Invalidate cache INSIDE lock to prevent stale cache repopulation
       this.shardCache.delete(uri);
       
@@ -579,10 +566,10 @@ export class BackgroundIndex implements ISymbolIndex {
       this.fileToReferenceNames.set(uri, newReferenceNames);
 
       // Save shard to disk - use NoLock variant since we already hold the lock
-      await this.shardManager.saveShardNoLock(shard);
+      await this.storage.storeFileNoLock(shard);
       
       // Update metadata cache for fast startup
-      this.shardManager.updateMetadataEntry({
+      await this.storage.updateMetadata({
         uri: shard.uri,
         hash: shard.hash,
         mtime: shard.mtime,
@@ -686,10 +673,10 @@ export class BackgroundIndex implements ISymbolIndex {
         refUriSet.add(sourceUri);
 
         // Persist synthetic reference to source shard (survives restart)
-        // ShardPersistenceManager handles locking internally
-        await this.shardManager.withLock(sourceUri, async () => {
-          // CRITICAL: Use loadShardNoLock to avoid nested lock acquisition (deadlock fix)
-          const sourceShard = await this.shardManager.loadShardNoLock(sourceUri);
+        // Storage layer handles locking internally
+        await this.storage.withLock(sourceUri, async () => {
+          // CRITICAL: Use getFileNoLock to avoid nested lock acquisition (deadlock fix)
+          const sourceShard = await this.storage.getFileNoLock(sourceUri);
           if (sourceShard) {
             if (!sourceShard.references) {
               sourceShard.references = [];
@@ -713,8 +700,8 @@ export class BackgroundIndex implements ISymbolIndex {
               );
             }
             
-            // CRITICAL: Use saveShardNoLock to avoid nested lock acquisition
-            await this.shardManager.saveShardNoLock(sourceShard);
+            // CRITICAL: Use storeFileNoLock to avoid nested lock acquisition
+            await this.storage.storeFileNoLock(sourceShard);
           }
         });
 
@@ -881,7 +868,7 @@ export class BackgroundIndex implements ISymbolIndex {
     await this.deleteShard(uri);
     
     // Update metadata cache
-    this.shardManager.removeMetadataEntry(uri);
+    await this.storage.removeMetadata(uri);
   }
 
   /**
@@ -1370,7 +1357,7 @@ export class BackgroundIndex implements ISymbolIndex {
     console.info('[BackgroundIndex] Background indexing completed successfully.');
     
     // Save metadata summary for fast startup next time
-    await this.shardManager.saveMetadataSummary();
+    await this.storage.saveMetadataSummary();
     
     // Memory compaction: recreate Maps to reclaim memory from deleted entries
     this.compact();
@@ -1427,7 +1414,7 @@ export class BackgroundIndex implements ISymbolIndex {
    */
   async clear(): Promise<void> {
     try {
-      await this.shardManager.clearAll();
+      await this.storage.clear();
 
       this.fileMetadata.clear();
       this.symbolNameIndex.clear();
@@ -1487,7 +1474,7 @@ export class BackgroundIndex implements ISymbolIndex {
    */
   async dispose(): Promise<void> {
     await this.workerPool.terminate();
-    await this.shardManager.dispose();
+    await this.storage.dispose();
   }
 
   /**

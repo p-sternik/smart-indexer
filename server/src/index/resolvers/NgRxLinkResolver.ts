@@ -1,6 +1,11 @@
-import { IShardPersistence, FileShard } from '../ShardPersistenceManager.js';
+import { IIndexStorage, FileIndexData } from '../../storage/IIndexStorage.js';
 import { IndexedReference, PendingReference } from '../../types.js';
 import { toCamelCase, toPascalCase } from '../../utils/stringUtils.js';
+
+/**
+ * Type alias for FileIndexData for backward compatibility.
+ */
+type FileShard = FileIndexData;
 
 /**
  * NgRx Action Group entry discovered during scanning.
@@ -46,11 +51,11 @@ export interface NgRxResolutionStats {
  * This is extracted from BackgroundIndex to adhere to Single Responsibility Principle.
  */
 export class NgRxLinkResolver {
-  private shardManager: IShardPersistence;
+  private storage: IIndexStorage;
   private lastStats: NgRxResolutionStats | null = null;
 
-  constructor(shardManager: IShardPersistence) {
-    this.shardManager = shardManager;
+  constructor(storage: IIndexStorage) {
+    this.storage = storage;
   }
 
   /**
@@ -241,9 +246,9 @@ export class NgRxLinkResolver {
         // Use Promise.race with timeout to prevent infinite hangs
         const timeoutMs = 5000;
         const result = await Promise.race([
-          this.shardManager.withLock(uri, async () => {
-            // CRITICAL: Use loadShardNoLock to avoid nested lock acquisition
-            const shard = await this.shardManager.loadShardNoLock(uri);
+          this.storage.withLock(uri, async () => {
+            // CRITICAL: Use getFileNoLock to avoid nested lock acquisition
+            const shard = await this.storage.getFileNoLock(uri);
             if (!shard) {
               console.warn(`[NgRxLinkResolver] Step 3: Shard not found for ${uri}`);
               return false;
@@ -274,8 +279,8 @@ export class NgRxLinkResolver {
               });
             }
             
-            // CRITICAL: Use saveShardNoLock to avoid nested lock
-            await this.shardManager.saveShardNoLock(shard);
+            // CRITICAL: Use storeFileNoLock to avoid nested lock
+            await this.storage.storeFileNoLock(shard);
             return true;
           }),
           new Promise<boolean>((_, reject) => 

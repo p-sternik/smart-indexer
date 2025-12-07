@@ -51,6 +51,16 @@ export {
   createDeadCodeHandler
 } from './deadCodeHandler.js';
 
+export {
+  HoverHandler,
+  createHoverHandler
+} from './hoverHandler.js';
+
+export {
+  RenameHandler,
+  createRenameHandler
+} from './renameHandler.js';
+
 // Future handlers (to be implemented):
 // export { WorkspaceSymbolHandler, createWorkspaceSymbolHandler } from './WorkspaceSymbolHandler.js';
 // export { DocumentHandler, createDocumentHandler } from './DocumentHandler.js';

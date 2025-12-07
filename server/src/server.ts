@@ -30,7 +30,7 @@ import { DynamicIndex } from './index/dynamicIndex.js';
 import { BackgroundIndex } from './index/backgroundIndex.js';
 import { MergedIndex } from './index/mergedIndex.js';
 import { StatsManager } from './index/statsManager.js';
-import { ShardPersistenceManager } from './index/ShardPersistenceManager.js';
+import { SqlJsStorage } from './storage/SqlJsStorage.js';
 import { NgRxLinkResolver } from './index/resolvers/NgRxLinkResolver.js';
 import { WorkerPool } from './utils/workerPool.js';
 import { Profiler } from './profiler/profiler.js';
@@ -60,6 +60,8 @@ import {
   createReferencesHandler,
   createCompletionHandler,
   createDeadCodeHandler,
+  createHoverHandler,
+  createRenameHandler,
   DeadCodeHandler
 } from './handlers/index.js';
 
@@ -82,14 +84,14 @@ const typeScriptService = new TypeScriptService();
 const fileSystem = new FileSystemService();
 
 // Infrastructure components (injected into BackgroundIndex)
-const shardManager = new ShardPersistenceManager(true, 100); // Enable buffering with 100ms coalescing
+const storage = new SqlJsStorage(2000); // Auto-save every 2 seconds
 const workerScriptPath = path.join(__dirname, 'indexer', 'worker.js');
 const workerPool = new WorkerPool(workerScriptPath, 4);
-const ngrxResolver = new NgRxLinkResolver(shardManager);
+const ngrxResolver = new NgRxLinkResolver(storage);
 
 // Index architecture (clangd-inspired 3-tier)
 const dynamicIndex = new DynamicIndex(symbolIndexer);
-const backgroundIndex = new BackgroundIndex(symbolIndexer, shardManager, workerPool, ngrxResolver, 4);
+const backgroundIndex = new BackgroundIndex(symbolIndexer, storage, workerPool, ngrxResolver, 4);
 const mergedIndex = new MergedIndex(dynamicIndex, backgroundIndex);
 const statsManager = new StatsManager();
 
@@ -172,6 +174,8 @@ const handlerRegistry = new HandlerRegistry(serverServices, serverState);
 handlerRegistry.register(createDefinitionHandler);
 handlerRegistry.register(createReferencesHandler);
 handlerRegistry.register(createCompletionHandler);
+handlerRegistry.register(createHoverHandler);
+handlerRegistry.register(createRenameHandler);
 
 // ============================================================================
 // LSP Lifecycle Handlers

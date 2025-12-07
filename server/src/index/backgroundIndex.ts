@@ -8,6 +8,8 @@ import { IWorkerPool } from '../utils/workerPool.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
 import { IIndexStorage, FileIndexData, FileMetadata } from '../storage/IIndexStorage.js';
 import { NgRxLinkResolver } from './resolvers/NgRxLinkResolver.js';
+import { IndexScheduler, ProgressCallback } from './IndexScheduler.js';
+import { STORAGE_CONFIG, INDEXING_STATE, LOG_PREFIX } from '../constants.js';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
@@ -18,14 +20,9 @@ import * as path from 'path';
 export type FileShard = FileIndexData;
 
 /**
- * Progress callback for indexing operations.
+ * Re-export ProgressCallback for backward compatibility.
  */
-export type ProgressCallback = (progress: {
-  state: 'busy' | 'idle' | 'finalizing';
-  processed: number;
-  total: number;
-  currentFile?: string;
-}) => void;
+export { ProgressCallback } from './IndexScheduler.js';
 
 /**
  * BackgroundIndex - Persistent sharded index for the entire workspace.
@@ -51,14 +48,10 @@ export class BackgroundIndex implements ISymbolIndex {
   private fileToReferenceNames: Map<string, Set<string>> = new Map(); // uri -> Set of referenced symbol names (reverse index for O(1) cleanup)
   private referenceMap: Map<string, Set<string>> = new Map(); // symbolName -> Set of URIs containing references
   private isInitialized: boolean = false;
-  private maxConcurrentJobs: number = 4;
-  private workerPool: IWorkerPool;
-  private progressCallback: ProgressCallback | null = null;
-  private isBulkIndexing: boolean = false; // Flag to defer NgRx resolution during bulk indexing
+  private scheduler: IndexScheduler;
   
   // LRU shard cache to reduce disk I/O
   private shardCache: Map<string, FileShard> = new Map();
-  private readonly MAX_CACHE_SIZE = 50;
 
   // Specialized resolver for NgRx action group references
   private ngrxResolver: NgRxLinkResolver;
@@ -68,29 +61,26 @@ export class BackgroundIndex implements ISymbolIndex {
    * 
    * @param symbolIndexer - Symbol indexer for parsing
    * @param storage - Storage backend for index persistence
-   * @param workerPool - Worker pool for parallel indexing
+   * @param workerPool - Worker pool for parallel indexing (managed by IndexScheduler)
    * @param ngrxResolver - Resolver for NgRx action group references
-   * @param maxConcurrentJobs - Maximum concurrent indexing jobs (default: 4)
    */
   constructor(
     symbolIndexer: SymbolIndexer,
     storage: IIndexStorage,
     workerPool: IWorkerPool,
-    ngrxResolver: NgRxLinkResolver,
-    maxConcurrentJobs: number = 4
+    ngrxResolver: NgRxLinkResolver
   ) {
     this.symbolIndexer = symbolIndexer;
     this.storage = storage;
-    this.workerPool = workerPool;
     this.ngrxResolver = ngrxResolver;
-    this.maxConcurrentJobs = maxConcurrentJobs;
+    this.scheduler = new IndexScheduler(workerPool);
   }
 
   /**
    * Set the progress callback for indexing operations.
    */
   setProgressCallback(callback: ProgressCallback): void {
-    this.progressCallback = callback;
+    this.scheduler.setProgressCallback(callback);
   }
 
   /**
@@ -109,9 +99,10 @@ export class BackgroundIndex implements ISymbolIndex {
 
   /**
    * Update the maximum number of concurrent indexing jobs.
+   * @deprecated This is now managed by IndexScheduler/WorkerPool
    */
   setMaxConcurrentJobs(max: number): void {
-    this.maxConcurrentJobs = Math.max(1, Math.min(16, max));
+    console.warn(`${LOG_PREFIX.BACKGROUND_INDEX} setMaxConcurrentJobs is deprecated - worker pool manages concurrency`);
   }
 
   /**
@@ -125,12 +116,12 @@ export class BackgroundIndex implements ISymbolIndex {
     // MIGRATION SAFETY: Validate shard version compatibility
     const isCompatible = await this.validateShardVersion();
     if (!isCompatible) {
-      console.warn(`[BackgroundIndex] Shard version mismatch detected. Current version: ${SHARD_VERSION}. Clearing incompatible cache...`);
+      console.warn(`${LOG_PREFIX.BACKGROUND_INDEX} Shard version mismatch detected. Current version: ${SHARD_VERSION}. Clearing incompatible cache...`);
       await this.clearAllShards();
-      console.info(`[BackgroundIndex] Cache cleared. Full re-indexing will be triggered.`);
+      console.info(`${LOG_PREFIX.BACKGROUND_INDEX} Cache cleared. Full re-indexing will be triggered.`);
     }
     
-    console.info(`[BackgroundIndex] Initialized with ${this.maxConcurrentJobs} max concurrent jobs`);
+    console.info(`${LOG_PREFIX.BACKGROUND_INDEX} Initialized (concurrency managed by IndexScheduler)`);
 
     await this.loadShardMetadata();
     this.isInitialized = true;
@@ -162,13 +153,13 @@ export class BackgroundIndex implements ISymbolIndex {
       // Compare shard version
       const shardVersion = shard.shardVersion || 0;
       if (shardVersion !== SHARD_VERSION) {
-        console.warn(`[BackgroundIndex] Version mismatch: shard has ${shardVersion}, expected ${SHARD_VERSION}`);
+        console.warn(`${LOG_PREFIX.BACKGROUND_INDEX} Version mismatch: shard has ${shardVersion}, expected ${SHARD_VERSION}`);
         return false;
       }
       
       return true;
     } catch (error) {
-      console.error(`[BackgroundIndex] Error validating shard version: ${error}`);
+      console.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error validating shard version: ${error}`);
       // On error, assume incompatible to be safe
       return false;
     }
@@ -192,9 +183,9 @@ export class BackgroundIndex implements ISymbolIndex {
       // Clear disk storage
       await this.storage.clear();
       
-      console.info(`[BackgroundIndex] All shards cleared successfully`);
+      console.info(`${LOG_PREFIX.BACKGROUND_INDEX} All shards cleared successfully`);
     } catch (error) {
-      console.error(`[BackgroundIndex] Error clearing shards: ${error}`);
+      console.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error clearing shards: ${error}`);
       throw error;
     }
   }
@@ -218,7 +209,7 @@ export class BackgroundIndex implements ISymbolIndex {
       // Fallback: scan all shards (O(N) startup)
       await this.loadFromShardScan();
     } catch (error) {
-      console.error(`[BackgroundIndex] Error loading shard metadata: ${error}`);
+      console.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error loading shard metadata: ${error}`);
     }
   }
 
@@ -288,7 +279,7 @@ export class BackgroundIndex implements ISymbolIndex {
 
           loadedShards++;
         } catch (error) {
-          console.error(`[BackgroundIndex] Error loading shard for ${entry.uri}: ${error}`);
+          console.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error loading shard for ${entry.uri}: ${error}`);
         }
       }));
       
@@ -299,7 +290,7 @@ export class BackgroundIndex implements ISymbolIndex {
     }
     
     const duration = Date.now() - startTime;
-    console.info(`[BackgroundIndex] Loaded ${loadedShards} shards from metadata summary in ${duration}ms`);
+    console.info(`${LOG_PREFIX.BACKGROUND_INDEX} Loaded ${loadedShards} shards from metadata summary in ${duration}ms`);
   }
 
   /**
@@ -383,7 +374,7 @@ export class BackgroundIndex implements ISymbolIndex {
 
           loadedShards++;
         } catch (error) {
-          console.error(`[BackgroundIndex] Error loading shard ${uri}: ${error}`);
+          console.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error loading shard ${uri}: ${error}`);
         }
       }));
       
@@ -396,7 +387,7 @@ export class BackgroundIndex implements ISymbolIndex {
     // Save metadata summary for fast startup next time
     await this.storage.saveMetadataSummary();
     
-    console.info(`[BackgroundIndex] Loaded metadata from ${loadedShards} shards (scanned)`);
+    console.info(`${LOG_PREFIX.BACKGROUND_INDEX} Loaded metadata from ${loadedShards} shards (scanned)`);
   }
 
   /**
@@ -417,7 +408,7 @@ export class BackgroundIndex implements ISymbolIndex {
     const shard = await this.storage.getFile(uri);
     if (shard) {
       // Enforce LRU eviction before adding new entry
-      if (this.shardCache.size >= this.MAX_CACHE_SIZE) {
+      if (this.shardCache.size >= STORAGE_CONFIG.MAX_LRU_CACHE_SIZE) {
         // Delete oldest entry (first key in Map iteration order)
         const oldestKey = this.shardCache.keys().next().value;
         if (oldestKey) {
@@ -470,7 +461,7 @@ export class BackgroundIndex implements ISymbolIndex {
         const stats = await fsPromises.stat(uri);
         mtime = stats.mtimeMs;
       } catch (error) {
-        console.warn(`[BackgroundIndex] Could not get mtime for ${uri}: ${error}`);
+        console.warn(`${LOG_PREFIX.BACKGROUND_INDEX} Could not get mtime for ${uri}: ${error}`);
       }
 
       const shard: FileShard = {
@@ -581,7 +572,7 @@ export class BackgroundIndex implements ISymbolIndex {
     // Resolve NgRx cross-file references after indexing (outside the lock to avoid deadlock)
     // Uses captured pendingRefs snapshot to prevent TOCTOU issues
     // Skip during bulk indexing - will be done in finalizeIndexing() for O(N+M) performance
-    if (!this.isBulkIndexing && pendingRefs) {
+    if (!this.scheduler.isBulkIndexing() && pendingRefs) {
       await this.resolveNgRxReferences(uri, pendingRefs);
     }
   }
@@ -643,14 +634,14 @@ export class BackgroundIndex implements ISymbolIndex {
             const pascalMember = toPascalCase(pending.member);
             if (pascalMember in events) {
               matchedMember = pascalMember;
-              console.info(`[BackgroundIndex] NgRx PascalCase fallback: ${pending.member} -> ${pascalMember}`);
+              console.info(`${LOG_PREFIX.BACKGROUND_INDEX} NgRx PascalCase fallback: ${pending.member} -> ${pascalMember}`);
             }
           }
         }
         
         if (!matchedMember) {
           // Debug logging when match fails
-          console.log(`[BackgroundIndex] NgRx link failed: ${pending.container}.${pending.member} not found in events:`, Object.keys(events));
+          console.log(`${LOG_PREFIX.BACKGROUND_INDEX} NgRx link failed: ${pending.container}.${pending.member} not found in events:`, Object.keys(events));
           continue;
         }
 
@@ -711,58 +702,29 @@ export class BackgroundIndex implements ISymbolIndex {
     }
 
     if (resolvedCount > 0) {
-      console.info(`[BackgroundIndex] Resolved ${resolvedCount} NgRx cross-file references from ${sourceUri}`);
+      console.info(`${LOG_PREFIX.BACKGROUND_INDEX} Resolved ${resolvedCount} NgRx cross-file references from ${sourceUri}`);
     }
   }
 
   /**
    * Update a single file in the background index (for live synchronization).
-   * 
-   * This method:
-   * 1. Removes all existing entries for the file (cleanup)
-   * 2. Re-indexes the file using the worker pool
-   * 3. Merges the new results into the index
-   * 4. Persists the updated shard to disk
+   * Delegates to IndexScheduler for orchestration.
    * 
    * @param filePath - Absolute path to the file to re-index
    */
   async updateSingleFile(rawFilePath: string): Promise<void> {
-    // Sanitize path to handle Git's quoted/escaped output
     const filePath = sanitizeFilePath(rawFilePath);
     
-    try {
-      // PRE-VALIDATION: Check file exists to prevent ENOENT errors (async)
-      try {
-        await fsPromises.access(filePath);
-      } catch {
-        console.warn(`[BackgroundIndex] Skipping non-existent file: ${filePath}`);
-        return;
-      }
-
-      // STEP A: Cleanup - remove existing entries
-      // This is already handled by updateFile(), but we call removeFile first
-      // to ensure a clean slate and prevent "ghost" references
-      const hadExistingEntry = this.fileMetadata.has(filePath);
-      
-      if (hadExistingEntry) {
-        // Clean up old entries from in-memory indexes
-        // (but don't delete the shard yet - we'll overwrite it)
-        this.cleanupFileFromIndexes(filePath);
-      }
-
-      // STEP B: Process - index the file
-      let result: IndexedFileResult;
-      
-      // Use worker pool for parallel processing
-      result = await this.workerPool.runTask({ uri: filePath });
-
-      // STEP C & D: Merge and Persist - handled by updateFile()
-      await this.updateFile(filePath, result);
-      
-    } catch (error) {
-      console.error(`[BackgroundIndex] Error updating single file ${filePath}: ${error}`);
-      throw error;
+    // Cleanup old entries first
+    const hadExistingEntry = this.fileMetadata.has(filePath);
+    if (hadExistingEntry) {
+      this.cleanupFileFromIndexes(filePath);
     }
+    
+    // Delegate to scheduler
+    await this.scheduler.scheduleSingle(filePath, async (uri, result) => {
+      await this.updateFile(uri, result);
+    });
   }
 
   /**
@@ -1126,54 +1088,26 @@ export class BackgroundIndex implements ISymbolIndex {
 
   /**
    * Ensure all files are up to date.
-   * This is the main entry point for incremental background indexing.
+   * Delegates orchestration to IndexScheduler.
    */
   async ensureUpToDate(
     allFiles: string[],
     computeHash: (uri: string) => Promise<string>,
     onProgress?: (current: number, total: number) => void
   ): Promise<void> {
-    const filesToIndex: string[] = [];
-    let checked = 0;
     let excluded = 0;
 
-    // Check which files need indexing
-    for (const uri of allFiles) {
-      try {
-        // STEP 1: Apply exclusion filters BEFORE any processing
-        if (this.configManager && this.configManager.shouldExcludePath(uri)) {
-          excluded++;
-          checked++;
-          if (onProgress) {
-            onProgress(checked, allFiles.length);
-          }
-          continue;
-        }
-
-        // STEP 2: Check mtime-based cache (fast path)
-        if (!(await this.needsReindexing(uri))) {
-          // File is unchanged based on mtime - skip indexing
-          checked++;
-          if (onProgress) {
-            onProgress(checked, allFiles.length);
-          }
-          continue;
-        }
-
-        // STEP 3: File needs indexing (mtime changed or no cache)
-        filesToIndex.push(uri);
-
-        checked++;
-        if (onProgress) {
-          onProgress(checked, allFiles.length);
-        }
-      } catch (error) {
-        console.error(`[BackgroundIndex] Error checking file ${uri}: ${error}`);
+    // Apply exclusion filters
+    const filteredFiles = allFiles.filter(uri => {
+      if (this.configManager && this.configManager.shouldExcludePath(uri)) {
+        excluded++;
+        return false;
       }
-    }
+      return true;
+    });
 
     if (excluded > 0) {
-      console.info(`[BackgroundIndex] Excluded ${excluded} files from indexing (build artifacts, node_modules, etc.)`);
+      console.info(`${LOG_PREFIX.BACKGROUND_INDEX} Excluded ${excluded} files from indexing (build artifacts, node_modules, etc.)`);
     }
 
     // Remove stale shards (files that no longer exist)
@@ -1183,19 +1117,36 @@ export class BackgroundIndex implements ISymbolIndex {
       await this.removeFile(uri);
     }
 
-    // Clean up previously indexed excluded files (purge .angular, dist, etc.)
+    // Clean up previously indexed excluded files
     await this.purgeExcludedFiles();
 
-    // Index files in parallel using worker pool
-    if (filesToIndex.length > 0) {
-      console.info(`[BackgroundIndex] Indexing ${filesToIndex.length} files with ${this.maxConcurrentJobs} concurrent jobs`);
-      await this.indexFilesParallel(filesToIndex, onProgress ? 
-        (current) => onProgress(checked - filesToIndex.length + current, allFiles.length) : 
-        undefined
-      );
-    } else {
-      console.info(`[BackgroundIndex] All files up to date (mtime-based check)`);
-    }
+    // Delegate to scheduler for bulk indexing
+    await this.scheduler.scheduleBulk(
+      filteredFiles,
+      (uri) => this.needsReindexing(uri),
+      (uri, result) => this.updateFile(uri, result),
+      onProgress
+    );
+
+    // Finalization phase
+    this.scheduler.emitProgress(INDEXING_STATE.FINALIZING, filteredFiles.length, filteredFiles.length);
+    console.info(`${LOG_PREFIX.BACKGROUND_INDEX} Starting finalization phase...`);
+
+    console.time('Finalize');
+    await this.finalizeIndexing();
+    console.timeEnd('Finalize');
+
+    // Validate worker pool counters
+    this.scheduler.validateCounters();
+    this.scheduler.reset();
+
+    // Emit idle state
+    this.scheduler.emitProgress(INDEXING_STATE.IDLE, filteredFiles.length, filteredFiles.length);
+    console.info(`${LOG_PREFIX.BACKGROUND_INDEX} Background indexing completed successfully.`);
+
+    // Save metadata and compact
+    await this.storage.saveMetadataSummary();
+    this.compact();
   }
 
   /**
@@ -1216,7 +1167,7 @@ export class BackgroundIndex implements ISymbolIndex {
     }
 
     if (filesToPurge.length > 0) {
-      console.info(`[BackgroundIndex] Purging ${filesToPurge.length} excluded files from cache`);
+      console.info(`${LOG_PREFIX.BACKGROUND_INDEX} Purging ${filesToPurge.length} excluded files from cache`);
       for (const uri of filesToPurge) {
         await this.removeFile(uri);
       }
@@ -1224,160 +1175,11 @@ export class BackgroundIndex implements ISymbolIndex {
   }
 
   /**
-   * Index multiple files in parallel using a worker pool.
-   * Uses Promise.allSettled to process all files concurrently without artificial batching,
-   * maximizing worker pool utilization.
-   */
-  private async indexFilesParallel(
-    files: string[],
-    onProgress?: (current: number) => void
-  ): Promise<void> {
-    // PRE-QUEUE VALIDATION: Sanitize paths and filter out non-existent files (async)
-    const validFiles: string[] = [];
-    const skippedFiles: string[] = [];
-    
-    for (const rawUri of files) {
-      // Sanitize path to handle Git's quoted/escaped output
-      const uri = sanitizeFilePath(rawUri);
-      
-      try {
-        await fsPromises.access(uri);
-        validFiles.push(uri);
-      } catch {
-        skippedFiles.push(rawUri); // Log original for debugging
-      }
-    }
-    
-    if (skippedFiles.length > 0) {
-      console.warn(
-        `[BackgroundIndex] Skipping ${skippedFiles.length} non-existent files (possible path encoding issue)`
-      );
-      // Log first few for debugging
-      for (const skipped of skippedFiles.slice(0, 5)) {
-        console.warn(`[BackgroundIndex]   - ${skipped}`);
-      }
-      if (skippedFiles.length > 5) {
-        console.warn(`[BackgroundIndex]   ... and ${skippedFiles.length - 5} more`);
-      }
-    }
-
-    let processed = 0;
-    const total = validFiles.length;
-    const startTime = Date.now();
-    let lastProgressTime = startTime;
-
-    // Enable bulk indexing mode to defer NgRx resolution
-    this.isBulkIndexing = true;
-
-    // Emit initial busy state
-    if (this.progressCallback) {
-      this.progressCallback({
-        state: 'busy',
-        processed: 0,
-        total,
-        currentFile: validFiles[0]
-      });
-    }
-
-    const indexFile = async (uri: string): Promise<void> => {
-      console.info(`[Debug] Starting task for: ${uri}`);
-      try {
-        // Pass only URI to minimize data transfer between threads
-        const result = await this.workerPool.runTask({ uri });
-        
-        // Skip saving shard for files that failed to read
-        if (result.isSkipped) {
-          console.info(`[Debug] Task skipped for: ${uri} with reason: ${result.skipReason}`);
-          console.warn(`[BackgroundIndex] Skipping file (${result.skipReason}): ${uri}`);
-        } else {
-          console.info(`[Debug] Task success for: ${uri}`);
-          await this.updateFile(uri, result);
-        }
-      } catch (error) {
-        console.error(`[Debug] Task CRASHED for: ${uri}: ${error}`);
-        console.error(`[BackgroundIndex] Error indexing file ${uri}: ${error}`);
-      } finally {
-        // CRITICAL FIX: This MUST happen no matter what - moved to finally block
-        processed++;
-        console.info(`[Debug] Counter incremented: ${processed}/${total}`);
-        if (onProgress) {
-          onProgress(processed);
-        }
-
-        // Emit progress notification (throttled to every 500ms or every 10 files)
-        const now = Date.now();
-        if (this.progressCallback && (now - lastProgressTime >= 500 || processed % 10 === 0 || processed === total)) {
-          lastProgressTime = now;
-          this.progressCallback({
-            state: 'busy',
-            processed,
-            total,
-            currentFile: uri
-          });
-        }
-      }
-    };
-
-    await Promise.allSettled(validFiles.map(indexFile));
-
-    // Disable bulk indexing mode
-    this.isBulkIndexing = false;
-
-    // FIX: Update UI to show finalization phase (prevents "0 remaining" hang)
-    if (this.progressCallback) {
-      this.progressCallback({
-        state: 'finalizing',
-        processed: total,
-        total
-      });
-    }
-    console.info('[BackgroundIndex] Starting finalization phase...');
-
-    // Finalize: batch-resolve all deferred NgRx references (O(N+M) instead of O(N*M))
-    console.time('Finalize');
-    await this.finalizeIndexing();
-    console.timeEnd('Finalize');
-
-    // SAFETY NET: Validate and reset worker pool counters after all tasks complete
-    // This ensures the status bar reaches "Ready" even if counters got desynchronized
-    this.workerPool.validateCounters();
-    // If processed count matches total, force reset to ensure clean state
-    if (processed === total) {
-      this.workerPool.reset();
-    }
-
-    // FIX: Emit idle state AFTER finalization completes - explicit "Ready" signal
-    if (this.progressCallback) {
-      this.progressCallback({
-        state: 'idle',
-        processed: total, // Always report total to ensure "Ready" state
-        total
-      });
-    }
-    console.info('[BackgroundIndex] Background indexing completed successfully.');
-    
-    // Save metadata summary for fast startup next time
-    await this.storage.saveMetadataSummary();
-    
-    // Memory compaction: recreate Maps to reclaim memory from deleted entries
-    this.compact();
-    
-    const duration = Date.now() - startTime;
-    const filesPerSecond = (total / (duration / 1000)).toFixed(2);
-    
-    const stats = this.workerPool.getStats();
-    console.info(
-      `[BackgroundIndex] Completed indexing ${total} files in ${duration}ms (${filesPerSecond} files/sec) - ` +
-      `Pool stats: ${stats.totalProcessed} processed, ${stats.totalErrors} errors, active=${stats.activeTasks}`
-    );
-  }
-
-  /**
    * Finalize indexing by resolving all deferred cross-file references in batch.
    * Delegates to NgRxLinkResolver for NgRx action group resolution.
    */
   async finalizeIndexing(): Promise<void> {
-    console.info('[Finalize] Starting finalization phase...');
+    console.info(`${LOG_PREFIX.FINALIZE} Starting finalization phase...`);
     
     const files = Array.from(this.fileMetadata.keys());
     
@@ -1388,7 +1190,7 @@ export class BackgroundIndex implements ISymbolIndex {
       this.referenceMap
     );
     
-    console.info(`[Finalize] Complete. ${this.ngrxResolver.getStats()}`);
+    console.info(`${LOG_PREFIX.FINALIZE} Complete. ${this.ngrxResolver.getStats()}`);
   }
 
   /**
@@ -1428,7 +1230,7 @@ export class BackgroundIndex implements ISymbolIndex {
       // Compact maps to reclaim memory from deleted entries
       this.compact();
     } catch (error) {
-      console.error(`[BackgroundIndex] Error clearing shards: ${error}`);
+      console.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error clearing shards: ${error}`);
       throw error;
     }
   }
@@ -1463,17 +1265,16 @@ export class BackgroundIndex implements ISymbolIndex {
 
     const duration = Date.now() - startTime;
     console.info(
-      `[BackgroundIndex] Compacted maps in ${duration}ms: ` +
+      `${LOG_PREFIX.BACKGROUND_INDEX} Compacted maps in ${duration}ms: ` +
       `files=${beforeSizes.fileMetadata}, symbols=${beforeSizes.symbolIdIndex}, ` +
       `names=${beforeSizes.symbolNameIndex}, refs=${beforeSizes.referenceMap}`
     );
   }
 
   /**
-   * Cleanup resources including worker pool and shard manager.
+   * Cleanup resources including worker pool and storage.
    */
   async dispose(): Promise<void> {
-    await this.workerPool.terminate();
     await this.storage.dispose();
   }
 

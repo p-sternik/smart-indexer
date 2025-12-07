@@ -91,7 +91,7 @@ const ngrxResolver = new NgRxLinkResolver(storage);
 
 // Index architecture (clangd-inspired 3-tier)
 const dynamicIndex = new DynamicIndex(symbolIndexer);
-const backgroundIndex = new BackgroundIndex(symbolIndexer, storage, workerPool, ngrxResolver, 4);
+const backgroundIndex = new BackgroundIndex(symbolIndexer, storage, workerPool, ngrxResolver);
 const mergedIndex = new MergedIndex(dynamicIndex, backgroundIndex);
 const statsManager = new StatsManager();
 

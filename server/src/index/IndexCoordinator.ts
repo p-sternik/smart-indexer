@@ -7,7 +7,7 @@ import { WorkerPool, IWorkerPool } from '../utils/workerPool.js';
 import { ShardStore } from './ShardStore.js';
 import { FileShard } from './ShardPersistenceManager.js';
 import { sanitizeFilePath } from '../utils/stringUtils.js';
-import { ProgressCallback } from './backgroundIndex.js';
+import { ProgressCallback } from './IndexScheduler.js';
 
 /**
  * File metadata for tracking indexed files.

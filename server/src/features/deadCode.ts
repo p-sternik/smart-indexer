@@ -84,7 +84,6 @@ const FRAMEWORK_PATTERNS = new Set([
  * - Configurable exclusion patterns
  */
 export class DeadCodeDetector {
-  private configManager: ConfigurationManager | null = null;
   private defaultEntryPoints: string[] = [
     '**/main.ts',
     '**/public-api.ts',
@@ -101,8 +100,8 @@ export class DeadCodeDetector {
   /**
    * Set the configuration manager for accessing user settings
    */
-  setConfigurationManager(configManager: ConfigurationManager): void {
-    this.configManager = configManager;
+  setConfigurationManager(_configManager: ConfigurationManager): void {
+    // No-op - configuration manager is no longer used by this class
   }
 
   /**
@@ -457,7 +456,7 @@ export class DeadCodeDetector {
    * Determine if a symbol is exported.
    * Enhanced heuristic: class, interface, function, type, enum at top level.
    */
-  private isExportedSymbol(symbol: IndexedSymbol, imports: any[]): boolean {
+  private isExportedSymbol(symbol: IndexedSymbol, _imports: any[]): boolean {
     // Only consider top-level symbols (no container)
     if (symbol.containerName) {
       return false;
@@ -522,7 +521,7 @@ export class DeadCodeDetector {
    * Calculate confidence level based on symbol characteristics.
    */
   private calculateConfidence(
-    symbol: IndexedSymbol,
+    _symbol: IndexedSymbol,
     sameFileReferences: number
   ): 'high' | 'medium' | 'low' {
     // High confidence: no references at all (truly unused)

@@ -40,11 +40,9 @@ export class RenameHandler implements IHandler {
   readonly name = 'RenameHandler';
   
   private services: ServerServices;
-  private state: ServerState;
 
-  constructor(services: ServerServices, state: ServerState) {
+  constructor(services: ServerServices, _state: ServerState) {
     this.services = services;
-    this.state = state;
   }
 
   register(): void {
@@ -63,7 +61,7 @@ export class RenameHandler implements IHandler {
     const uri = URI.parse(params.textDocument.uri).fsPath;
     const { line, character } = params.position;
     
-    const { connection, documents, mergedIndex, logger } = this.services;
+    const { documents, mergedIndex, logger } = this.services;
     
     try {
       const document = documents.get(params.textDocument.uri);
@@ -131,7 +129,7 @@ export class RenameHandler implements IHandler {
     const { line, character } = params.position;
     const newName = params.newName;
     
-    const { connection, documents, mergedIndex, logger } = this.services;
+    const { documents, mergedIndex, logger } = this.services;
     
     logger.info(`[RenameHandler] Rename request: ${uri}:${line}:${character} -> "${newName}"`);
     

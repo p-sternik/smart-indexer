@@ -27,11 +27,9 @@ export class ReferencesHandler implements IHandler {
   readonly name = 'ReferencesHandler';
   
   private services: ServerServices;
-  private state: ServerState;
 
-  constructor(services: ServerServices, state: ServerState) {
+  constructor(services: ServerServices, _state: ServerState) {
     this.services = services;
-    this.state = state;
   }
 
   register(): void {
@@ -47,7 +45,7 @@ export class ReferencesHandler implements IHandler {
     const { line, character } = params.position;
     const start = Date.now();
     
-    const { connection, documents, mergedIndex, profiler, statsManager, logger } = this.services;
+    const { documents, mergedIndex, profiler, statsManager, logger } = this.services;
     
     logger.info(`[Server] References request: ${uri}:${line}:${character}`);
     

@@ -578,7 +578,7 @@ export class SymbolIndexer {
     ].includes(parent);
   }
 
-  private getParentContext(node: TSESTree.Node): string | null {
+  private getParentContext(_node: TSESTree.Node): string | null {
     // This is a simplified version - in a real implementation,
     // you'd track parent during traversal
     return null;

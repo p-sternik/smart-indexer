@@ -12,7 +12,6 @@ import { IndexScheduler, ProgressCallback } from './IndexScheduler.js';
 import { STORAGE_CONFIG, INDEXING_STATE, LOG_PREFIX } from '../constants.js';
 import { ILogger, NullLogger } from '../utils/Logger.js';
 import * as fsPromises from 'fs/promises';
-import * as path from 'path';
 
 /**
  * Represents a single file's indexed data.
@@ -37,8 +36,6 @@ export { ProgressCallback } from './IndexScheduler.js';
  * - Supports parallel indexing with a worker pool
  */
 export class BackgroundIndex implements ISymbolIndex {
-  private symbolIndexer: SymbolIndexer;
-  private languageRouter: LanguageRouter | null = null;
   private configManager: ConfigurationManager | null = null;
   private storage: IIndexStorage;
   private fileMetadata: Map<string, { hash: string; lastIndexedAt: number; symbolCount: number; mtime?: number }> = new Map();
@@ -48,7 +45,6 @@ export class BackgroundIndex implements ISymbolIndex {
   private fileToSymbolNames: Map<string, Set<string>> = new Map(); // uri -> Set of symbol names (reverse index for O(1) cleanup)
   private fileToReferenceNames: Map<string, Set<string>> = new Map(); // uri -> Set of referenced symbol names (reverse index for O(1) cleanup)
   private referenceMap: Map<string, Set<string>> = new Map(); // symbolName -> Set of URIs containing references
-  private isInitialized: boolean = false;
   private scheduler: IndexScheduler;
   private logger: ILogger;
   
@@ -68,13 +64,12 @@ export class BackgroundIndex implements ISymbolIndex {
    * @param logger - Logger instance (optional)
    */
   constructor(
-    symbolIndexer: SymbolIndexer,
+    _symbolIndexer: SymbolIndexer,
     storage: IIndexStorage,
     workerPool: IWorkerPool,
     ngrxResolver: NgRxLinkResolver,
     logger?: ILogger
   ) {
-    this.symbolIndexer = symbolIndexer;
     this.storage = storage;
     this.ngrxResolver = ngrxResolver;
     this.logger = logger || new NullLogger();
@@ -91,8 +86,8 @@ export class BackgroundIndex implements ISymbolIndex {
   /**
    * Set the language router for multi-language indexing
    */
-  setLanguageRouter(router: LanguageRouter): void {
-    this.languageRouter = router;
+  setLanguageRouter(_router: LanguageRouter): void {
+    // No-op - language router is no longer used
   }
 
   /**
@@ -106,7 +101,7 @@ export class BackgroundIndex implements ISymbolIndex {
    * Update the maximum number of concurrent indexing jobs.
    * @deprecated This is now managed by IndexScheduler/WorkerPool
    */
-  setMaxConcurrentJobs(max: number): void {
+  setMaxConcurrentJobs(_max: number): void {
     this.logger.warn(`${LOG_PREFIX.BACKGROUND_INDEX} setMaxConcurrentJobs is deprecated - worker pool manages concurrency`);
   }
 
@@ -129,7 +124,6 @@ export class BackgroundIndex implements ISymbolIndex {
     console.info(`${LOG_PREFIX.BACKGROUND_INDEX} Initialized (concurrency managed by IndexScheduler)`);
 
     await this.loadShardMetadata();
-    this.isInitialized = true;
   }
 
   /**
@@ -424,13 +418,6 @@ export class BackgroundIndex implements ISymbolIndex {
     }
 
     return shard;
-  }
-
-  /**
-   * Save a shard to storage.
-   */
-  private async saveShard(shard: FileShard): Promise<void> {
-    return this.storage.storeFile(shard);
   }
 
   /**
@@ -1097,7 +1084,7 @@ export class BackgroundIndex implements ISymbolIndex {
    */
   async ensureUpToDate(
     allFiles: string[],
-    computeHash: (uri: string) => Promise<string>,
+    _computeHash: (uri: string) => Promise<string>,
     onProgress?: (current: number, total: number) => void
   ): Promise<void> {
     let excluded = 0;

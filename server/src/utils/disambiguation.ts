@@ -1,5 +1,4 @@
 import { IndexedSymbol } from '../types.js';
-import * as path from 'path';
 
 /**
  * Disambiguation heuristics for "Go to Definition" when multiple candidates exist.

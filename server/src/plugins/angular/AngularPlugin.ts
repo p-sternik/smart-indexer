@@ -1,7 +1,6 @@
 import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
 import { FrameworkPlugin, PluginVisitorContext, PluginVisitResult } from '../FrameworkPlugin.js';
-import { IndexedSymbol, IndexedReference } from '../../types.js';
-import { ISymbolIndex } from '../../index/ISymbolIndex.js';
+import { IndexedSymbol } from '../../types.js';
 
 /**
  * Angular lifecycle hooks that are called by the framework, not by user code.
@@ -128,8 +127,8 @@ export class AngularPlugin implements FrameworkPlugin {
 
   visitNode(
     node: TSESTree.Node,
-    currentSymbol: IndexedSymbol | null,
-    context: PluginVisitorContext
+    _currentSymbol: IndexedSymbol | null,
+    _context: PluginVisitorContext
   ): PluginVisitResult | undefined {
     // Handle class declarations with Angular decorators
     if (node.type === AST_NODE_TYPES.ClassDeclaration) {
@@ -205,7 +204,7 @@ export class AngularPlugin implements FrameworkPlugin {
 
   extractMetadata(
     symbol: IndexedSymbol,
-    node: TSESTree.Node
+    _node: TSESTree.Node
   ): Record<string, unknown> | undefined {
     // Check if this is a lifecycle hook
     if (

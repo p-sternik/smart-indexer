@@ -2,7 +2,6 @@ import { parse } from '@typescript-eslint/typescript-estree';
 import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
 import { IndexedSymbol } from '../types.js';
 import { TypeScriptService } from '../typescript/typeScriptService.js';
-import * as fs from 'fs';
 
 const MAX_RECURSION_DEPTH = 10;
 
@@ -368,12 +367,12 @@ async function analyzeFunctionCall(
   callExpr: TSESTree.CallExpression,
   propertyName: string,
   uri: string,
-  content: string,
+  _content: string,
   fileResolver: (uri: string) => Promise<string>,
   symbolFinder: (name: string, uri?: string) => Promise<IndexedSymbol[]>,
-  tsService?: TypeScriptService,
-  depth: number = 0,
-  visited: Set<string> = new Set()
+  _tsService?: TypeScriptService,
+  _depth: number = 0,
+  _visited: Set<string> = new Set()
 ): Promise<ResolvedProperty | null> {
   // Get the function being called
   let functionName: string | null = null;
@@ -494,7 +493,7 @@ function findReturnStatement(node: TSESTree.Node): TSESTree.ReturnStatement | nu
 
 async function resolveWithTypeScript(
   baseSymbol: IndexedSymbol,
-  propertyName: string,
+  _propertyName: string,
   content: string,
   tsService: TypeScriptService
 ): Promise<ResolvedProperty | null> {

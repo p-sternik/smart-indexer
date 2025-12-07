@@ -120,7 +120,7 @@ export class MergedIndex implements ISymbolIndex {
     symbols: IndexedSymbol[],
     query: string,
     context: RankingContext | undefined,
-    limit: number
+    _limit: number
   ): Promise<Array<{ symbol: IndexedSymbol; score: number; matches: number[] }>> {
     const BATCH_SIZE = 1000;
     

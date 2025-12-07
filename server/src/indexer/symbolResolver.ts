@@ -34,8 +34,8 @@ export function createSymbolId(
   kind: string,
   isStatic: boolean | undefined,
   parametersCount: number | undefined,
-  startLine: number,
-  startCharacter: number
+  _startLine: number,
+  _startCharacter: number
 ): string {
   // Create stable file identifier (hash of file path, not content)
   const fileHash = crypto.createHash('md5').update(uri).digest('hex').substring(0, 8);
@@ -325,7 +325,7 @@ function getNameNode(node: TSESTree.Node): TSESTree.Node | null {
   }
 }
 
-function findParent(node: TSESTree.Node): TSESTree.Node | null {
+function findParent(_node: TSESTree.Node): TSESTree.Node | null {
   // This is a simplified version - in production, you'd track parents during traversal
   return null;
 }

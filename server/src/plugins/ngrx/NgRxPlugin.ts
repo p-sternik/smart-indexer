@@ -1,7 +1,6 @@
 import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
 import { FrameworkPlugin, PluginVisitorContext, PluginVisitResult } from '../FrameworkPlugin.js';
-import { IndexedSymbol, IndexedReference, SymbolLocation, SymbolRange } from '../../types.js';
-import { ISymbolIndex } from '../../index/ISymbolIndex.js';
+import { IndexedSymbol, IndexedReference, SymbolRange } from '../../types.js';
 import { createSymbolId } from '../../indexer/symbolResolver.js';
 import { toCamelCase } from '../../utils/stringUtils.js';
 
@@ -247,7 +246,7 @@ export class NgRxPlugin implements FrameworkPlugin {
 
   visitNode(
     node: TSESTree.Node,
-    currentSymbol: IndexedSymbol | null,
+    _currentSymbol: IndexedSymbol | null,
     context: PluginVisitorContext
   ): PluginVisitResult | undefined {
     // Handle VariableDeclarator with NgRx call expressions
@@ -487,8 +486,8 @@ export class NgRxPlugin implements FrameworkPlugin {
   }
 
   extractMetadata(
-    symbol: IndexedSymbol,
-    node: TSESTree.Node
+    _symbol: IndexedSymbol,
+    _node: TSESTree.Node
   ): Record<string, unknown> | undefined {
     // Metadata extraction is handled in visitNode
     return undefined;

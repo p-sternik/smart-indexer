@@ -1,5 +1,5 @@
 import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
-import { IndexedSymbol, NgRxMetadata } from '../../types.js';
+import { IndexedSymbol } from '../../types.js';
 import { createSymbolId } from '../symbolResolver.js';
 import { StringInterner } from './StringInterner.js';
 import { toCamelCase } from '../../utils/stringUtils.js';

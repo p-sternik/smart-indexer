@@ -17,11 +17,8 @@ export interface IndexProgress {
 export class SmartIndexerStatusBar {
   private statusBarItem: vscode.StatusBarItem;
   private state: 'idle' | 'busy' | 'error' = 'idle';
-  private logChannel: vscode.LogOutputChannel;
 
-  constructor(logChannel: vscode.LogOutputChannel) {
-    this.logChannel = logChannel;
-    
+  constructor(_logChannel: vscode.LogOutputChannel) {
     // Create status bar item on the right side with priority 100
     this.statusBarItem = vscode.window.createStatusBarItem(
       vscode.StatusBarAlignment.Right,

@@ -156,7 +156,7 @@ export class DefinitionHandler implements IHandler {
     const { line, character } = params.position;
     const start = Date.now();
     
-    const { connection, documents, mergedIndex, profiler, statsManager, typeScriptService, logger } = this.services;
+    const { documents, mergedIndex, profiler, statsManager, typeScriptService, logger } = this.services;
     const { importResolver } = this.state;
     
     logger.info(`[Server] Definition request: ${uri}:${line}:${character}`);
@@ -440,7 +440,7 @@ export class DefinitionHandler implements IHandler {
     visited: Set<string> = new Set()
   ): Promise<IndexedSymbol[]> {
     const MAX_DEPTH = 5;
-    const { connection, mergedIndex, logger } = this.services;
+    const { mergedIndex, logger } = this.services;
     const { importResolver } = this.state;
     
     if (depth >= MAX_DEPTH) {
@@ -510,7 +510,7 @@ export class DefinitionHandler implements IHandler {
     character: number,
     timeoutMs: number = 200
   ): Promise<IndexedSymbol[]> {
-    const { connection, typeScriptService, logger } = this.services;
+    const { typeScriptService, logger } = this.services;
     
     if (!typeScriptService.isInitialized()) {
       logger.info('[Server] TypeScript service not initialized, skipping disambiguation');

@@ -910,38 +910,6 @@ function traverseAST(
     }
 }
 
-function extractCodeSymbolsAndReferences(uri: string, content: string): {
-  symbols: IndexedSymbol[];
-  references: IndexedReference[];
-  imports: ImportInfo[];
-  reExports: ReExportInfo[];
-  pendingReferences: PendingReference[];
-  parseError?: string;
-} {
-  const symbols: IndexedSymbol[] = [];
-  const references: IndexedReference[] = [];
-  const pendingReferences: PendingReference[] = [];
-
-  try {
-    const ast = astParser.parse(content, uri);
-    if (!ast) {
-      return { symbols, references, imports: [], reExports: [], pendingReferences, parseError: 'Failed to parse AST' };
-    }
-
-    const imports = importExtractor.extractImports(ast);
-    const reExports = importExtractor.extractReExports(ast);
-
-    const scopeTracker = new ScopeTracker();
-    // Use the global workerPluginRegistry for worker thread execution
-    traverseAST(ast, symbols, references, uri, undefined, undefined, [], imports, scopeTracker, null, undefined, pendingReferences, workerPluginRegistry);
-    
-    return { symbols, references, imports, reExports, pendingReferences };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return { symbols, references, imports: [], reExports: [], pendingReferences, parseError: errorMessage };
-  }
-}
-
 function extractTextSymbols(uri: string, content: string): IndexedSymbol[] {
   const symbols: IndexedSymbol[] = [];
   

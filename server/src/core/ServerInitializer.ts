@@ -505,7 +505,7 @@ export class ServerInitializer {
    * Index files in background with worker pool.
    */
   private async indexFilesInBackground(files: string[]): Promise<void> {
-    const { connection, backgroundIndex, profiler, statsManager, configManager, fileSystem, logger } = this.deps;
+    const { connection, backgroundIndex, profiler, statsManager, fileSystem, logger } = this.deps;
 
     if (files.length === 0) {
       return;

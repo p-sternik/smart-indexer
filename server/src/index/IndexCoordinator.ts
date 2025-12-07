@@ -1,11 +1,9 @@
 import * as fsPromises from 'fs/promises';
-import { IndexedFileResult, PendingReference, SHARD_VERSION } from '../types.js';
+import { IndexedFileResult } from '../types.js';
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
 import { WorkerPool, IWorkerPool } from '../utils/workerPool.js';
-import { ShardStore } from './ShardStore.js';
-import { FileShard } from './ShardPersistenceManager.js';
 import { sanitizeFilePath } from '../utils/stringUtils.js';
 import { ProgressCallback } from './IndexScheduler.js';
 
@@ -37,7 +35,6 @@ export class IndexCoordinator {
 
   constructor(
     private readonly symbolIndexer: SymbolIndexer,
-    private readonly shardStore: ShardStore,
     private readonly fileMetadata: Map<string, FileMetadata>,
     maxConcurrentJobs: number = 4
   ) {
@@ -137,7 +134,7 @@ export class IndexCoordinator {
    */
   async ensureUpToDate(
     allFiles: string[],
-    computeHash: (uri: string) => Promise<string>,
+    _computeHash: (uri: string) => Promise<string>,
     onFileIndexed: (uri: string, result: IndexedFileResult) => Promise<void>,
     onFileRemoved: (uri: string) => Promise<void>,
     onProgress?: (current: number, total: number) => void

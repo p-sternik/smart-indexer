@@ -238,7 +238,7 @@ export class SqlJsStorage implements IIndexStorage {
    * Update metadata for a file (optimization for avoiding full file loads).
    * Note: In SQLite implementation, this is a no-op as metadata is derived from file data.
    */
-  async updateMetadata(metadata: FileMetadata): Promise<void> {
+  async updateMetadata(_metadata: FileMetadata): Promise<void> {
     // No-op for SQLite - metadata is derived from full file data
     // This method exists for interface compatibility with sharded storage
   }

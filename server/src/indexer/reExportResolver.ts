@@ -81,7 +81,7 @@ export class ReExportResolver {
       }
 
       // Symbol not found directly, check if the module has re-exports
-      const moduleFileResult = await this.index.getFileSymbols(resolvedModule);
+      await this.index.getFileSymbols(resolvedModule);
       
       // Try to get re-exports from this module (would need to be stored in index)
       // For now, we'll stop here - in full implementation, we'd recursively check

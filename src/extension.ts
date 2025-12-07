@@ -5,8 +5,7 @@ import {
   LanguageClient,
   LanguageClientOptions,
   ServerOptions,
-  TransportKind,
-  Middleware
+  TransportKind
 } from 'vscode-languageclient/node';
 import { HybridDefinitionProvider } from './providers/HybridDefinitionProvider';
 import { HybridReferencesProvider } from './providers/HybridReferencesProvider';

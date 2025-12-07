@@ -23,7 +23,7 @@ import { URI } from 'vscode-uri';
 
 import { IHandler, ServerServices, ServerState } from './types.js';
 import { IndexedSymbol } from '../types.js';
-import { DeadCodeDetector, DeadCodeCandidate, DeadCodeAnalysisResult } from '../features/deadCode.js';
+import { DeadCodeCandidate, DeadCodeAnalysisResult } from '../features/deadCode.js';
 import { CancellationError } from '../utils/asyncUtils.js';
 
 /**
@@ -62,7 +62,7 @@ export class DeadCodeHandler implements IHandler {
     // This handler doesn't register LSP methods directly.
     // Instead, it provides methods to be called from document lifecycle events.
     // The registration is done by the server calling analyzeFile on didOpen/didSave.
-    const { connection, logger } = this.services;
+    const { logger } = this.services;
     logger.info('[DeadCodeHandler] Registered');
   }
 
@@ -145,7 +145,7 @@ export class DeadCodeHandler implements IHandler {
    * @param uri - File path to clear diagnostics for
    */
   clearDiagnostics(uri: string): void {
-    const { connection, logger } = this.services;
+    const { connection } = this.services;
     
     // Cancel pending analysis
     const timer = this.debounceTimers.get(uri);
@@ -197,7 +197,7 @@ export class DeadCodeHandler implements IHandler {
     token: CancellationToken,
     options?: { excludePatterns?: string[]; includeTests?: boolean; scopeUri?: string }
   ): Promise<DeadCodeAnalysisResult> {
-    const { connection, logger } = this.services;
+    const { connection } = this.services;
     const { deadCodeDetector } = this.state;
     
     if (!deadCodeDetector) {
@@ -305,7 +305,7 @@ export class DeadCodeHandler implements IHandler {
    */
   private formatMessage(
     symbol: IndexedSymbol,
-    reason: string,
+    _reason: string,
     confidence: 'high' | 'medium' | 'low'
   ): string {
     const kindLabel = this.getKindLabel(symbol.kind);

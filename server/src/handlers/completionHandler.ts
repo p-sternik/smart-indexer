@@ -73,7 +73,7 @@ export class CompletionHandler implements IHandler {
     const { line, character } = params.position;
     const start = Date.now();
     
-    const { connection, documents, mergedIndex, profiler, statsManager, logger } = this.services;
+    const { documents, mergedIndex, logger } = this.services;
     
     logger.info(`[Server] Completion request: ${uri}:${line}:${character}`);
     
@@ -142,7 +142,7 @@ export class CompletionHandler implements IHandler {
    * This is where we add expensive documentation.
    */
   async resolveCompletionItem(item: CompletionItem): Promise<CompletionItem> {
-    const { connection, mergedIndex, logger } = this.services;
+    const { logger } = this.services;
     const start = Date.now();
     
     try {

@@ -23,7 +23,6 @@ export class AstParser {
         jsx: uri.endsWith('x')
       });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
       return null;
     }
   }

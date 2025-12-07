@@ -1,7 +1,6 @@
 import { TextDocuments, Connection } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { URI } from 'vscode-uri';
-import { MergedIndex } from '../index/mergedIndex.js';
 import { DynamicIndex } from '../index/dynamicIndex.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
 import { TypeScriptService } from '../typescript/typeScriptService.js';

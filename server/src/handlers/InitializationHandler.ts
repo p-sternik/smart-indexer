@@ -482,7 +482,7 @@ export class InitializationHandler implements IHandler {
       return;
     }
 
-    const { connection, backgroundIndex, configManager, profiler, statsManager, logger } = this.services;
+    const { connection, backgroundIndex, profiler, statsManager, logger } = this.services;
 
     connection.console.info(`[Server] ========== BACKGROUND INDEXING START ==========`);
     connection.console.info(`[Server] Indexing ${files.length} files in background...`);
@@ -493,7 +493,6 @@ export class InitializationHandler implements IHandler {
       const progress = await connection.window.createWorkDoneProgress();
       progress.begin('Indexing files', 0, `0/${files.length}`, true);
 
-      let processed = 0;
       const computeHash = async (uri: string): Promise<string> => {
         // Use async I/O to avoid blocking the event loop during indexing
         const content = await fsPromises.readFile(uri, 'utf-8');
@@ -502,7 +501,6 @@ export class InitializationHandler implements IHandler {
 
       // Use BackgroundIndex's built-in worker pool
       await backgroundIndex.ensureUpToDate(files, computeHash, (current, total) => {
-        processed = current;
         progress.report((current / total) * 100, `${current}/${total}`);
       });
 

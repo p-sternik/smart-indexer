@@ -1,5 +1,5 @@
 import { TSESTree } from '@typescript-eslint/typescript-estree';
-import { IndexedSymbol, IndexedReference, SymbolLocation, SymbolRange } from '../types.js';
+import { IndexedSymbol, IndexedReference } from '../types.js';
 import { ISymbolIndex } from '../index/ISymbolIndex.js';
 
 /**

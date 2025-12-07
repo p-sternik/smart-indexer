@@ -313,7 +313,7 @@ export class FileWatcher {
     this.connection.console.info('[FileWatcher] Disposing file watcher...');
     
     // Clear all pending debounce timers
-    for (const [filePath, timer] of this.debounceMap) {
+    for (const [_filePath, timer] of this.debounceMap) {
       clearTimeout(timer);
     }
     this.debounceMap.clear();

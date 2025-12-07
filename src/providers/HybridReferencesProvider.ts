@@ -1,8 +1,9 @@
 import * as vscode from 'vscode';
 
 /**
- * HybridReferencesProvider combines results from both the native TypeScript
- * service and Smart Indexer, deduplicating them to prevent duplicate entries.
+ * HybridReferencesProvider acts as a complementary provider, returning ONLY
+ * Smart Indexer results that are NOT already provided by the native TypeScript service.
+ * This prevents duplicate entries since VS Code aggregates results from all providers.
  */
 export class HybridReferencesProvider implements vscode.ReferenceProvider {
   private isDelegating = false;
@@ -50,14 +51,14 @@ export class HybridReferencesProvider implements vscode.ReferenceProvider {
         `[HybridReferencesProvider] Native: ${nativeLocations.length}, Smart: ${smartLocations.length}`
       );
 
-      // Merge and deduplicate
-      const merged = this.mergeAndDeduplicate(nativeLocations, smartLocations);
+      // Return ONLY Smart Index results that Native doesn't have
+      const complementaryResults = this.filterComplementaryResults(nativeLocations, smartLocations);
 
       this.logChannel.info(
-        `[HybridReferencesProvider] Merged: ${merged.length} locations (${Date.now() - start}ms)`
+        `[HybridReferencesProvider] Complementary: ${complementaryResults.length} locations (${Date.now() - start}ms)`
       );
 
-      return merged.length > 0 ? merged : null;
+      return complementaryResults.length > 0 ? complementaryResults : null;
     } catch (error) {
       this.isDelegating = false;
       this.logChannel.error(`[HybridReferencesProvider] Error: ${error}`);
@@ -91,45 +92,32 @@ export class HybridReferencesProvider implements vscode.ReferenceProvider {
     }
   }
 
-  private mergeAndDeduplicate(
+  private filterComplementaryResults(
     nativeLocations: vscode.Location[],
     smartLocations: vscode.Location[]
   ): vscode.Location[] {
-    const locationMap = new Map<string, vscode.Location>();
+    const complementary: vscode.Location[] = [];
 
-    // Add native results first (prefer native for accuracy)
-    for (const loc of nativeLocations) {
-      const key = this.getLocationKey(loc);
-      locationMap.set(key, loc);
-    }
-
-    // Add smart results, checking for duplicates or near-duplicates
-    for (const loc of smartLocations) {
-      const key = this.getLocationKey(loc);
-
-      // If exact match exists, skip (prefer native)
-      if (locationMap.has(key)) {
-        continue;
-      }
-
-      // Check for near-duplicates (within 2 lines)
+    // Filter Smart results: keep only those NOT already in Native results
+    for (const smartLoc of smartLocations) {
       let isDuplicate = false;
-      for (const [existingKey, existingLoc] of locationMap.entries()) {
-        if (this.areLocationsSimilar(loc, existingLoc)) {
+
+      for (const nativeLoc of nativeLocations) {
+        if (this.areLocationsSimilar(smartLoc, nativeLoc)) {
           isDuplicate = true;
-          this.logChannel.info(
-            `[HybridReferencesProvider] Near-duplicate detected: ${key} ~ ${existingKey}`
+          this.logChannel.debug(
+            `[HybridReferencesProvider] Filtered duplicate: ${this.getLocationKey(smartLoc)} matches native`
           );
           break;
         }
       }
 
       if (!isDuplicate) {
-        locationMap.set(key, loc);
+        complementary.push(smartLoc);
       }
     }
 
-    return Array.from(locationMap.values());
+    return complementary;
   }
 
   private getLocationKey(location: vscode.Location): string {
@@ -142,8 +130,20 @@ export class HybridReferencesProvider implements vscode.ReferenceProvider {
       return false;
     }
 
-    // Same file, check if within 2 lines of each other
-    const lineDiff = Math.abs(loc1.range.start.line - loc2.range.start.line);
+    // Check for range overlap or within tolerance (2 lines)
+    const range1 = loc1.range;
+    const range2 = loc2.range;
+
+    // Check if ranges overlap
+    if (
+      range1.start.line <= range2.end.line &&
+      range1.end.line >= range2.start.line
+    ) {
+      return true;
+    }
+
+    // Check if within 2 line tolerance
+    const lineDiff = Math.abs(range1.start.line - range2.start.line);
     return lineDiff <= 2;
   }
 }

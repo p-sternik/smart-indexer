@@ -152,6 +152,7 @@ export function createTestSymbol(overrides: Partial<IndexedSymbol>): IndexedSymb
     id: `test-symbol-${Math.random()}`,
     name: 'testSymbol',
     kind: 'function',
+    filePath: '/test/file.ts',
     location: {
       uri: '/test/file.ts',
       line: 0,

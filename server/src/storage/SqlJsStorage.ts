@@ -49,7 +49,7 @@ export class SqlJsStorage implements IIndexStorage {
 
     // Initialize sql.js WASM module
     this.SQL = await initSqlJs({
-      // The WASM file is bundled with sql.js and loaded automatically in Node.js
+      locateFile: (file) => path.join(__dirname, file)
     });
 
     // Set up database path

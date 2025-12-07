@@ -5,6 +5,19 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.61.1](https://github.com/p-sternik/smart-indexer/compare/v1.61.0...v1.61.1) (2025-12-07)
+
+
+### Bug Fixes
+
+* **dependencies:** downgrade TypeScript to version 5.6.3 and update Node.js engine requirement ([2f1b1d3](https://github.com/p-sternik/smart-indexer/commit/2f1b1d390bfd173d7fcd021b00dc0b4abc4db042))
+* **dependencies:** update chokidar to version 4.0.0 and remove unused @types/minimatch ([5b4135a](https://github.com/p-sternik/smart-indexer/commit/5b4135a3508277331d701668a14776518e58017a))
+
+
+### Code Refactoring
+
+* **provider:** update HybridDefinitionProvider and HybridReferencesProvider to return only complementary results ([eac28a6](https://github.com/p-sternik/smart-indexer/commit/eac28a6ce18bb1dbde4fee05abdf152b6117fe58))
+
 ## [1.61.0](https://github.com/p-sternik/smart-indexer/compare/v1.60.0...v1.61.0) (2025-12-07)
 
 

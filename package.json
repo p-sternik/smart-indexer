@@ -10,7 +10,8 @@
     "url": "https://github.com/p-sternik/smart-indexer.git"
   },
   "engines": {
-    "vscode": "^1.106.1"
+    "vscode": "^1.106.1",
+    "node": ">=20.0.0"
   },
   "categories": [
     "Programming Languages"
@@ -198,7 +199,7 @@
     "npm-run-all": "^4.1.5",
     "semantic-release": "^23.1.1",
     "semantic-release-vsce": "^5.7.4",
-    "typescript": "^5.9.3",
+    "typescript": "^5.6.3",
     "typescript-eslint": "^8.46.3"
   },
   "dependencies": {

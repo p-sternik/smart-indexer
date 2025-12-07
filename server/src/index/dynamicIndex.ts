@@ -127,7 +127,7 @@ export class DynamicIndex implements ISymbolIndex {
         this.fileHashes.set(uri, hash);
       }
     } catch (error) {
-      console.error(`[DynamicIndex] Error updating file ${uri}: ${error}`);
+      // Silent fail for dynamic index updates
     }
   }
 
@@ -292,7 +292,6 @@ export class DynamicIndex implements ISymbolIndex {
       console.info(`[DynamicIndex] Self-healing complete: ${result.symbols.length} symbols indexed for ${filePath}`);
       return true;
     } catch (error) {
-      console.error(`[DynamicIndex] Self-healing error for ${filePath}: ${error}`);
       return false;
     }
   }

@@ -84,7 +84,6 @@ export function findSymbolAtPosition(
     const targetOffset = getOffset(content, line, character);
     return findSymbolInAST(ast, targetOffset, uri);
   } catch (error) {
-    console.error(`[SymbolResolver] Error parsing ${uri}: ${error}`);
     return null;
   }
 }

@@ -72,7 +72,6 @@ export class SymbolIndexer {
         };
       }
     } catch (error) {
-      console.error(`[SymbolIndexer] Error indexing file ${uri}: ${error}`);
       const hash = this.computeHash(content || '');
       return {
         uri,
@@ -90,7 +89,6 @@ export class SymbolIndexer {
     try {
       return await fsPromises.readFile(uri, 'utf-8');
     } catch (error) {
-      console.error(`[SymbolIndexer] Error reading file ${uri}: ${error}`);
       return '';
     }
   }
@@ -128,8 +126,7 @@ export class SymbolIndexer {
       const scopeTracker = new ScopeTracker();
       this.traverseAST(ast, symbols, references, uri, undefined, undefined, [], imports, scopeTracker);
     } catch (error) {
-      console.error(`[SymbolIndexer] Error parsing code file ${uri}: ${error}`);
-    }
+      }
 
     return { symbols, references, imports, reExports };
   }
@@ -554,8 +551,7 @@ export class SymbolIndexer {
         }
       }
     } catch (error) {
-      console.error(`[SymbolIndexer] Error traversing AST node in ${uri}: ${error}`);
-    }
+      }
   }
 
   private isDeclaration(parent: string | null): boolean {
@@ -685,8 +681,7 @@ export class SymbolIndexer {
         }
       }
     } catch (error) {
-      console.error(`[SymbolIndexer] Error extracting text symbols from ${uri}: ${error}`);
-    }
+      }
 
     return symbols;
   }

@@ -50,7 +50,7 @@ export function parseMemberAccess(
     
     return result;
   } catch (error) {
-    console.error(`[RecursiveResolver] Error parsing member access: ${error}`);
+
     return null;
   }
 }
@@ -161,7 +161,7 @@ export async function resolvePropertyRecursively(
   visited: Set<string> = new Set()
 ): Promise<ResolvedProperty | null> {
   if (depth >= MAX_RECURSION_DEPTH) {
-    console.warn(`[RecursiveResolver] Max recursion depth ${MAX_RECURSION_DEPTH} reached`);
+
     return null;
   }
 
@@ -171,12 +171,10 @@ export async function resolvePropertyRecursively(
 
   const symbolKey = `${baseSymbol.location.uri}:${baseSymbol.name}`;
   if (visited.has(symbolKey)) {
-    console.warn(`[RecursiveResolver] Circular reference detected: ${symbolKey}`);
+
     return null;
   }
   visited.add(symbolKey);
-
-  console.log(`[RecursiveResolver] Resolving ${baseSymbol.name}.${propertyChain.join('.')} (depth ${depth})`);
 
   try {
     // Read the file containing the base symbol
@@ -224,7 +222,7 @@ export async function resolvePropertyRecursively(
 
     return resolved;
   } catch (error) {
-    console.error(`[RecursiveResolver] Error resolving property: ${error}`);
+
     return null;
   }
 }
@@ -244,7 +242,7 @@ async function analyzeSymbolInitializer(
   const declaration = findDeclarationByName(ast, baseSymbol.name);
   
   if (!declaration) {
-    console.log(`[RecursiveResolver] No declaration found for ${baseSymbol.name}`);
+
     return null;
   }
 
@@ -254,13 +252,13 @@ async function analyzeSymbolInitializer(
 
     // Case 1: Object literal - find the property directly
     if (init.type === AST_NODE_TYPES.ObjectExpression) {
-      console.log(`[RecursiveResolver] Base is object literal, searching for property "${propertyName}"`);
+
       return findPropertyInObjectLiteral(init, propertyName, baseSymbol.location.uri);
     }
 
     // Case 2: Function call - analyze the function's return value
     if (init.type === AST_NODE_TYPES.CallExpression) {
-      console.log(`[RecursiveResolver] Base is function call, analyzing return value`);
+
       return await analyzeFunctionCall(
         init,
         propertyName,
@@ -276,7 +274,7 @@ async function analyzeSymbolInitializer(
 
     // Case 3: Identifier reference - follow the chain
     if (init.type === AST_NODE_TYPES.Identifier) {
-      console.log(`[RecursiveResolver] Base is identifier "${init.name}", following chain`);
+
       const referencedSymbols = await symbolFinder(init.name, baseSymbol.location.uri);
       if (referencedSymbols.length > 0) {
         return resolvePropertyRecursively(
@@ -294,7 +292,7 @@ async function analyzeSymbolInitializer(
 
   // Fallback: Try TypeScript service if available
   if (tsService && tsService.isInitialized()) {
-    console.log(`[RecursiveResolver] Falling back to TypeScript service`);
+
     return resolveWithTypeScript(
       baseSymbol,
       propertyName,
@@ -392,8 +390,6 @@ async function analyzeFunctionCall(
     return null;
   }
 
-  console.log(`[RecursiveResolver] Analyzing function call: ${functionName}()`);
-
   // Find the function definition
   const functionSymbols = await symbolFinder(functionName, uri);
   if (functionSymbols.length === 0) {
@@ -439,7 +435,7 @@ function analyzeFunctionReturn(
 
   // If return is an object literal, find the property
   if (returnStmt.argument.type === AST_NODE_TYPES.ObjectExpression) {
-    console.log(`[RecursiveResolver] Function returns object literal`);
+
     return findPropertyInObjectLiteral(returnStmt.argument, propertyName, uri);
   }
 
@@ -453,7 +449,7 @@ function analyzeFunctionReturn(
         if (prop.type === AST_NODE_TYPES.Property) {
           const key = prop.key.type === AST_NODE_TYPES.Identifier ? prop.key.name : null;
           if (key === 'events' && prop.value.type === AST_NODE_TYPES.ObjectExpression) {
-            console.log(`[RecursiveResolver] Found "events" object in function argument`);
+
             const result = findPropertyInObjectLiteral(prop.value as TSESTree.ObjectExpression, propertyName, uri);
             if (result) {
               return result;
@@ -519,12 +515,12 @@ async function resolveWithTypeScript(
 
     // Use TypeScript to find the property within the type
     // This is a simplified implementation - in production, you'd use tsserver's more advanced APIs
-    console.log(`[RecursiveResolver] TypeScript resolved base type: ${details.kind}`);
+
     
     // This would require deeper TypeScript API integration
     return null;
   } catch (error) {
-    console.error(`[RecursiveResolver] Error using TypeScript service: ${error}`);
+
     return null;
   }
 }

@@ -1,6 +1,7 @@
 import { Worker } from 'worker_threads';
 import * as os from 'os';
 import { IndexedFileResult } from '../types.js';
+import { ILogger, NullLogger } from './Logger.js';
 
 /**
  * Data structure for worker task input.
@@ -100,11 +101,13 @@ export class WorkerPool implements IWorkerPool {
   private totalErrors: number = 0;
   private taskTimeoutMs: number = 60000; // 60 second timeout per task
   private activeTasks: number = 0; // Track in-flight tasks for counter validation
+  private logger: ILogger;
 
-  constructor(workerScriptPath: string, poolSize?: number) {
+  constructor(workerScriptPath: string, poolSize?: number, logger?: ILogger) {
     this.workerScriptPath = workerScriptPath;
     this.poolSize = poolSize || Math.max(1, os.cpus().length - 1);
-    console.info(`[WorkerPool] Creating pool with ${this.poolSize} workers (${os.cpus().length} CPUs available)`);
+    this.logger = logger || new NullLogger();
+    this.logger.info(`[WorkerPool] Creating pool with ${this.poolSize} workers (${os.cpus().length} CPUs available)`);
     this.initializeWorkers();
   }
 
@@ -122,13 +125,13 @@ export class WorkerPool implements IWorkerPool {
     };
 
     worker.on('error', (error) => {
-      console.error(`[WorkerPool] Worker error:`, error);
+      this.logger.error(`[WorkerPool] Worker error:`, error);
       this.restartWorker(workerState);
     });
 
     worker.on('exit', (code) => {
       if (code !== 0) {
-        console.error(`[WorkerPool] Worker exited with code ${code}`);
+        this.logger.error(`[WorkerPool] Worker exited with code ${code}`);
         this.restartWorker(workerState);
       }
     });
@@ -153,7 +156,7 @@ export class WorkerPool implements IWorkerPool {
       try {
         workerState.worker.terminate();
       } catch (error) {
-        console.error(`[WorkerPool] Error terminating worker:`, error);
+        this.logger.error(`[WorkerPool] Error terminating worker:`, error);
       }
       
       this.workers.splice(index, 1);
@@ -210,7 +213,7 @@ export class WorkerPool implements IWorkerPool {
 
     // Set up timeout to prevent tasks from hanging forever
     const timeoutId = setTimeout(() => {
-      console.error(`[WorkerPool] Task timeout after ${this.taskTimeoutMs}ms: ${taskData.uri}`);
+      this.logger.error(`[WorkerPool] Task timeout after ${this.taskTimeoutMs}ms: ${taskData.uri}`);
       this.restartWorker(workerState);
     }, this.taskTimeoutMs);
 
@@ -321,7 +324,7 @@ export class WorkerPool implements IWorkerPool {
     const expectedActive = inFlightCount + queuedCount;
 
     if (this.activeTasks !== expectedActive) {
-      console.warn(
+      this.logger.warn(
         `[WorkerPool] Counter desync detected: activeTasks=${this.activeTasks}, ` +
         `expected=${expectedActive} (inFlight=${inFlightCount}, queued=${queuedCount}). Resetting.`
       );
@@ -337,7 +340,7 @@ export class WorkerPool implements IWorkerPool {
    */
   reset(): void {
     if (this.activeTasks !== 0) {
-      console.warn(`[WorkerPool] Force reset: activeTasks was ${this.activeTasks}, setting to 0`);
+      this.logger.warn(`[WorkerPool] Force reset: activeTasks was ${this.activeTasks}, setting to 0`);
     }
     this.activeTasks = 0;
   }

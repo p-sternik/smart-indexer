@@ -47,8 +47,7 @@ export class TypeScriptService {
           console.info('[TypeScriptService] Loaded tsconfig.json');
         }
       } catch (error) {
-        console.warn(`[TypeScriptService] Error loading tsconfig.json: ${error}`);
-      }
+        }
     } catch {
       // tsconfig.json doesn't exist, use defaults
     }
@@ -93,8 +92,7 @@ export class TypeScriptService {
       return true;
     } catch (error: any) {
       if (error.code !== 'ENOENT') {
-        console.error(`[TypeScriptService] Error preloading file ${fileName}: ${error}`);
-      }
+        }
       return false;
     }
   }
@@ -203,7 +201,6 @@ export class TypeScriptService {
     try {
       return this.languageService.getDefinitionAtPosition(fileName, position);
     } catch (error) {
-      console.error(`[TypeScriptService] Error getting definition: ${error}`);
       return undefined;
     }
   }
@@ -231,7 +228,6 @@ export class TypeScriptService {
       }
       return refs;
     } catch (error) {
-      console.error(`[TypeScriptService] Error getting references: ${error}`);
       return undefined;
     }
   }
@@ -266,8 +262,7 @@ export class TypeScriptService {
         return typeChecker.getSymbolAtLocation(node);
       }
     } catch (error) {
-      console.error(`[TypeScriptService] Error getting symbol: ${error}`);
-    }
+      }
 
     return undefined;
   }
@@ -332,7 +327,6 @@ export class TypeScriptService {
         isStatic
       };
     } catch (error) {
-      console.error(`[TypeScriptService] Error getting symbol details: ${error}`);
       return undefined;
     }
   }
@@ -464,8 +458,7 @@ export class TypeScriptService {
         return typeChecker.getTypeAtLocation(node);
       }
     } catch (error) {
-      console.error(`[TypeScriptService] Error getting type: ${error}`);
-    }
+      }
 
     return undefined;
   }

@@ -28,7 +28,7 @@ export class GitWatcher {
         this.isGitRepo = false;
       }
     } catch (error) {
-      console.error(`[GitWatcher] Error initializing git watcher: ${error}`);
+      // Silent fail - git integration is optional
       this.isGitRepo = false;
     }
   }
@@ -44,7 +44,6 @@ export class GitWatcher {
       const log = await this.git.log({ maxCount: 1 });
       return log.latest?.hash;
     } catch (error) {
-      console.error(`[GitWatcher] Error getting current git hash: ${error}`);
       return undefined;
     }
   }
@@ -117,7 +116,6 @@ export class GitWatcher {
 
       return { added, modified, deleted, currentHash };
     } catch (error) {
-      console.error(`[GitWatcher] Error getting git changes: ${error}`);
       return undefined;
     }
   }
@@ -136,7 +134,6 @@ export class GitWatcher {
         .map(f => path.join(this.workspaceRoot, f));
       return files;
     } catch (error) {
-      console.error(`[GitWatcher] Error getting tracked files: ${error}`);
       return [];
     }
   }
@@ -167,7 +164,7 @@ export class GitWatcher {
         }
         sanitized = Buffer.from(bytes).toString('utf-8');
       } catch (error) {
-        console.warn(`[GitWatcher] Failed to decode path: ${filePath}`);
+        // Skip paths that can't be decoded
       }
     }
     
@@ -192,11 +189,11 @@ export class GitWatcher {
             }
           }
         } catch (error) {
-          console.error(`[GitWatcher] Error in git watch callback: ${error}`);
+          // Ignore errors in git watch callback
         }
       });
     } catch (error) {
-      console.error(`[GitWatcher] Error setting up git watcher: ${error}`);
+      // Git watching is optional
     }
   }
 }

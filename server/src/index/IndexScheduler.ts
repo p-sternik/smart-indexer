@@ -2,6 +2,7 @@ import { IWorkerPool } from '../utils/workerPool.js';
 import { IndexedFileResult } from '../types.js';
 import { sanitizeFilePath } from '../utils/stringUtils.js';
 import { PROGRESS_CONFIG, LOG_PREFIX } from '../constants.js';
+import { ILogger, NullLogger } from '../utils/Logger.js';
 import * as fsPromises from 'fs/promises';
 
 /**
@@ -45,14 +46,17 @@ export class IndexScheduler {
   private workerPool: IWorkerPool;
   private progressCallback: ProgressCallback | null = null;
   private isBulkMode: boolean = false;
+  private logger: ILogger;
   
   /**
    * Create an IndexScheduler.
    * 
-   * @param workerPool - Worker pool for parallel indexing
+   * @param workerPool - Worker pool for parallel task execution
+   * @param logger - Logger instance (optional)
    */
-  constructor(workerPool: IWorkerPool) {
+  constructor(workerPool: IWorkerPool, logger?: ILogger) {
     this.workerPool = workerPool;
+    this.logger = logger || new NullLogger();
   }
 
   /**
@@ -90,15 +94,15 @@ export class IndexScheduler {
       
       // Handle the result
       if (result.isSkipped) {
-        console.warn(`[IndexScheduler] Skipping file (${result.skipReason}): ${sanitizedUri}`);
+        this.logger.warn(`[IndexScheduler] Skipping file (${result.skipReason}): ${sanitizedUri}`);
       } else {
         await handler(sanitizedUri, result);
       }
     } catch (error: any) {
       if (error.code === 'ENOENT') {
-        console.warn(`${LOG_PREFIX.INDEX_SCHEDULER} Skipping non-existent file: ${sanitizedUri}`);
+        this.logger.warn(`${LOG_PREFIX.INDEX_SCHEDULER} Skipping non-existent file: ${sanitizedUri}`);
       } else {
-        console.error(`${LOG_PREFIX.INDEX_SCHEDULER} Error scheduling single file ${sanitizedUri}: ${error}`);
+        this.logger.error(`${LOG_PREFIX.INDEX_SCHEDULER} Error scheduling single file ${sanitizedUri}: ${error}`);
         throw error;
       }
     }
@@ -209,18 +213,18 @@ export class IndexScheduler {
     }
     
     if (skippedFiles.length > 0) {
-      console.warn(
+      this.logger.warn(
         `${LOG_PREFIX.INDEX_SCHEDULER} Skipping ${skippedFiles.length} non-existent files`
       );
       if (skippedFiles.length <= 5) {
         for (const skipped of skippedFiles) {
-          console.warn(`${LOG_PREFIX.INDEX_SCHEDULER}   - ${skipped}`);
+          this.logger.warn(`${LOG_PREFIX.INDEX_SCHEDULER}   - ${skipped}`);
         }
       } else {
         for (const skipped of skippedFiles.slice(0, 5)) {
-          console.warn(`${LOG_PREFIX.INDEX_SCHEDULER}   - ${skipped}`);
+          this.logger.warn(`${LOG_PREFIX.INDEX_SCHEDULER}   - ${skipped}`);
         }
-        console.warn(`${LOG_PREFIX.INDEX_SCHEDULER}   ... and ${skippedFiles.length - 5} more`);
+        this.logger.warn(`${LOG_PREFIX.INDEX_SCHEDULER}   ... and ${skippedFiles.length - 5} more`);
       }
     }
     
@@ -245,12 +249,12 @@ export class IndexScheduler {
         const result = await this.workerPool.runTask({ uri });
         
         if (result.isSkipped) {
-          console.warn(`${LOG_PREFIX.INDEX_SCHEDULER} Skipping file (${result.skipReason}): ${uri}`);
+          this.logger.warn(`${LOG_PREFIX.INDEX_SCHEDULER} Skipping file (${result.skipReason}): ${uri}`);
         } else {
           await handler(uri, result);
         }
       } catch (error) {
-        console.error(`${LOG_PREFIX.INDEX_SCHEDULER} Error indexing file ${uri}: ${error}`);
+        this.logger.error(`${LOG_PREFIX.INDEX_SCHEDULER} Error indexing file ${uri}: ${error}`);
       } finally {
         processed++;
         if (onProgress) {

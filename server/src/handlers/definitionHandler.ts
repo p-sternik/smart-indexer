@@ -156,15 +156,15 @@ export class DefinitionHandler implements IHandler {
     const { line, character } = params.position;
     const start = Date.now();
     
-    const { connection, documents, mergedIndex, profiler, statsManager, typeScriptService } = this.services;
+    const { connection, documents, mergedIndex, profiler, statsManager, typeScriptService, logger } = this.services;
     const { importResolver } = this.state;
     
-    connection.console.log(`[Server] Definition request: ${uri}:${line}:${character}`);
+    logger.info(`[Server] Definition request: ${uri}:${line}:${character}`);
     
     try {
       const document = documents.get(params.textDocument.uri);
       if (!document) {
-        connection.console.log(`[Server] Definition result: document not found, 0 ms`);
+        logger.info(`[Server] Definition result: document not found, 0 ms`);
         return null;
       }
 
@@ -173,7 +173,7 @@ export class DefinitionHandler implements IHandler {
       // Check if this is a member expression (e.g., myStore.actions.opened)
       const memberAccess = parseMemberAccess(text, line, character);
       if (memberAccess && memberAccess.propertyChain.length > 0) {
-        connection.console.log(
+        logger.info(
           `[Server] Detected member expression: ${memberAccess.baseName}.${memberAccess.propertyChain.join('.')}`
         );
 
@@ -188,7 +188,7 @@ export class DefinitionHandler implements IHandler {
             baseSymbol = ranked[0];
           }
 
-          connection.console.log(
+          logger.info(
             `[Server] Found base symbol: ${baseSymbol.name} at ${baseSymbol.location.uri}:${baseSymbol.location.line}`
           );
 
@@ -222,7 +222,7 @@ export class DefinitionHandler implements IHandler {
             profiler.record('definition', duration);
             statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
             
-            connection.console.log(
+            logger.info(
               `[Server] Recursive resolution succeeded: ${memberAccess.baseName}.${memberAccess.propertyChain.join('.')} ` +
               `-> ${resolved.location.uri}:${resolved.location.line} in ${duration} ms`
             );
@@ -235,7 +235,7 @@ export class DefinitionHandler implements IHandler {
               }
             };
           } else {
-            connection.console.log(`[Server] Recursive resolution failed, falling back to standard resolution`);
+            logger.info(`[Server] Recursive resolution failed, falling back to standard resolution`);
           }
         }
       }
@@ -244,7 +244,7 @@ export class DefinitionHandler implements IHandler {
       const symbolAtCursor = findSymbolAtPosition(uri, text, line, character);
       
       if (symbolAtCursor) {
-        connection.console.log(
+        logger.info(
           `[Server] Resolved symbol: name="${symbolAtCursor.name}", kind="${symbolAtCursor.kind}", ` +
           `container="${symbolAtCursor.containerName || '<none>'}", isStatic=${symbolAtCursor.isStatic}`
         );
@@ -255,13 +255,13 @@ export class DefinitionHandler implements IHandler {
           const importInfo = importResolver.findImportForSymbol(symbolAtCursor.name, imports);
           
           if (importInfo) {
-            connection.console.log(`[Server] Symbol is imported from: ${importInfo.moduleSpecifier}`);
+            logger.info(`[Server] Symbol is imported from: ${importInfo.moduleSpecifier}`);
             
             // Resolve the module to a file path
             const resolvedPath = await importResolver.resolveImport(importInfo.moduleSpecifier, uri);
             
             if (resolvedPath) {
-              connection.console.log(`[Server] Resolved import to: ${resolvedPath}`);
+              logger.info(`[Server] Resolved import to: ${resolvedPath}`);
               
               // Search only in the resolved file
               let targetSymbols = await mergedIndex.getFileSymbols(resolvedPath);
@@ -270,17 +270,17 @@ export class DefinitionHandler implements IHandler {
               targetSymbols = targetSymbols.filter(sym => sym.isDefinition === true);
               
               let matchingSymbols = targetSymbols.filter(sym => sym.name === symbolAtCursor.name);
-              connection.console.log(`[Server] Found ${matchingSymbols.length} definition symbols in ${resolvedPath}`);
+              logger.info(`[Server] Found ${matchingSymbols.length} definition symbols in ${resolvedPath}`);
               
               // If not found, check if it's a re-export (barrel file)
               if (matchingSymbols.length === 0) {
-                connection.console.log(`[Server] Symbol not found in ${resolvedPath}, checking re-exports...`);
+                logger.info(`[Server] Symbol not found in ${resolvedPath}, checking re-exports...`);
                 const reExports = await mergedIndex.getFileReExports(resolvedPath);
                 
                 for (const reExport of reExports) {
                   // Check if this re-export includes our symbol
                   if (reExport.isAll || (reExport.exportedNames && reExport.exportedNames.includes(symbolAtCursor.name))) {
-                    connection.console.log(`[Server] Found re-export for ${symbolAtCursor.name} from ${reExport.moduleSpecifier}`);
+                    logger.info(`[Server] Found re-export for ${symbolAtCursor.name} from ${reExport.moduleSpecifier}`);
                     const reExportResults = await this.resolveReExport(
                       symbolAtCursor.name,
                       reExport.moduleSpecifier,
@@ -309,22 +309,22 @@ export class DefinitionHandler implements IHandler {
                 profiler.record('definition', duration);
                 statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
                 
-                connection.console.log(`[Server] Definition result (import-resolved): ${matchingSymbols.length} → ${results.length} locations in ${duration} ms`);
+                logger.info(`[Server] Definition result (import-resolved): ${matchingSymbols.length} → ${results.length} locations in ${duration} ms`);
                 return results;
               }
             } else {
-              connection.console.log(`[Server] Could not resolve import path for: ${importInfo.moduleSpecifier}`);
+              logger.info(`[Server] Could not resolve import path for: ${importInfo.moduleSpecifier}`);
             }
           }
         }
 
         // Standard resolution: get all candidates by name
         const candidates = await mergedIndex.findDefinitions(symbolAtCursor.name);
-        connection.console.log(`[Server] Found ${candidates.length} candidates by name`);
+        logger.info(`[Server] Found ${candidates.length} candidates by name`);
 
         // PRECISION FILTER 1: Only return symbols marked as definitions
         let definitionCandidates = candidates.filter(candidate => candidate.isDefinition === true);
-        connection.console.log(`[Server] Filtered to ${definitionCandidates.length} definition symbols (isDefinition=true)`);
+        logger.info(`[Server] Filtered to ${definitionCandidates.length} definition symbols (isDefinition=true)`);
         
         // PRECISION FILTER 2: Exclude the cursor position itself (prevents self-reference)
         definitionCandidates = definitionCandidates.filter(candidate => {
@@ -333,7 +333,7 @@ export class DefinitionHandler implements IHandler {
           const isSameChar = candidate.location.character === character;
           return !(isSameFile && isSameLine && isSameChar);
         });
-        connection.console.log(`[Server] Excluded cursor position, now ${definitionCandidates.length} candidates`);
+        logger.info(`[Server] Excluded cursor position, now ${definitionCandidates.length} candidates`);
 
         // Filter candidates to match the exact symbol
         const filtered = definitionCandidates.filter(candidate => {
@@ -349,13 +349,13 @@ export class DefinitionHandler implements IHandler {
           return nameMatch && kindMatch && containerMatch && staticMatch;
         });
 
-        connection.console.log(`[Server] Filtered to ${filtered.length} exact matches`);
+        logger.info(`[Server] Filtered to ${filtered.length} exact matches`);
 
         if (filtered.length > 0) {
           // If multiple candidates remain, use TypeScript for semantic disambiguation
           let finalCandidates = filtered;
           if (filtered.length > 1) {
-            connection.console.log(`[Server] Multiple candidates detected, attempting TypeScript disambiguation...`);
+            logger.info(`[Server] Multiple candidates detected, attempting TypeScript disambiguation...`);
             finalCandidates = await this.disambiguateWithTypeScript(
               filtered,
               uri,
@@ -383,7 +383,7 @@ export class DefinitionHandler implements IHandler {
           profiler.record('definition', duration);
           statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
           
-          connection.console.log(`[Server] Definition result: ${ranked.length} → ${results.length} locations (deduplicated) in ${duration} ms`);
+          logger.info(`[Server] Definition result: ${ranked.length} → ${results.length} locations (deduplicated) in ${duration} ms`);
           return results;
         }
       }
@@ -392,7 +392,7 @@ export class DefinitionHandler implements IHandler {
       const offset = document.offsetAt(params.position);
       const wordRange = getWordRangeAtPosition(text, offset);
       if (!wordRange) {
-        connection.console.log(`[Server] Definition result: no word at position, ${Date.now() - start} ms`);
+        logger.info(`[Server] Definition result: no word at position, ${Date.now() - start} ms`);
         return null;
       }
 
@@ -419,11 +419,11 @@ export class DefinitionHandler implements IHandler {
       profiler.record('definition', duration);
       statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
       
-      connection.console.log(`[Server] Definition result (fallback): symbol="${word}", ${symbols.length} → ${deduplicated.length} locations in ${duration} ms`);
+      logger.info(`[Server] Definition result (fallback): symbol="${word}", ${symbols.length} → ${deduplicated.length} locations in ${duration} ms`);
       return results;
     } catch (error) {
       const duration = Date.now() - start;
-      connection.console.error(`[Server] Definition error: ${error}, ${duration} ms`);
+      logger.error(`[Server] Definition error: ${error}, ${duration} ms`);
       return null;
     }
   }
@@ -440,16 +440,16 @@ export class DefinitionHandler implements IHandler {
     visited: Set<string> = new Set()
   ): Promise<IndexedSymbol[]> {
     const MAX_DEPTH = 5;
-    const { connection, mergedIndex } = this.services;
+    const { connection, mergedIndex, logger } = this.services;
     const { importResolver } = this.state;
     
     if (depth >= MAX_DEPTH) {
-      connection.console.warn(`[Server] Re-export recursion limit reached for ${symbolName}`);
+      logger.warn(`[Server] Re-export recursion limit reached for ${symbolName}`);
       return [];
     }
     
     if (visited.has(targetModulePath)) {
-      connection.console.warn(`[Server] Circular re-export detected: ${targetModulePath}`);
+      logger.warn(`[Server] Circular re-export detected: ${targetModulePath}`);
       return [];
     }
     
@@ -462,11 +462,11 @@ export class DefinitionHandler implements IHandler {
     
     const resolvedPath = await importResolver.resolveImport(targetModulePath, fromFile);
     if (!resolvedPath) {
-      connection.console.log(`[Server] Could not resolve re-export module: ${targetModulePath}`);
+      logger.info(`[Server] Could not resolve re-export module: ${targetModulePath}`);
       return [];
     }
     
-    connection.console.log(`[Server] Following re-export to: ${resolvedPath} (depth ${depth})`);
+    logger.info(`[Server] Following re-export to: ${resolvedPath} (depth ${depth})`);
     
     // Get symbols from the target file and filter by isDefinition === true
     let targetSymbols = await mergedIndex.getFileSymbols(resolvedPath);
@@ -474,7 +474,7 @@ export class DefinitionHandler implements IHandler {
     const matchingSymbols = targetSymbols.filter(sym => sym.name === symbolName);
     
     if (matchingSymbols.length > 0) {
-      connection.console.log(`[Server] Found ${matchingSymbols.length} definition symbols in re-export target`);
+      logger.info(`[Server] Found ${matchingSymbols.length} definition symbols in re-export target`);
       return matchingSymbols;
     }
     
@@ -510,10 +510,10 @@ export class DefinitionHandler implements IHandler {
     character: number,
     timeoutMs: number = 200
   ): Promise<IndexedSymbol[]> {
-    const { connection, typeScriptService } = this.services;
+    const { connection, typeScriptService, logger } = this.services;
     
     if (!typeScriptService.isInitialized()) {
-      connection.console.log('[Server] TypeScript service not initialized, skipping disambiguation');
+      logger.info('[Server] TypeScript service not initialized, skipping disambiguation');
       return candidates;
     }
 
@@ -533,12 +533,12 @@ export class DefinitionHandler implements IHandler {
           const symbolDetails = typeScriptService.getSymbolDetails(fileName, offset);
           
           if (!symbolDetails) {
-            connection.console.log('[Server] TypeScript service could not resolve symbol details');
+            logger.info('[Server] TypeScript service could not resolve symbol details');
             resolve(candidates);
             return;
           }
 
-          connection.console.log(
+          logger.info(
             `[Server] TS symbol details: name="${symbolDetails.name}", kind="${symbolDetails.kind}", ` +
             `container="${symbolDetails.containerName || '<none>'}", containerKind="${symbolDetails.containerKind || '<none>'}"`
           );
@@ -579,10 +579,10 @@ export class DefinitionHandler implements IHandler {
           });
 
           if (filtered.length > 0) {
-            connection.console.log(`[Server] TypeScript disambiguation: ${candidates.length} → ${filtered.length} candidates`);
+            logger.info(`[Server] TypeScript disambiguation: ${candidates.length} → ${filtered.length} candidates`);
             resolve(filtered);
           } else {
-            connection.console.log('[Server] TypeScript disambiguation filtered all candidates, keeping original set');
+            logger.info('[Server] TypeScript disambiguation filtered all candidates, keeping original set');
             resolve(candidates);
           }
         })();
@@ -590,14 +590,14 @@ export class DefinitionHandler implements IHandler {
 
       const timeoutPromise = new Promise<IndexedSymbol[]>((resolve) => {
         setTimeout(() => {
-          connection.console.warn(`[Server] TypeScript disambiguation timed out after ${timeoutMs}ms`);
+          logger.warn(`[Server] TypeScript disambiguation timed out after ${timeoutMs}ms`);
           resolve(candidates);
         }, timeoutMs);
       });
 
       return await Promise.race([disambiguationPromise, timeoutPromise]);
     } catch (error) {
-      connection.console.error(`[Server] Error in TypeScript disambiguation: ${error}`);
+      logger.error(`[Server] Error in TypeScript disambiguation: ${error}`);
       return candidates;
     }
   }

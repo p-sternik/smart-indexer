@@ -25,6 +25,7 @@ import { GitWatcher } from '../git/gitWatcher.js';
 import { FolderHasher } from '../cache/folderHasher.js';
 import { Profiler } from '../profiler/profiler.js';
 import { FileSystemService } from '../utils/FileSystemService.js';
+import { LoggerService } from '../utils/Logger.js';
 import { TextDocuments } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
@@ -59,6 +60,7 @@ export interface ServerDependencies {
   folderHasher: FolderHasher;
   profiler: Profiler;
   fileSystem: FileSystemService;
+  logger: LoggerService;
 }
 
 /**
@@ -90,7 +92,7 @@ export class ServerInitializer {
    * Handle LSP initialize request.
    */
   async handleInitialize(params: InitializeParams): Promise<InitializeResult> {
-    const { connection, configManager, typeScriptService } = this.deps;
+    const { connection, configManager, typeScriptService, logger } = this.deps;
 
     try {
       connection.console.info('[ServerInitializer] ========== INITIALIZATION START ==========');
@@ -113,7 +115,7 @@ export class ServerInitializer {
         connection.console.info(`[ServerInitializer] Initialization options received: ${JSON.stringify(params.initializationOptions, null, 2)}`);
         configManager.updateFromInitializationOptions(params.initializationOptions);
       } else {
-        connection.console.warn('[ServerInitializer] No initialization options provided');
+        logger.warn('[ServerInitializer] No initialization options provided');
       }
 
       // Determine workspace root
@@ -153,7 +155,7 @@ export class ServerInitializer {
       connection.console.info('[ServerInitializer] ========== INITIALIZATION COMPLETE ==========');
       return result;
     } catch (error) {
-      connection.console.error(`[ServerInitializer] Error during initialization: ${error}`);
+      logger.error(`[ServerInitializer] Error during initialization: ${error}`);
       throw error;
     }
   }
@@ -162,7 +164,7 @@ export class ServerInitializer {
    * Handle LSP initialized notification.
    */
   async handleInitialized(): Promise<void> {
-    const { connection } = this.deps;
+    const { connection, logger } = this.deps;
 
     try {
       connection.console.info('[ServerInitializer] ========== ON INITIALIZED FIRED ==========');
@@ -185,9 +187,9 @@ export class ServerInitializer {
       await this.initializeIndexing();
       connection.console.info('[ServerInitializer] ========== INDEXING INITIALIZATION COMPLETE ==========');
     } catch (error) {
-      connection.console.error(`[ServerInitializer] Fatal error in onInitialized: ${error}`);
+      logger.error(`[ServerInitializer] Fatal error in onInitialized: ${error}`);
       if (error instanceof Error) {
-        connection.console.error(`[ServerInitializer] Stack trace: ${error.stack}`);
+        logger.error(`[ServerInitializer] Stack trace: ${error.stack}`);
       }
       connection.window.showErrorMessage(`Smart Indexer initialization failed: ${error}`);
     }
@@ -212,7 +214,7 @@ export class ServerInitializer {
    * Determine workspace root from initialization params.
    */
   private determineWorkspaceRoot(params: InitializeParams): string {
-    const { connection } = this.deps;
+    const { connection, logger } = this.deps;
 
     if (params.workspaceFolders && params.workspaceFolders.length > 0) {
       connection.console.info(`[ServerInitializer] Workspace folders (${params.workspaceFolders.length}):`);
@@ -230,7 +232,7 @@ export class ServerInitializer {
       connection.console.info(`[ServerInitializer] Using rootPath: ${params.rootPath}`);
       return params.rootPath;
     } else {
-      connection.console.warn('[ServerInitializer] No workspace root found - indexing will be disabled');
+      logger.warn('[ServerInitializer] No workspace root found - indexing will be disabled');
       return '';
     }
   }
@@ -239,7 +241,7 @@ export class ServerInitializer {
    * Load static index if enabled in configuration.
    */
   private async loadStaticIndexIfEnabled(): Promise<void> {
-    const { connection, configManager, mergedIndex, statsManager } = this.deps;
+    const { connection, configManager, mergedIndex, statsManager, logger } = this.deps;
     const config = configManager.getConfig();
     
     if (!config.staticIndexEnabled || !config.staticIndexPath) {
@@ -267,8 +269,8 @@ export class ServerInitializer {
       
       connection.console.info(`[ServerInitializer] Static index loaded: ${stats.files} files, ${stats.symbols} symbols in ${Date.now() - start} ms`);
     } catch (error) {
-      connection.console.warn(`[ServerInitializer] Failed to load static index: ${error}`);
-      connection.console.warn('[ServerInitializer] Continuing without static index');
+      logger.warn(`[ServerInitializer] Failed to load static index: ${error}`);
+      logger.warn('[ServerInitializer] Continuing without static index');
       this.staticIndex = undefined;
       mergedIndex.setStaticIndex(undefined);
     }
@@ -281,11 +283,11 @@ export class ServerInitializer {
     const {
       connection, configManager, backgroundIndex, dynamicIndex,
       languageRouter, fileScanner, gitWatcher, folderHasher,
-      statsManager, documents
+      statsManager, documents, logger
     } = this.deps;
 
     if (!this.workspaceRoot) {
-      connection.console.warn('[ServerInitializer] No workspace root found, skipping indexing');
+      logger.warn('[ServerInitializer] No workspace root found, skipping indexing');
       return;
     }
 
@@ -362,7 +364,7 @@ export class ServerInitializer {
               
               this.updateStats();
             } catch (error) {
-              connection.console.error(`[ServerInitializer] Error handling git changes: ${error}`);
+              logger.error(`[ServerInitializer] Error handling git changes: ${error}`);
             }
           });
         } else {
@@ -387,14 +389,15 @@ export class ServerInitializer {
         backgroundIndex,
         configManager,
         this.workspaceRoot,
+        logger,
         600 // 600ms debounce delay
       );
       await this.fileWatcher.init();
       connection.console.info('[ServerInitializer] Live file synchronization enabled');
     } catch (error) {
-      connection.console.error(`[ServerInitializer] Error initializing indexing: ${error}`);
+      logger.error(`[ServerInitializer] Error initializing indexing: ${error}`);
       if (error instanceof Error) {
-        connection.console.error(`[ServerInitializer] Stack trace: ${error.stack}`);
+        logger.error(`[ServerInitializer] Stack trace: ${error.stack}`);
       }
     }
   }
@@ -403,7 +406,7 @@ export class ServerInitializer {
    * Perform Git-aware incremental indexing.
    */
   private async performGitAwareIndexing(): Promise<void> {
-    const { connection, gitWatcher, backgroundIndex, statsManager, profiler } = this.deps;
+    const { connection, gitWatcher, backgroundIndex, statsManager, profiler, logger } = this.deps;
 
     try {
       const currentHash = await gitWatcher.getCurrentHash();
@@ -461,7 +464,7 @@ export class ServerInitializer {
         }
       }
     } catch (error) {
-      connection.console.error(`[ServerInitializer] Error in git-aware indexing: ${error}`);
+      logger.error(`[ServerInitializer] Error in git-aware indexing: ${error}`);
       throw error;
     }
   }
@@ -470,10 +473,10 @@ export class ServerInitializer {
    * Perform full workspace indexing.
    */
   private async performFullBackgroundIndexing(): Promise<void> {
-    const { connection, fileScanner, statsManager } = this.deps;
+    const { connection, fileScanner, statsManager, logger } = this.deps;
 
     if (!this.workspaceRoot) {
-      connection.console.warn('[ServerInitializer] No workspace root available - cannot perform full indexing');
+      logger.warn('[ServerInitializer] No workspace root available - cannot perform full indexing');
       return;
     }
 
@@ -483,16 +486,16 @@ export class ServerInitializer {
       connection.console.info(`[ServerInitializer] File scanner discovered ${allFiles.length} indexable files`);
       
       if (allFiles.length === 0) {
-        connection.console.warn('[ServerInitializer] No files found to index. Check excludePatterns and file extensions.');
+        logger.warn('[ServerInitializer] No files found to index. Check excludePatterns and file extensions.');
         return;
       }
 
       await this.indexFilesInBackground(allFiles);
       statsManager.recordFullIndex();
     } catch (error) {
-      connection.console.error(`[ServerInitializer] Error performing full background indexing: ${error}`);
+      logger.error(`[ServerInitializer] Error performing full background indexing: ${error}`);
       if (error instanceof Error) {
-        connection.console.error(`[ServerInitializer] Stack trace: ${error.stack}`);
+        logger.error(`[ServerInitializer] Stack trace: ${error.stack}`);
       }
       throw error;
     }
@@ -502,7 +505,7 @@ export class ServerInitializer {
    * Index files in background with worker pool.
    */
   private async indexFilesInBackground(files: string[]): Promise<void> {
-    const { connection, backgroundIndex, profiler, statsManager, configManager, fileSystem } = this.deps;
+    const { connection, backgroundIndex, profiler, statsManager, configManager, fileSystem, logger } = this.deps;
 
     if (files.length === 0) {
       return;
@@ -547,9 +550,9 @@ export class ServerInitializer {
       // Simple auto-tuning based on performance
       this.autoTuneIndexing(fullIndexDuration, files.length);
     } catch (error) {
-      connection.console.error(`[ServerInitializer] Error in background indexing: ${error}`);
+      logger.error(`[ServerInitializer] Error in background indexing: ${error}`);
       if (error instanceof Error) {
-        connection.console.error(`[ServerInitializer] Stack trace: ${error.stack}`);
+        logger.error(`[ServerInitializer] Stack trace: ${error.stack}`);
       }
       throw error;
     }
@@ -584,7 +587,7 @@ export class ServerInitializer {
    * Load metadata from disk.
    */
   private async loadMetadata(): Promise<IndexMetadata> {
-    const { connection, configManager, folderHasher, fileSystem } = this.deps;
+    const { connection, configManager, folderHasher, fileSystem, logger } = this.deps;
 
     try {
       const metadataPath = path.join(this.workspaceRoot, configManager.getConfig().cacheDirectory, 'metadata.json');
@@ -605,7 +608,7 @@ export class ServerInitializer {
         }
       }
     } catch (error) {
-      connection.console.error(`[ServerInitializer] Error loading metadata: ${error}`);
+      logger.error(`[ServerInitializer] Error loading metadata: ${error}`);
     }
     return { version: 1, lastUpdatedAt: 0 };
   }
@@ -614,7 +617,7 @@ export class ServerInitializer {
    * Save metadata to disk.
    */
   private async saveMetadata(metadata: IndexMetadata): Promise<void> {
-    const { connection, configManager, folderHasher, fileSystem } = this.deps;
+    const { connection, configManager, folderHasher, fileSystem, logger } = this.deps;
 
     try {
       const metadataPath = path.join(this.workspaceRoot, configManager.getConfig().cacheDirectory, 'metadata.json');
@@ -628,7 +631,7 @@ export class ServerInitializer {
       await fileSystem.writeFile(metadataPath, JSON.stringify(extendedMetadata, null, 2));
       connection.console.info(`[ServerInitializer] Saved metadata with ${Object.keys(extendedMetadata.folderHashes).length} folder hashes`);
     } catch (error) {
-      connection.console.error(`[ServerInitializer] Error saving metadata: ${error}`);
+      logger.error(`[ServerInitializer] Error saving metadata: ${error}`);
     }
   }
 

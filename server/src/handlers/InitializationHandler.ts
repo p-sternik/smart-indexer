@@ -54,7 +54,7 @@ export class InitializationHandler implements IHandler {
    * This is the first message from the client - negotiates capabilities.
    */
   private async handleInitialize(params: InitializeParams): Promise<InitializeResult> {
-    const { connection } = this.services;
+    const { connection, logger } = this.services;
     
     try {
       connection.console.info('[Server] ========== INITIALIZATION START ==========');
@@ -78,7 +78,7 @@ export class InitializationHandler implements IHandler {
         connection.console.info(`[Server] Initialization options received: ${JSON.stringify(params.initializationOptions, null, 2)}`);
         this.services.configManager.updateFromInitializationOptions(params.initializationOptions);
       } else {
-        connection.console.warn('[Server] No initialization options provided');
+        logger.warn('[Server] No initialization options provided');
       }
 
       // Determine workspace root
@@ -127,7 +127,7 @@ export class InitializationHandler implements IHandler {
       connection.console.info('[Server] ========== INITIALIZATION COMPLETE ==========');
       return result;
     } catch (error) {
-      connection.console.error(`[Server] Error during initialization: ${error}`);
+      logger.error(`[Server] Error during initialization: ${error}`);
       throw error;
     }
   }
@@ -138,7 +138,7 @@ export class InitializationHandler implements IHandler {
    * Safe to start background work here.
    */
   private async handleInitialized(): Promise<void> {
-    const { connection } = this.services;
+    const { connection, logger } = this.services;
     
     try {
       connection.console.info('[Server] ========== ON INITIALIZED FIRED ==========');
@@ -164,9 +164,9 @@ export class InitializationHandler implements IHandler {
       await this.initializeIndexing();
       connection.console.info('[Server] ========== INDEXING INITIALIZATION COMPLETE ==========');
     } catch (error) {
-      connection.console.error(`[Server] Fatal error in onInitialized: ${error}`);
+      logger.error(`[Server] Fatal error in onInitialized: ${error}`);
       if (error instanceof Error) {
-        connection.console.error(`[Server] Stack trace: ${error.stack}`);
+        logger.error(`[Server] Stack trace: ${error.stack}`);
       }
       connection.window.showErrorMessage(`Smart Indexer initialization failed: ${error}`);
     }
@@ -176,7 +176,7 @@ export class InitializationHandler implements IHandler {
    * Extract workspace root from initialization params.
    */
   private extractWorkspaceRoot(params: InitializeParams): string {
-    const { connection } = this.services;
+    const { connection, logger } = this.services;
     
     if (params.workspaceFolders && params.workspaceFolders.length > 0) {
       connection.console.info(`[Server] Workspace folders (${params.workspaceFolders.length}):`);
@@ -194,7 +194,7 @@ export class InitializationHandler implements IHandler {
       connection.console.info(`[Server] Using rootPath: ${params.rootPath}`);
       return params.rootPath;
     } else {
-      connection.console.warn('[Server] No workspace root found - indexing will be disabled');
+      logger.warn('[Server] No workspace root found - indexing will be disabled');
       return '';
     }
   }
@@ -203,7 +203,7 @@ export class InitializationHandler implements IHandler {
    * Load static index if enabled in configuration.
    */
   private async loadStaticIndexIfEnabled(): Promise<void> {
-    const { connection, configManager, mergedIndex, statsManager } = this.services;
+    const { connection, configManager, mergedIndex, statsManager, logger } = this.services;
     const config = configManager.getConfig();
     
     if (!config.staticIndexEnabled || !config.staticIndexPath) {
@@ -232,8 +232,8 @@ export class InitializationHandler implements IHandler {
       
       connection.console.info(`[Server] Static index loaded: ${stats.files} files, ${stats.symbols} symbols in ${Date.now() - start} ms`);
     } catch (error) {
-      connection.console.warn(`[Server] Failed to load static index: ${error}`);
-      connection.console.warn('[Server] Continuing without static index');
+      logger.warn(`[Server] Failed to load static index: ${error}`);
+      logger.warn('[Server] Continuing without static index');
       this.state.staticIndex = undefined;
       mergedIndex.setStaticIndex(undefined);
     }
@@ -250,12 +250,13 @@ export class InitializationHandler implements IHandler {
       dynamicIndex, 
       backgroundIndex,
       documents,
-      statsManager
+      statsManager,
+      logger
     } = this.services;
     const { languageRouter, fileScanner, gitWatcher, folderHasher } = this.services.infrastructure;
     
     if (!this.state.workspaceRoot) {
-      connection.console.warn('[Server] No workspace root found, skipping indexing');
+      logger.warn('[Server] No workspace root found, skipping indexing');
       return;
     }
 
@@ -334,7 +335,7 @@ export class InitializationHandler implements IHandler {
               
               this.updateStats();
             } catch (error) {
-              connection.console.error(`[Server] Error handling git changes: ${error}`);
+              logger.error(`[Server] Error handling git changes: ${error}`);
             }
           });
         } else {
@@ -359,14 +360,15 @@ export class InitializationHandler implements IHandler {
         backgroundIndex,
         configManager,
         this.state.workspaceRoot,
+        logger,
         600 // 600ms debounce delay
       );
       await this.state.fileWatcher.init();
       connection.console.info('[Server] Live file synchronization enabled');
     } catch (error) {
-      connection.console.error(`[Server] Error initializing indexing: ${error}`);
+      logger.error(`[Server] Error initializing indexing: ${error}`);
       if (error instanceof Error) {
-        connection.console.error(`[Server] Stack trace: ${error.stack}`);
+        logger.error(`[Server] Stack trace: ${error.stack}`);
       }
     }
   }
@@ -375,7 +377,7 @@ export class InitializationHandler implements IHandler {
    * Perform git-aware incremental indexing.
    */
   private async performGitAwareIndexing(): Promise<void> {
-    const { connection, backgroundIndex, statsManager, profiler } = this.services;
+    const { connection, backgroundIndex, statsManager, profiler, logger } = this.services;
     const { gitWatcher } = this.services.infrastructure;
     
     try {
@@ -434,7 +436,7 @@ export class InitializationHandler implements IHandler {
         }
       }
     } catch (error) {
-      connection.console.error(`[Server] Error in git-aware indexing: ${error}`);
+      logger.error(`[Server] Error in git-aware indexing: ${error}`);
       throw error;
     }
   }
@@ -443,11 +445,11 @@ export class InitializationHandler implements IHandler {
    * Perform full background indexing of the workspace.
    */
   private async performFullBackgroundIndexing(): Promise<void> {
-    const { connection, statsManager } = this.services;
+    const { connection, statsManager, logger } = this.services;
     const { fileScanner } = this.services.infrastructure;
     
     if (!this.state.workspaceRoot) {
-      connection.console.warn('[Server] No workspace root available - cannot perform full indexing');
+      logger.warn('[Server] No workspace root available - cannot perform full indexing');
       return;
     }
 
@@ -457,16 +459,16 @@ export class InitializationHandler implements IHandler {
       connection.console.info(`[Server] File scanner discovered ${allFiles.length} indexable files`);
       
       if (allFiles.length === 0) {
-        connection.console.warn('[Server] No files found to index. Check excludePatterns and file extensions.');
+        logger.warn('[Server] No files found to index. Check excludePatterns and file extensions.');
         return;
       }
 
       await this.indexFilesInBackground(allFiles);
       statsManager.recordFullIndex();
     } catch (error) {
-      connection.console.error(`[Server] Error performing full background indexing: ${error}`);
+      logger.error(`[Server] Error performing full background indexing: ${error}`);
       if (error instanceof Error) {
-        connection.console.error(`[Server] Stack trace: ${error.stack}`);
+        logger.error(`[Server] Stack trace: ${error.stack}`);
       }
       throw error;
     }
@@ -480,7 +482,7 @@ export class InitializationHandler implements IHandler {
       return;
     }
 
-    const { connection, backgroundIndex, configManager, profiler, statsManager } = this.services;
+    const { connection, backgroundIndex, configManager, profiler, statsManager, logger } = this.services;
 
     connection.console.info(`[Server] ========== BACKGROUND INDEXING START ==========`);
     connection.console.info(`[Server] Indexing ${files.length} files in background...`);
@@ -524,9 +526,9 @@ export class InitializationHandler implements IHandler {
       // Simple auto-tuning based on performance
       this.autoTuneIndexing(fullIndexDuration, files.length);
     } catch (error) {
-      connection.console.error(`[Server] Error in background indexing: ${error}`);
+      logger.error(`[Server] Error in background indexing: ${error}`);
       if (error instanceof Error) {
-        connection.console.error(`[Server] Stack trace: ${error.stack}`);
+        logger.error(`[Server] Stack trace: ${error.stack}`);
       }
       throw error;
     }
@@ -578,7 +580,7 @@ export class InitializationHandler implements IHandler {
    * Uses async I/O to avoid blocking the event loop.
    */
   private async loadMetadata(): Promise<{ version: number; lastGitHash?: string; lastUpdatedAt: number; folderHashes?: Record<string, any> }> {
-    const { connection, configManager } = this.services;
+    const { connection, configManager, logger } = this.services;
     const { folderHasher } = this.services.infrastructure;
     
     try {
@@ -603,7 +605,7 @@ export class InitializationHandler implements IHandler {
         throw readError;
       }
     } catch (error) {
-      connection.console.error(`[Server] Error loading metadata: ${error}`);
+      logger.error(`[Server] Error loading metadata: ${error}`);
     }
     return { version: 1, lastUpdatedAt: 0 };
   }
@@ -613,7 +615,7 @@ export class InitializationHandler implements IHandler {
    * Uses async I/O to avoid blocking the event loop.
    */
   private async saveMetadata(metadata: { version: number; lastGitHash?: string; lastUpdatedAt: number }): Promise<void> {
-    const { connection, configManager } = this.services;
+    const { connection, configManager, logger } = this.services;
     const { folderHasher } = this.services.infrastructure;
     
     try {
@@ -632,7 +634,7 @@ export class InitializationHandler implements IHandler {
       await fsPromises.writeFile(metadataPath, JSON.stringify(extendedMetadata, null, 2), 'utf-8');
       connection.console.info(`[Server] Saved metadata with ${Object.keys(extendedMetadata.folderHashes).length} folder hashes`);
     } catch (error) {
-      connection.console.error(`[Server] Error saving metadata: ${error}`);
+      logger.error(`[Server] Error saving metadata: ${error}`);
     }
   }
 

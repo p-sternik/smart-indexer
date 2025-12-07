@@ -283,7 +283,6 @@ export class HybridResolver {
 
       return { symbols };
     } catch (error) {
-      console.error(`[HybridResolver] TypeScript fallback error: ${error}`);
       return { symbols: [] };
     }
   }
@@ -339,7 +338,6 @@ export class HybridResolver {
         filePath: fileName
       };
     } catch (error) {
-      console.error(`[HybridResolver] Error converting TS result: ${error}`);
       return null;
     }
   }

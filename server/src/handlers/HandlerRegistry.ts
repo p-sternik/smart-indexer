@@ -50,7 +50,7 @@ export class HandlerRegistry {
     const handler = factory(this.services, this.state);
     
     if (this.handlers.has(handler.name)) {
-      this.services.connection.console.warn(
+      this.services.logger.warn(
         `[HandlerRegistry] Handler "${handler.name}" already registered, replacing...`
       );
     }
@@ -109,7 +109,7 @@ export class HandlerRegistry {
       if (handler.dispose) {
         disposePromises.push(
           handler.dispose().catch((error) => {
-            this.services.connection.console.error(
+            this.services.logger.error(
               `[HandlerRegistry] Error disposing handler "${name}": ${error}`
             );
           })

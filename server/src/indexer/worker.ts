@@ -907,8 +907,7 @@ function traverseAST(
       }
     }
   } catch (error) {
-    console.error(`[Worker] Error traversing AST node in ${uri}: ${error}`);
-  }
+    }
 }
 
 function extractCodeSymbolsAndReferences(uri: string, content: string): {
@@ -939,7 +938,6 @@ function extractCodeSymbolsAndReferences(uri: string, content: string): {
     return { symbols, references, imports, reExports, pendingReferences };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`[Worker] Error parsing code file ${uri}: ${errorMessage}`);
     return { symbols, references, imports: [], reExports: [], pendingReferences, parseError: errorMessage };
   }
 }
@@ -983,8 +981,7 @@ function extractTextSymbols(uri: string, content: string): IndexedSymbol[] {
       }
     }
   } catch (error) {
-    console.error(`[Worker] Error extracting text symbols from ${uri}: ${error}`);
-  }
+    }
 
   return symbols;
 }
@@ -1019,7 +1016,6 @@ export async function processFileContent(
   try {
     fileContent = content ?? await fsPromises.readFile(uri, 'utf-8');
   } catch (error: any) {
-    console.warn(`[Worker] File read failed for ${uri}: ${error.message}`);
     return {
       uri,
       hash: '',
@@ -1117,7 +1113,6 @@ function extractCodeSymbolsAndReferencesWithPlugins(
     return { symbols, references, imports, reExports, pendingReferences };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`[Worker] Error parsing code file ${uri}: ${errorMessage}`);
     return { symbols, references, imports: [], reExports: [], pendingReferences, parseError: errorMessage };
   }
 }

@@ -73,14 +73,14 @@ export class CompletionHandler implements IHandler {
     const { line, character } = params.position;
     const start = Date.now();
     
-    const { connection, documents, mergedIndex } = this.services;
+    const { connection, documents, mergedIndex, profiler, statsManager, logger } = this.services;
     
-    connection.console.log(`[Server] Completion request: ${uri}:${line}:${character}`);
+    logger.info(`[Server] Completion request: ${uri}:${line}:${character}`);
     
     try {
       const document = documents.get(params.textDocument.uri);
       if (!document) {
-        connection.console.log(`[Server] Completion result: document not found, 0 items, 0 ms`);
+        logger.info(`[Server] Completion result: document not found, 0 items, 0 ms`);
         return [];
       }
 
@@ -127,11 +127,11 @@ export class CompletionHandler implements IHandler {
       }
 
       const duration = Date.now() - start;
-      connection.console.log(`[Server] Completion result: prefix="${prefix}", ${items.length} items in ${duration} ms`);
+      logger.info(`[Server] Completion result: prefix="${prefix}", ${items.length} items in ${duration} ms`);
       return items;
     } catch (error) {
       const duration = Date.now() - start;
-      connection.console.error(`[Server] Completion error: ${error}, ${duration} ms`);
+      logger.error(`[Server] Completion error: ${error}, ${duration} ms`);
       return [];
     }
   }
@@ -142,7 +142,7 @@ export class CompletionHandler implements IHandler {
    * This is where we add expensive documentation.
    */
   async resolveCompletionItem(item: CompletionItem): Promise<CompletionItem> {
-    const { connection, mergedIndex } = this.services;
+    const { connection, mergedIndex, logger } = this.services;
     const start = Date.now();
     
     try {
@@ -151,7 +151,7 @@ export class CompletionHandler implements IHandler {
         return item;
       }
 
-      connection.console.log(`[Server] Completion resolve: ${data.name}`);
+      logger.info(`[Server] Completion resolve: ${data.name}`);
 
       // Build documentation
       const documentation = this.buildDocumentation(data);
@@ -169,11 +169,11 @@ export class CompletionHandler implements IHandler {
       item.filterText = data.name;
 
       const duration = Date.now() - start;
-      connection.console.log(`[Server] Completion resolve complete: ${data.name} in ${duration} ms`);
+      logger.info(`[Server] Completion resolve complete: ${data.name} in ${duration} ms`);
       
       return item;
     } catch (error) {
-      connection.console.error(`[Server] Completion resolve error: ${error}`);
+      logger.error(`[Server] Completion resolve error: ${error}`);
       return item;
     }
   }

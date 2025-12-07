@@ -250,7 +250,6 @@ export class NgRxLinkResolver {
             // CRITICAL: Use getFileNoLock to avoid nested lock acquisition
             const shard = await this.storage.getFileNoLock(uri);
             if (!shard) {
-              console.warn(`[NgRxLinkResolver] Step 3: Shard not found for ${uri}`);
               return false;
             }
             
@@ -293,7 +292,6 @@ export class NgRxLinkResolver {
         }
         console.info(`[NgRxLinkResolver] Step 3 done ${processedCount}/${totalUpdates}: ${uri}`);
       } catch (error) {
-        console.error(`[NgRxLinkResolver] Step 3 FAILED for ${uri}: ${error}`);
         // Continue processing other files even if one fails
       }
     }

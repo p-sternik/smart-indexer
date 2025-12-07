@@ -47,14 +47,14 @@ export class ReferencesHandler implements IHandler {
     const { line, character } = params.position;
     const start = Date.now();
     
-    const { connection, documents, mergedIndex, profiler, statsManager } = this.services;
+    const { connection, documents, mergedIndex, profiler, statsManager, logger } = this.services;
     
-    connection.console.log(`[Server] References request: ${uri}:${line}:${character}`);
+    logger.info(`[Server] References request: ${uri}:${line}:${character}`);
     
     try {
       const document = documents.get(params.textDocument.uri);
       if (!document) {
-        connection.console.log(`[Server] References result: document not found, 0 ms`);
+        logger.info(`[Server] References result: document not found, 0 ms`);
         return null;
       }
 
@@ -64,14 +64,14 @@ export class ReferencesHandler implements IHandler {
       const symbolAtCursor = findSymbolAtPosition(uri, text, line, character);
       
       if (symbolAtCursor) {
-        connection.console.log(
+        logger.info(
           `[Server] Resolved symbol: name="${symbolAtCursor.name}", kind="${symbolAtCursor.kind}", ` +
           `container="${symbolAtCursor.containerName || '<none>'}", isStatic=${symbolAtCursor.isStatic}`
         );
 
         // Query actual references (usages) instead of definitions
         const references = await mergedIndex.findReferencesByName(symbolAtCursor.name);
-        connection.console.log(`[Server] Found ${references.length} references by name`);
+        logger.info(`[Server] Found ${references.length} references by name`);
 
         // Filter references to match the exact symbol (by container if available)
         let filtered = references;
@@ -96,7 +96,7 @@ export class ReferencesHandler implements IHandler {
           return !definitionLocations.has(key);
         });
 
-        connection.console.log(`[Server] Filtered to ${filtered.length} references (after removing definitions)`);
+        logger.info(`[Server] Filtered to ${filtered.length} references (after removing definitions)`);
 
         // Also include the definition itself if requested
         if (params.context.includeDeclaration) {
@@ -129,7 +129,7 @@ export class ReferencesHandler implements IHandler {
           return true;
         });
 
-        connection.console.log(`[Server] Deduplicated to ${deduplicated.length} unique references`);
+        logger.info(`[Server] Deduplicated to ${deduplicated.length} unique references`);
 
         const results = deduplicated.map(ref => ({
           uri: URI.file(ref.location.uri).toString(),
@@ -143,7 +143,7 @@ export class ReferencesHandler implements IHandler {
         profiler.record('references', duration);
         statsManager.updateProfilingMetrics({ avgReferencesTimeMs: profiler.getAverageMs('references') });
 
-        connection.console.log(`[Server] References result: ${results.length} locations in ${duration} ms`);
+        logger.info(`[Server] References result: ${results.length} locations in ${duration} ms`);
         return results.length > 0 ? results : null;
       }
 
@@ -151,7 +151,7 @@ export class ReferencesHandler implements IHandler {
       const offset = document.offsetAt(params.position);
       const wordRange = getWordRangeAtPosition(text, offset);
       if (!wordRange) {
-        connection.console.log(`[Server] References result: no word at position, ${Date.now() - start} ms`);
+        logger.info(`[Server] References result: no word at position, ${Date.now() - start} ms`);
         return null;
       }
 
@@ -181,11 +181,11 @@ export class ReferencesHandler implements IHandler {
       profiler.record('references', duration);
       statsManager.updateProfilingMetrics({ avgReferencesTimeMs: profiler.getAverageMs('references') });
 
-      connection.console.log(`[Server] References result (fallback): symbol="${word}", ${dedupedRefs.length} locations in ${duration} ms`);
+      logger.info(`[Server] References result (fallback): symbol="${word}", ${dedupedRefs.length} locations in ${duration} ms`);
       return results;
     } catch (error) {
       const duration = Date.now() - start;
-      connection.console.error(`[Server] References error: ${error}, ${duration} ms`);
+      logger.error(`[Server] References error: ${error}, ${duration} ms`);
       return null;
     }
   }

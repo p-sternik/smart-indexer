@@ -119,7 +119,7 @@ export class FileScanner {
       }
     } catch (error: any) {
       if (error.code !== 'ENOENT' && error.code !== 'EACCES') {
-        console.error(`[FileScanner] Error scanning directory ${dir}: ${error}`);
+        // Silent fail
       }
     }
   }
@@ -175,7 +175,7 @@ export class FileScanner {
       return true;
     } catch (error: any) {
       if (error.code !== 'ENOENT') {
-        console.error(`[FileScanner] Error checking file ${filePath}: ${error}`);
+        // Silent fail
       }
       return false;
     }

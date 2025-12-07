@@ -8,6 +8,7 @@ import { TypeScriptService } from '../typescript/typeScriptService.js';
 import { StatsManager } from '../index/statsManager.js';
 import { BackgroundIndex } from '../index/backgroundIndex.js';
 import { DeadCodeHandler } from '../handlers/deadCodeHandler.js';
+import { ILogger } from '../utils/Logger.js';
 
 /**
  * Handles document lifecycle events (open, change, close).
@@ -25,6 +26,7 @@ export class DocumentEventHandler {
     private readonly configManager: ConfigurationManager,
     private readonly typeScriptService: TypeScriptService,
     private readonly statsManager: StatsManager,
+    private readonly logger: ILogger,
     private deadCodeHandler: DeadCodeHandler | null = null
   ) {}
 
@@ -90,7 +92,7 @@ export class DocumentEventHandler {
       
       this.updateStats();
     } catch (error) {
-      this.connection.console.error(`[DocumentEventHandler] Error in onDidOpen: ${error}`);
+      this.logger.error(`[DocumentEventHandler] Error in onDidOpen: ${error}`);
     }
   }
 
@@ -134,11 +136,11 @@ export class DocumentEventHandler {
           this.updateStats();
           this.connection.console.info(`[DocumentEventHandler] Dynamic index updated for: ${uri}`);
         } catch (error) {
-          this.connection.console.error(`[DocumentEventHandler] Error updating dynamic index for ${uri}: ${error}`);
+          this.logger.error(`[DocumentEventHandler] Error updating dynamic index for ${uri}: ${error}`);
         }
       }, 500);
     } catch (error) {
-      this.connection.console.error(`[DocumentEventHandler] Error in onDidChangeContent: ${error}`);
+      this.logger.error(`[DocumentEventHandler] Error in onDidChangeContent: ${error}`);
     }
   }
 
@@ -164,7 +166,7 @@ export class DocumentEventHandler {
       this.dynamicIndex.removeFile(uri);
       this.updateStats();
     } catch (error) {
-      this.connection.console.error(`[DocumentEventHandler] Error in onDidClose: ${error}`);
+      this.logger.error(`[DocumentEventHandler] Error in onDidClose: ${error}`);
     }
   }
 

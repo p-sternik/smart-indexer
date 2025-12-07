@@ -87,7 +87,7 @@ export class FolderHasher {
 
       return hash;
     } catch (error) {
-      console.error(`[FolderHasher] Error computing hash for ${folderPath}: ${error}`);
+      // Silently fail - folder hash is an optimization
       return undefined;
     }
   }

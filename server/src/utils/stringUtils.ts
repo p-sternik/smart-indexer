@@ -106,7 +106,6 @@ export function sanitizeFilePath(filePath: string): string {
   // This indicates Git's quoting was applied incorrectly or parsed wrong
   if (sanitized.includes('"')) {
     // Log for debugging
-    console.warn(`[sanitizeFilePath] Path contains embedded quotes: ${filePath}`);
     // Remove all quotes - they shouldn't be in file paths
     sanitized = sanitized.replace(/"/g, '');
   }
@@ -125,8 +124,7 @@ export function sanitizeFilePath(filePath: string): string {
       }
       sanitized = Buffer.from(bytes).toString('utf-8');
     } catch (error) {
-      console.warn(`[sanitizeFilePath] Failed to decode octal sequences in: ${filePath}`);
-    }
+      }
   }
   
   // Normalize path separators for cross-platform compatibility

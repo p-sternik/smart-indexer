@@ -10,6 +10,7 @@ import { IIndexStorage, FileIndexData, FileMetadata } from '../storage/IIndexSto
 import { NgRxLinkResolver } from './resolvers/NgRxLinkResolver.js';
 import { IndexScheduler, ProgressCallback } from './IndexScheduler.js';
 import { STORAGE_CONFIG, INDEXING_STATE, LOG_PREFIX } from '../constants.js';
+import { ILogger, NullLogger } from '../utils/Logger.js';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
@@ -49,6 +50,7 @@ export class BackgroundIndex implements ISymbolIndex {
   private referenceMap: Map<string, Set<string>> = new Map(); // symbolName -> Set of URIs containing references
   private isInitialized: boolean = false;
   private scheduler: IndexScheduler;
+  private logger: ILogger;
   
   // LRU shard cache to reduce disk I/O
   private shardCache: Map<string, FileShard> = new Map();
@@ -63,17 +65,20 @@ export class BackgroundIndex implements ISymbolIndex {
    * @param storage - Storage backend for index persistence
    * @param workerPool - Worker pool for parallel indexing (managed by IndexScheduler)
    * @param ngrxResolver - Resolver for NgRx action group references
+   * @param logger - Logger instance (optional)
    */
   constructor(
     symbolIndexer: SymbolIndexer,
     storage: IIndexStorage,
     workerPool: IWorkerPool,
-    ngrxResolver: NgRxLinkResolver
+    ngrxResolver: NgRxLinkResolver,
+    logger?: ILogger
   ) {
     this.symbolIndexer = symbolIndexer;
     this.storage = storage;
     this.ngrxResolver = ngrxResolver;
-    this.scheduler = new IndexScheduler(workerPool);
+    this.logger = logger || new NullLogger();
+    this.scheduler = new IndexScheduler(workerPool, this.logger);
   }
 
   /**
@@ -102,7 +107,7 @@ export class BackgroundIndex implements ISymbolIndex {
    * @deprecated This is now managed by IndexScheduler/WorkerPool
    */
   setMaxConcurrentJobs(max: number): void {
-    console.warn(`${LOG_PREFIX.BACKGROUND_INDEX} setMaxConcurrentJobs is deprecated - worker pool manages concurrency`);
+    this.logger.warn(`${LOG_PREFIX.BACKGROUND_INDEX} setMaxConcurrentJobs is deprecated - worker pool manages concurrency`);
   }
 
   /**
@@ -116,7 +121,7 @@ export class BackgroundIndex implements ISymbolIndex {
     // MIGRATION SAFETY: Validate shard version compatibility
     const isCompatible = await this.validateShardVersion();
     if (!isCompatible) {
-      console.warn(`${LOG_PREFIX.BACKGROUND_INDEX} Shard version mismatch detected. Current version: ${SHARD_VERSION}. Clearing incompatible cache...`);
+      this.logger.warn(`${LOG_PREFIX.BACKGROUND_INDEX} Shard version mismatch detected. Current version: ${SHARD_VERSION}. Clearing incompatible cache...`);
       await this.clearAllShards();
       console.info(`${LOG_PREFIX.BACKGROUND_INDEX} Cache cleared. Full re-indexing will be triggered.`);
     }
@@ -153,13 +158,13 @@ export class BackgroundIndex implements ISymbolIndex {
       // Compare shard version
       const shardVersion = shard.shardVersion || 0;
       if (shardVersion !== SHARD_VERSION) {
-        console.warn(`${LOG_PREFIX.BACKGROUND_INDEX} Version mismatch: shard has ${shardVersion}, expected ${SHARD_VERSION}`);
+        this.logger.warn(`${LOG_PREFIX.BACKGROUND_INDEX} Version mismatch: shard has ${shardVersion}, expected ${SHARD_VERSION}`);
         return false;
       }
       
       return true;
     } catch (error) {
-      console.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error validating shard version: ${error}`);
+      this.logger.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error validating shard version: ${error}`);
       // On error, assume incompatible to be safe
       return false;
     }
@@ -185,7 +190,7 @@ export class BackgroundIndex implements ISymbolIndex {
       
       console.info(`${LOG_PREFIX.BACKGROUND_INDEX} All shards cleared successfully`);
     } catch (error) {
-      console.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error clearing shards: ${error}`);
+      this.logger.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error clearing shards: ${error}`);
       throw error;
     }
   }
@@ -209,7 +214,7 @@ export class BackgroundIndex implements ISymbolIndex {
       // Fallback: scan all shards (O(N) startup)
       await this.loadFromShardScan();
     } catch (error) {
-      console.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error loading shard metadata: ${error}`);
+      this.logger.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error loading shard metadata: ${error}`);
     }
   }
 
@@ -279,7 +284,7 @@ export class BackgroundIndex implements ISymbolIndex {
 
           loadedShards++;
         } catch (error) {
-          console.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error loading shard for ${entry.uri}: ${error}`);
+          this.logger.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error loading shard for ${entry.uri}: ${error}`);
         }
       }));
       
@@ -374,7 +379,7 @@ export class BackgroundIndex implements ISymbolIndex {
 
           loadedShards++;
         } catch (error) {
-          console.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error loading shard ${uri}: ${error}`);
+          this.logger.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error loading shard ${uri}: ${error}`);
         }
       }));
       
@@ -461,7 +466,7 @@ export class BackgroundIndex implements ISymbolIndex {
         const stats = await fsPromises.stat(uri);
         mtime = stats.mtimeMs;
       } catch (error) {
-        console.warn(`${LOG_PREFIX.BACKGROUND_INDEX} Could not get mtime for ${uri}: ${error}`);
+        this.logger.warn(`${LOG_PREFIX.BACKGROUND_INDEX} Could not get mtime for ${uri}: ${error}`);
       }
 
       const shard: FileShard = {
@@ -641,7 +646,7 @@ export class BackgroundIndex implements ISymbolIndex {
         
         if (!matchedMember) {
           // Debug logging when match fails
-          console.log(`${LOG_PREFIX.BACKGROUND_INDEX} NgRx link failed: ${pending.container}.${pending.member} not found in events:`, Object.keys(events));
+          this.logger.info(`${LOG_PREFIX.BACKGROUND_INDEX} NgRx link failed: ${pending.container}.${pending.member} not found in events:`, Object.keys(events));
           continue;
         }
 
@@ -1230,7 +1235,7 @@ export class BackgroundIndex implements ISymbolIndex {
       // Compact maps to reclaim memory from deleted entries
       this.compact();
     } catch (error) {
-      console.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error clearing shards: ${error}`);
+      this.logger.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error clearing shards: ${error}`);
       throw error;
     }
   }

@@ -90,7 +90,7 @@ export class ImportResolver {
 
       console.info(`[ImportResolver] Loaded tsconfig.json: baseUrl=${this.baseUrl}, ${this.pathMappings.length} path mappings`);
     } catch (error) {
-      console.warn(`[ImportResolver] Error loading tsconfig.json: ${error}`);
+      // Silent fail - tsconfig is optional
     }
   }
 

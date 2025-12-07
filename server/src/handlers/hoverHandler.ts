@@ -48,7 +48,7 @@ export class HoverHandler implements IHandler {
     const uri = URI.parse(params.textDocument.uri).fsPath;
     const { line, character } = params.position;
     
-    const { connection, documents, mergedIndex } = this.services;
+    const { connection, documents, mergedIndex, logger } = this.services;
     
     try {
       const document = documents.get(params.textDocument.uri);
@@ -84,7 +84,7 @@ export class HoverHandler implements IHandler {
         }
       };
     } catch (error) {
-      connection.console.error(`[HoverHandler] Error: ${error}`);
+      logger.error(`[HoverHandler] Error: ${error}`);
       return null;
     }
   }

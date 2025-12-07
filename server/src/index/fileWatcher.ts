@@ -2,6 +2,7 @@ import { Connection, TextDocuments } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { BackgroundIndex } from './backgroundIndex.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
+import { ILogger } from '../utils/Logger.js';
 import { URI } from 'vscode-uri';
 import * as chokidar from 'chokidar';
 import * as path from 'path';
@@ -22,6 +23,7 @@ export class FileWatcher {
   private backgroundIndex: BackgroundIndex;
   private configManager: ConfigurationManager;
   private workspaceRoot: string;
+  private logger: ILogger;
   
   // Per-file debounce timers
   private debounceMap: Map<string, NodeJS.Timeout> = new Map();
@@ -39,6 +41,7 @@ export class FileWatcher {
     backgroundIndex: BackgroundIndex,
     configManager: ConfigurationManager,
     workspaceRoot: string,
+    logger: ILogger,
     debounceDelayMs: number = 600
   ) {
     this.connection = connection;
@@ -46,6 +49,7 @@ export class FileWatcher {
     this.backgroundIndex = backgroundIndex;
     this.configManager = configManager;
     this.workspaceRoot = workspaceRoot;
+    this.logger = logger;
     this.debounceDelayMs = debounceDelayMs;
   }
 
@@ -120,7 +124,7 @@ export class FileWatcher {
 
       this.connection.console.info('[FileWatcher] External file system watcher (chokidar) initialized');
     } catch (error) {
-      this.connection.console.error(`[FileWatcher] Error setting up file system watcher: ${error}`);
+      this.logger.error(`[FileWatcher] Error setting up file system watcher: ${error}`);
     }
   }
 
@@ -138,7 +142,7 @@ export class FileWatcher {
       // Don't log every keystroke, only when scheduling
       this.scheduleReindex(uri, 'document-change');
     } catch (error) {
-      this.connection.console.error(`[FileWatcher] Error in onDocumentChanged: ${error}`);
+      this.logger.error(`[FileWatcher] Error in onDocumentChanged: ${error}`);
     }
   }
 
@@ -160,10 +164,10 @@ export class FileWatcher {
       
       // Trigger immediate re-index on save (user explicitly saved, so update cache)
       this.reindexFile(uri, 'file-saved').catch(error => {
-        this.connection.console.error(`[FileWatcher] Error re-indexing saved file ${uri}: ${error}`);
+        this.logger.error(`[FileWatcher] Error re-indexing saved file ${uri}: ${error}`);
       });
     } catch (error) {
-      this.connection.console.error(`[FileWatcher] Error in onDocumentSaved: ${error}`);
+      this.logger.error(`[FileWatcher] Error in onDocumentSaved: ${error}`);
     }
   }
 
@@ -184,7 +188,7 @@ export class FileWatcher {
         `[FileWatcher] Debounce timer fired for ${path.basename(filePath)} (trigger: ${trigger})`
       );
       this.reindexFile(filePath, trigger).catch(error => {
-        this.connection.console.error(`[FileWatcher] Error re-indexing file ${filePath}: ${error}`);
+        this.logger.error(`[FileWatcher] Error re-indexing file ${filePath}: ${error}`);
       });
     }, this.debounceDelayMs);
     
@@ -213,7 +217,7 @@ export class FileWatcher {
   private async reindexFile(filePath: string, trigger: string): Promise<void> {
     // Prevent duplicate indexing jobs for the same file
     if (this.indexingInProgress.has(filePath)) {
-      this.connection.console.warn(
+      this.logger.warn(
         `[FileWatcher] Skipping re-index of ${path.basename(filePath)} - already in progress`
       );
       return;
@@ -252,7 +256,7 @@ export class FileWatcher {
         `[FileWatcher] Removed deleted file from index: ${path.basename(filePath)}`
       );
     } catch (error) {
-      this.connection.console.error(`[FileWatcher] Error handling file deletion ${filePath}: ${error}`);
+      this.logger.error(`[FileWatcher] Error handling file deletion ${filePath}: ${error}`);
     }
   }
 

@@ -62,7 +62,6 @@ export class TextIndexer {
 
       return { uri, hash, symbols, references: [], imports: [] };
     } catch (error) {
-      console.error(`[TextIndexer] Error indexing file ${uri}: ${error}`);
       return {
         uri,
         hash: this.computeHash(content || ''),

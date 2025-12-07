@@ -63,7 +63,7 @@ export class RenameHandler implements IHandler {
     const uri = URI.parse(params.textDocument.uri).fsPath;
     const { line, character } = params.position;
     
-    const { connection, documents, mergedIndex } = this.services;
+    const { connection, documents, mergedIndex, logger } = this.services;
     
     try {
       const document = documents.get(params.textDocument.uri);
@@ -114,7 +114,7 @@ export class RenameHandler implements IHandler {
         placeholder: symbolAtCursor.name
       };
     } catch (error) {
-      connection.console.error(`[RenameHandler] Error in prepareRename: ${error}`);
+      logger.error(`[RenameHandler] Error in prepareRename: ${error}`);
       return new ResponseError(
         ErrorCodes.InternalError,
         `Failed to prepare rename: ${error}`
@@ -131,9 +131,9 @@ export class RenameHandler implements IHandler {
     const { line, character } = params.position;
     const newName = params.newName;
     
-    const { connection, documents, mergedIndex } = this.services;
+    const { connection, documents, mergedIndex, logger } = this.services;
     
-    connection.console.log(`[RenameHandler] Rename request: ${uri}:${line}:${character} -> "${newName}"`);
+    logger.info(`[RenameHandler] Rename request: ${uri}:${line}:${character} -> "${newName}"`);
     
     try {
       const document = documents.get(params.textDocument.uri);
@@ -146,14 +146,14 @@ export class RenameHandler implements IHandler {
       // Find the symbol at the cursor position
       const symbolAtCursor = findSymbolAtPosition(uri, text, line, character);
       if (!symbolAtCursor) {
-        connection.console.log('[RenameHandler] No symbol found at cursor');
+        logger.info('[RenameHandler] No symbol found at cursor');
         return null;
       }
 
       // Look up the symbol definition
       const definitions = await mergedIndex.findDefinitions(symbolAtCursor.name);
       if (definitions.length === 0) {
-        connection.console.log('[RenameHandler] Symbol not found in index');
+        logger.info('[RenameHandler] Symbol not found in index');
         return null;
       }
 
@@ -162,7 +162,7 @@ export class RenameHandler implements IHandler {
       // Find all references to the symbol
       const references = await mergedIndex.findReferencesByName(symbolAtCursor.name);
       
-      connection.console.log(
+      logger.info(
         `[RenameHandler] Found ${references.length} references to "${symbolAtCursor.name}"`
       );
 
@@ -171,7 +171,7 @@ export class RenameHandler implements IHandler {
 
       return workspaceEdit;
     } catch (error) {
-      connection.console.error(`[RenameHandler] Error: ${error}`);
+      logger.error(`[RenameHandler] Error: ${error}`);
       return null;
     }
   }

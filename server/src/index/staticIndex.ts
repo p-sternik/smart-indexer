@@ -36,7 +36,6 @@ export class StaticIndex implements ISymbolIndex {
       this.buildIndices();
       this.isLoaded = true;
     } catch (error) {
-      console.error(`[StaticIndex] Error loading index: ${error}`);
       throw error;
     }
   }
@@ -73,7 +72,6 @@ export class StaticIndex implements ISymbolIndex {
           }
           return [];
         } catch (error) {
-          console.error(`[StaticIndex] Error loading ${filePath}: ${error}`);
           return [];
         }
       });

@@ -22,6 +22,7 @@ import { StatsManager } from '../index/statsManager.js';
 import { FolderHasher } from '../cache/folderHasher.js';
 import { DeadCodeDetector } from '../features/deadCode.js';
 import { FileWatcher } from '../index/fileWatcher.js';
+import { ILogger } from '../utils/Logger.js';
 
 /**
  * Core services shared across all handlers.
@@ -93,6 +94,8 @@ export interface MonitoringServices {
 export interface ServerServices extends CoreServices, IndexServices, ResolutionServices, MonitoringServices {
   /** Workspace root path */
   workspaceRoot: string;
+  /** Unified logger service */
+  logger: ILogger;
   /** Indexing infrastructure */
   infrastructure: IndexingInfrastructure;
   /** File watcher for live sync */

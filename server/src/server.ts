@@ -37,6 +37,7 @@ import { Profiler } from './profiler/profiler.js';
 import { FolderHasher } from './cache/folderHasher.js';
 import { RankingContext } from './utils/fuzzySearch.js';
 import { TypeScriptService } from './typescript/typeScriptService.js';
+import { LoggerService, LogLevel } from './utils/Logger.js';
 import { URI } from 'vscode-uri';
 import * as path from 'path';
 
@@ -72,6 +73,9 @@ import {
 const connection = createConnection(ProposedFeatures.all);
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 
+// Unified logger (replaces scattered console.log/connection.console.log calls)
+const logger = new LoggerService(connection, LogLevel.INFO);
+
 // Core services
 const configManager = new ConfigurationManager();
 const gitWatcher = new GitWatcher();
@@ -86,12 +90,12 @@ const fileSystem = new FileSystemService();
 // Infrastructure components (injected into BackgroundIndex)
 const storage = new SqlJsStorage(2000); // Auto-save every 2 seconds
 const workerScriptPath = path.join(__dirname, 'indexer', 'worker.js');
-const workerPool = new WorkerPool(workerScriptPath, 4);
+const workerPool = new WorkerPool(workerScriptPath, 4, logger);
 const ngrxResolver = new NgRxLinkResolver(storage);
 
 // Index architecture (clangd-inspired 3-tier)
 const dynamicIndex = new DynamicIndex(symbolIndexer);
-const backgroundIndex = new BackgroundIndex(symbolIndexer, storage, workerPool, ngrxResolver);
+const backgroundIndex = new BackgroundIndex(symbolIndexer, storage, workerPool, ngrxResolver, logger);
 const mergedIndex = new MergedIndex(dynamicIndex, backgroundIndex);
 const statsManager = new StatsManager();
 
@@ -113,7 +117,8 @@ const serverDeps = {
   gitWatcher,
   folderHasher,
   profiler,
-  fileSystem
+  fileSystem,
+  logger
 };
 
 const serverInitializer = new ServerInitializer(serverDeps);
@@ -159,6 +164,7 @@ const serverServices: ServerServices = {
   profiler,
   statsManager,
   workspaceRoot: '',
+  logger,
   infrastructure: {
     languageRouter,
     fileScanner,
@@ -216,7 +222,8 @@ connection.onInitialized(async () => {
     backgroundIndex,
     configManager,
     typeScriptService,
-    statsManager
+    statsManager,
+    logger
   );
   
   // Register DeadCodeHandler now that detector is ready
@@ -249,7 +256,7 @@ connection.onDidChangeConfiguration(change => {
       connection.console.info('[Server] Configuration updated and applied');
     }
   } catch (error) {
-    connection.console.error(`[Server] Error updating configuration: ${error}`);
+    logger.error(`[Server] Error updating configuration: ${error}`);
   }
 });
 
@@ -262,11 +269,11 @@ connection.onWorkspaceSymbol(
     const start = Date.now();
     const query = params.query;
     
-    connection.console.log(`[Server] WorkspaceSymbol request: query="${query}"`);
+    logger.info(`[Server] WorkspaceSymbol request: query="${query}"`);
     
     try {
       if (!query) {
-        connection.console.log(`[Server] WorkspaceSymbol result: empty query, 0 results, ${Date.now() - start} ms`);
+        logger.info(`[Server] WorkspaceSymbol result: empty query, 0 results, ${Date.now() - start} ms`);
         return [];
       }
 
@@ -299,10 +306,10 @@ connection.onWorkspaceSymbol(
         containerName: sym.containerName
       }));
 
-      connection.console.log(`[Server] WorkspaceSymbol result: query="${query}", ${results.length} symbols in ${Date.now() - start} ms`);
+      logger.info(`[Server] WorkspaceSymbol result: query="${query}", ${results.length} symbols in ${Date.now() - start} ms`);
       return results;
     } catch (error) {
-      connection.console.error(`[Server] WorkspaceSymbol error: ${error}, ${Date.now() - start} ms`);
+      logger.error(`[Server] WorkspaceSymbol error: ${error}, ${Date.now() - start} ms`);
       return [];
     }
   }
@@ -322,7 +329,7 @@ connection.onRequest('smart-indexer/rebuildIndex', async () => {
     connection.console.info(`[Server] ========== REBUILD COMPLETE ==========`);
     return stats;
   } catch (error) {
-    connection.console.error(`[Server] Error rebuilding index: ${error}`);
+    logger.error(`[Server] Error rebuilding index: ${error}`);
     throw error;
   }
 });
@@ -335,7 +342,7 @@ connection.onRequest('smart-indexer/clearCache', async () => {
     connection.console.info('[Server] Cache cleared successfully');
     return { success: true };
   } catch (error) {
-    connection.console.error(`[Server] Error clearing cache: ${error}`);
+    logger.error(`[Server] Error clearing cache: ${error}`);
     throw error;
   }
 });
@@ -348,7 +355,7 @@ connection.onRequest('smart-indexer/getStats', async () => {
     connection.console.info(`[Server] Returning stats to client: totalFiles=${stats.totalFiles}, totalSymbols=${stats.totalSymbols}`);
     return stats;
   } catch (error) {
-    connection.console.error(`[Server] Error getting stats: ${error}`);
+    logger.error(`[Server] Error getting stats: ${error}`);
     throw error;
   }
 });
@@ -426,7 +433,7 @@ connection.onRequest('smart-indexer/inspectIndex', async () => {
       folderBreakdown
     };
   } catch (error) {
-    connection.console.error(`[Server] Error inspecting index: ${error}`);
+    logger.error(`[Server] Error inspecting index: ${error}`);
     throw error;
   }
 });
@@ -489,7 +496,7 @@ connection.onRequest('smart-indexer/findDeadCode', async (options: {
       throw new ResponseError(-32800, 'Dead code analysis cancelled');
     }
     
-    connection.console.error(`[Server] Error finding dead code: ${error}`);
+    logger.error(`[Server] Error finding dead code: ${error}`);
     throw error;
   }
 });
@@ -557,7 +564,7 @@ connection.onShutdown(async () => {
     
     connection.console.info('[Server] Resources closed successfully');
   } catch (error) {
-    connection.console.error(`[Server] Error during shutdown: ${error}`);
+    logger.error(`[Server] Error during shutdown: ${error}`);
   }
 });
 

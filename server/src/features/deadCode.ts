@@ -250,8 +250,7 @@ export class DeadCodeDetector {
     
     // Log scope filtering stats for debugging
     if (scopePath) {
-      console.log(`[DeadCodeDetector] Scope filtering: ${totalFiles}/${totalIndexedFiles} files in scope '${scopePath}'`);
-      console.log(`[DeadCodeDetector] Filtered out: ${scopeFilteredCount} out of scope, ${excludedCount} excluded, ${entryPointCount} entry points`);
+      // Debug info omitted
     }
     
     // Report initial progress with scope info
@@ -513,7 +512,7 @@ export class DeadCodeDetector {
       return false;
     } catch (error: any) {
       if (error.code !== 'ENOENT') {
-        console.error(`[DeadCodeDetector] Error reading file ${fileUri}: ${error}`);
+        // File read error
       }
       return false;
     }

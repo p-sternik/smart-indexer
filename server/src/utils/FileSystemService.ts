@@ -158,8 +158,7 @@ export class FileSystemService {
       }
     } catch (error: any) {
       if (error.code !== 'ENOENT') {
-        console.error(`[FileSystemService] Error calculating directory size for ${dirPath}: ${error}`);
-      }
+        }
     }
 
     return totalSize;

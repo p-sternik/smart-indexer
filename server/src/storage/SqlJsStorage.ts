@@ -394,8 +394,7 @@ export class SqlJsStorage implements IIndexStorage {
       try {
         await this.flush();
       } catch (error) {
-        console.error('Auto-save failed:', error);
-      }
+        }
     }, this.autoSaveDelayMs);
   }
 

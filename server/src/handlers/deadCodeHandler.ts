@@ -62,8 +62,8 @@ export class DeadCodeHandler implements IHandler {
     // This handler doesn't register LSP methods directly.
     // Instead, it provides methods to be called from document lifecycle events.
     // The registration is done by the server calling analyzeFile on didOpen/didSave.
-    const { connection } = this.services;
-    connection.console.log('[DeadCodeHandler] Registered');
+    const { connection, logger } = this.services;
+    logger.info('[DeadCodeHandler] Registered');
   }
 
   /**
@@ -75,7 +75,7 @@ export class DeadCodeHandler implements IHandler {
    * @param uri - File path to analyze (not URI format)
    */
   async analyzeFile(uri: string): Promise<void> {
-    const { connection, configManager } = this.services;
+    const { connection, configManager, logger } = this.services;
     const { deadCodeDetector } = this.state;
     
     // Check if dead code detection is enabled
@@ -96,7 +96,7 @@ export class DeadCodeHandler implements IHandler {
       const timer = setTimeout(async () => {
         try {
           const startTime = Date.now();
-          connection.console.log(`[DeadCodeHandler] Analyzing ${uri}`);
+          logger.info(`[DeadCodeHandler] Analyzing ${uri}`);
           
           // Run the analysis
           const candidates = await deadCodeDetector.analyzeFile(uri, {
@@ -119,14 +119,14 @@ export class DeadCodeHandler implements IHandler {
 
           const duration = Date.now() - startTime;
           if (candidates.length > 0) {
-            connection.console.log(
+            logger.info(
               `[DeadCodeHandler] Found ${candidates.length} unused exports in ${uri} (${duration}ms)`
             );
           } else {
-            connection.console.log(`[DeadCodeHandler] No unused exports in ${uri} (${duration}ms)`);
+            logger.info(`[DeadCodeHandler] No unused exports in ${uri} (${duration}ms)`);
           }
         } catch (error) {
-          connection.console.error(`[DeadCodeHandler] Error analyzing ${uri}: ${error}`);
+          logger.error(`[DeadCodeHandler] Error analyzing ${uri}: ${error}`);
         } finally {
           this.debounceTimers.delete(uri);
         }
@@ -134,7 +134,7 @@ export class DeadCodeHandler implements IHandler {
 
       this.debounceTimers.set(uri, timer);
     } catch (error) {
-      connection.console.error(`[DeadCodeHandler] Error setting up analysis for ${uri}: ${error}`);
+      logger.error(`[DeadCodeHandler] Error setting up analysis for ${uri}: ${error}`);
     }
   }
 
@@ -145,7 +145,7 @@ export class DeadCodeHandler implements IHandler {
    * @param uri - File path to clear diagnostics for
    */
   clearDiagnostics(uri: string): void {
-    const { connection } = this.services;
+    const { connection, logger } = this.services;
     
     // Cancel pending analysis
     const timer = this.debounceTimers.get(uri);
@@ -197,7 +197,7 @@ export class DeadCodeHandler implements IHandler {
     token: CancellationToken,
     options?: { excludePatterns?: string[]; includeTests?: boolean; scopeUri?: string }
   ): Promise<DeadCodeAnalysisResult> {
-    const { connection } = this.services;
+    const { connection, logger } = this.services;
     const { deadCodeDetector } = this.state;
     
     if (!deadCodeDetector) {

@@ -233,6 +233,25 @@ export class DefinitionHandler implements IHandler {
   }
 
   /**
+   * Deduplicate symbols with exact same location (uri:line:character).
+   * This handles database duplicates from inconsistent path normalization.
+   */
+  private deduplicateExactLocations(symbols: IndexedSymbol[]): IndexedSymbol[] {
+    const seen = new Set<string>();
+    const result: IndexedSymbol[] = [];
+    
+    for (const symbol of symbols) {
+      const key = `${symbol.location.uri}:${symbol.location.line}:${symbol.location.character}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push(symbol);
+      }
+    }
+    
+    return result;
+  }
+
+  /**
    * Handle definition request.
    */
   private async handleDefinition(params: DefinitionParams): Promise<Location | Location[] | null> {
@@ -420,21 +439,35 @@ export class DefinitionHandler implements IHandler {
           logger.info(`[Server] Candidate ${idx}: ${c.name} (${c.kind}) isDefinition=${c.isDefinition} in ${c.filePath?.substring(c.filePath.lastIndexOf('\\') + 1) || 'unknown'}`);
         });
 
-        // PRECISION FILTER 1: Only return symbols marked as definitions
-        let definitionCandidates = candidates.filter(candidate => candidate.isDefinition === true);
-        logger.info(`[Server] Filtered to ${definitionCandidates.length} definition symbols (isDefinition=true)`);
+        // ============================================================
+        // CODE-FIRST FILTERING PIPELINE (Task 2)
+        // ============================================================
         
-        // PRECISION FILTER 1.5: Prioritize code symbols over text symbols
+        // STEP 1: Deduplicate exact matches (uri:line:character)
+        let definitionCandidates = this.deduplicateExactLocations(candidates);
+        logger.info(`[Server] Step 1 - Deduplicated exact locations: ${candidates.length} → ${definitionCandidates.length}`);
+        
+        // STEP 2: Prioritize Definitions - If ANY result has isDefinition=true, discard ALL isDefinition=false
+        const hasDefinitions = definitionCandidates.some(c => c.isDefinition === true);
+        if (hasDefinitions) {
+          const beforeDefFilter = definitionCandidates.length;
+          definitionCandidates = definitionCandidates.filter(c => c.isDefinition === true);
+          if (beforeDefFilter !== definitionCandidates.length) {
+            logger.info(`[Server] Step 2 - Discarded ${beforeDefFilter - definitionCandidates.length} non-definition symbols (isDefinition=false)`);
+          }
+        }
+        
+        // STEP 3: Prioritize Code - If ANY result has kind != 'text', discard ALL kind='text'
         const hasCodeSymbols = definitionCandidates.some(c => c.kind !== 'text');
         if (hasCodeSymbols) {
           const beforeTextFilter = definitionCandidates.length;
           definitionCandidates = definitionCandidates.filter(c => c.kind !== 'text');
           if (beforeTextFilter !== definitionCandidates.length) {
-            logger.info(`[Server] Discarded ${beforeTextFilter - definitionCandidates.length} text symbols (code symbols available)`);
+            logger.info(`[Server] Step 3 - Discarded ${beforeTextFilter - definitionCandidates.length} text symbols (code symbols available)`);
           }
         }
         
-        // PRECISION FILTER 2: Apply comprehensive filters (self-reference, imports)
+        // PRECISION FILTER: Apply comprehensive filters (self-reference, imports)
         definitionCandidates = filterPrecisionResults(
           definitionCandidates,
           uri,
@@ -507,6 +540,24 @@ export class DefinitionHandler implements IHandler {
 
       const word = text.substring(wordRange.start, wordRange.end);
       
+      // CATASTROPHIC FALLBACK PREVENTION: Block searches for common keywords
+      const COMMON_KEYWORDS = new Set([
+        'path', 'fs', 'file', 'const', 'let', 'var', 'import', 'export',
+        'function', 'class', 'interface', 'type', 'enum', 'namespace',
+        'public', 'private', 'protected', 'static', 'readonly', 'async',
+        'await', 'return', 'if', 'else', 'for', 'while', 'switch', 'case',
+        'break', 'continue', 'try', 'catch', 'finally', 'throw', 'new',
+        'this', 'super', 'extends', 'implements', 'constructor', 'get', 'set',
+        'true', 'false', 'null', 'undefined', 'void', 'any', 'unknown',
+        'string', 'number', 'boolean', 'object', 'array', 'map', 'set',
+        'promise', 'error', 'console', 'log', 'debug', 'info', 'warn'
+      ]);
+      
+      if (COMMON_KEYWORDS.has(word.toLowerCase())) {
+        logger.info(`[Server] Definition result (fallback blocked): "${word}" is a common keyword, ${Date.now() - start} ms`);
+        return null;
+      }
+      
       // OPTIMIZATION: Apply timeout to fallback search to prevent 30s+ delays
       const FALLBACK_TIMEOUT_MS = 500;
       const fallbackPromise = this.executeFallbackSearch(word, uri, line, character);
@@ -543,9 +594,10 @@ export class DefinitionHandler implements IHandler {
    * Execute fallback search with optimizations to prevent extreme latency.
    * 
    * Optimizations:
-   * 1. Filter by isDefinition=true to reduce noise
-   * 2. Exclude cursor position to prevent self-reference
-   * 3. Limit result processing for large result sets
+   * 1. Deduplicate exact locations
+   * 2. Code-first filtering (definitions only, code over text)
+   * 3. Exclude cursor position to prevent self-reference
+   * 4. Limit result processing for large result sets
    */
   private async executeFallbackSearch(
     word: string,
@@ -558,11 +610,23 @@ export class DefinitionHandler implements IHandler {
     let symbols = await mergedIndex.findDefinitions(word);
     logger.info(`[Server] Fallback: Found ${symbols.length} candidates for "${word}"`);
     
-    // OPTIMIZATION 1: Filter by isDefinition to get only actual definitions
-    symbols = symbols.filter(sym => sym.isDefinition === true);
-    logger.info(`[Server] Fallback: Filtered to ${symbols.length} definition symbols`);
+    // CODE-FIRST FILTERING (Task 2)
     
-    // OPTIMIZATION 1.5: Prioritize code symbols over text symbols
+    // Step 1: Deduplicate exact locations
+    symbols = this.deduplicateExactLocations(symbols);
+    logger.info(`[Server] Fallback: Deduplicated to ${symbols.length} unique locations`);
+    
+    // Step 2: Prioritize definitions - If ANY has isDefinition=true, discard ALL isDefinition=false
+    const hasDefinitions = symbols.some(s => s.isDefinition === true);
+    if (hasDefinitions) {
+      const beforeDefFilter = symbols.length;
+      symbols = symbols.filter(s => s.isDefinition === true);
+      if (beforeDefFilter !== symbols.length) {
+        logger.info(`[Server] Fallback: Discarded ${beforeDefFilter - symbols.length} non-definition symbols`);
+      }
+    }
+    
+    // Step 3: Prioritize code - If ANY has kind != 'text', discard ALL kind='text'
     const hasCodeSymbols = symbols.some(s => s.kind !== 'text');
     if (hasCodeSymbols) {
       const beforeTextFilter = symbols.length;

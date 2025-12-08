@@ -56,6 +56,23 @@ export class SqlJsStorage implements IIndexStorage {
   }
 
   /**
+   * Normalize URI to prevent duplicates from inconsistent path formats.
+   * - Converts backslashes to forward slashes
+   * - Lowercases drive letter on Windows (C: vs c:)
+   * - Ensures consistent format for database keys
+   */
+  private normalizeUri(uri: string): string {
+    let normalized = uri.replace(/\\/g, '/');
+    
+    // Normalize Windows drive letter to lowercase
+    if (/^[A-Z]:/.test(normalized)) {
+      normalized = normalized.charAt(0).toLowerCase() + normalized.slice(1);
+    }
+    
+    return normalized;
+  }
+
+  /**
    * Initialize the storage backend.
    */
   async init(workspaceRoot: string, cacheDirectory: string): Promise<void> {
@@ -368,17 +385,36 @@ export class SqlJsStorage implements IIndexStorage {
   async storeFileNoLock(data: FileIndexData): Promise<void> {
     this.ensureInitialized();
 
-    const jsonData = JSON.stringify(data);
+    // CRITICAL: Normalize URI to prevent duplicates from inconsistent path formats
+    // - Lowercase drive letter (C: vs c:)
+    // - Consistent separators (forward slashes)
+    const normalizedUri = this.normalizeUri(data.uri);
+    const normalizedData = { ...data, uri: normalizedUri };
+
+    const jsonData = JSON.stringify(normalizedData);
     const updatedAt = Date.now();
 
-    // Update files table
-    this.db!.run(
-      'INSERT OR REPLACE INTO files (uri, json_data, updated_at) VALUES (?, ?, ?)',
-      [data.uri, jsonData, updatedAt]
-    );
+    // Use transaction for atomicity (DELETE + INSERT)
+    this.db!.run('BEGIN TRANSACTION');
+    
+    try {
+      // Delete old entry before inserting new one
+      this.db!.run('DELETE FROM files WHERE uri = ?', [normalizedUri]);
+      
+      // Insert new entry
+      this.db!.run(
+        'INSERT INTO files (uri, json_data, updated_at) VALUES (?, ?, ?)',
+        [normalizedUri, jsonData, updatedAt]
+      );
 
-    // Update FTS index (if FTS5 is available)
-    await this.updateFTSIndex(data);
+      // Update FTS index (if FTS5 is available)
+      await this.updateFTSIndex(normalizedData);
+      
+      this.db!.run('COMMIT');
+    } catch (error) {
+      this.db!.run('ROLLBACK');
+      throw error;
+    }
 
     this.isDirty = true;
     this.scheduleAutoSave();
@@ -436,9 +472,11 @@ export class SqlJsStorage implements IIndexStorage {
   async getFileNoLock(uri: string): Promise<FileIndexData | null> {
     this.ensureInitialized();
 
+    const normalizedUri = this.normalizeUri(uri);
+    
     const result = this.db!.exec(
       'SELECT json_data FROM files WHERE uri = ?',
-      [uri]
+      [normalizedUri]
     );
 
     if (result.length === 0 || result[0].values.length === 0) {
@@ -456,12 +494,14 @@ export class SqlJsStorage implements IIndexStorage {
     await this.withLock(uri, async () => {
       this.ensureInitialized();
 
+      const normalizedUri = this.normalizeUri(uri);
+
       // Delete from files table
-      this.db!.run('DELETE FROM files WHERE uri = ?', [uri]);
+      this.db!.run('DELETE FROM files WHERE uri = ?', [normalizedUri]);
 
       // Delete from FTS index (if available)
       try {
-        this.db!.run('DELETE FROM symbols_fts WHERE uri = ?', [uri]);
+        this.db!.run('DELETE FROM symbols_fts WHERE uri = ?', [normalizedUri]);
       } catch {
         // FTS table doesn't exist or query failed - ignore
       }
@@ -477,9 +517,11 @@ export class SqlJsStorage implements IIndexStorage {
   async hasFile(uri: string): Promise<boolean> {
     this.ensureInitialized();
 
+    const normalizedUri = this.normalizeUri(uri);
+
     const result = this.db!.exec(
       'SELECT 1 FROM files WHERE uri = ? LIMIT 1',
-      [uri]
+      [normalizedUri]
     );
 
     return result.length > 0 && result[0].values.length > 0;

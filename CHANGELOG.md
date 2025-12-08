@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.72.0](https://github.com/p-sternik/smart-indexer/compare/v1.71.0...v1.72.0) (2025-12-08)
+
+
+### Features
+
+* add URI normalization to prevent duplicates in SqlJsStorage ([8007471](https://github.com/p-sternik/smart-indexer/commit/8007471ff975f973173ee9a6355b7ebb19a65767))
+
 ## [1.71.0](https://github.com/p-sternik/smart-indexer/compare/v1.70.0...v1.71.0) (2025-12-08)
 
 

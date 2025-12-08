@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.64.0](https://github.com/p-sternik/smart-indexer/compare/v1.63.0...v1.64.0) (2025-12-08)
+
+
+### Features
+
+* enhance tryResolveFile to support ESM imports with .js extensions ([d0b4299](https://github.com/p-sternik/smart-indexer/commit/d0b42996e3c68d64b37cd8684c971e615701f866))
+
 ## [1.63.0](https://github.com/p-sternik/smart-indexer/compare/v1.62.0...v1.63.0) (2025-12-08)
 
 

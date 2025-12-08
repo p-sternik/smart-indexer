@@ -346,7 +346,8 @@ export class SymbolIndexer {
                 containerName,
                 containerKind,
                 fullContainerPath,
-                filePath: uri
+                filePath: uri,
+                isDefinition: true
               });
               
               // If the initializer is an object literal, index its properties as nested symbols
@@ -400,7 +401,8 @@ export class SymbolIndexer {
               fullContainerPath,
               isStatic: methodStatic,
               parametersCount: methodParams,
-              filePath: uri
+              filePath: uri,
+              isDefinition: true
             });
             needsScopeTracking = true;
           }
@@ -442,7 +444,8 @@ export class SymbolIndexer {
               containerKind,
               fullContainerPath,
               isStatic: propStatic,
-              filePath: uri
+              filePath: uri,
+              isDefinition: true
             });
           }
           break;
@@ -481,7 +484,8 @@ export class SymbolIndexer {
           fullContainerPath,
           isStatic,
           parametersCount,
-          filePath: uri
+          filePath: uri,
+          isDefinition: true
         });
 
         const newContainer = symbolName;
@@ -627,7 +631,8 @@ export class SymbolIndexer {
             containerName,
             containerKind,
             fullContainerPath,
-            filePath: uri
+            filePath: uri,
+            isDefinition: true
           });
           
           // Recursively index nested object literals
@@ -675,7 +680,8 @@ export class SymbolIndexer {
                 endLine: i,
                 endCharacter: index + word.length
               },
-              filePath: uri
+              filePath: uri,
+              isDefinition: false
             });
           }
         }

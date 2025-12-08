@@ -411,6 +411,16 @@ export class DefinitionHandler implements IHandler {
         let definitionCandidates = candidates.filter(candidate => candidate.isDefinition === true);
         logger.info(`[Server] Filtered to ${definitionCandidates.length} definition symbols (isDefinition=true)`);
         
+        // PRECISION FILTER 1.5: Prioritize code symbols over text symbols
+        const hasCodeSymbols = definitionCandidates.some(c => c.kind !== 'text');
+        if (hasCodeSymbols) {
+          const beforeTextFilter = definitionCandidates.length;
+          definitionCandidates = definitionCandidates.filter(c => c.kind !== 'text');
+          if (beforeTextFilter !== definitionCandidates.length) {
+            logger.info(`[Server] Discarded ${beforeTextFilter - definitionCandidates.length} text symbols (code symbols available)`);
+          }
+        }
+        
         // PRECISION FILTER 2: Apply comprehensive filters (self-reference, imports)
         definitionCandidates = filterPrecisionResults(
           definitionCandidates,
@@ -531,6 +541,16 @@ export class DefinitionHandler implements IHandler {
     // OPTIMIZATION 1: Filter by isDefinition to get only actual definitions
     symbols = symbols.filter(sym => sym.isDefinition === true);
     logger.info(`[Server] Fallback: Filtered to ${symbols.length} definition symbols`);
+    
+    // OPTIMIZATION 1.5: Prioritize code symbols over text symbols
+    const hasCodeSymbols = symbols.some(s => s.kind !== 'text');
+    if (hasCodeSymbols) {
+      const beforeTextFilter = symbols.length;
+      symbols = symbols.filter(s => s.kind !== 'text');
+      if (beforeTextFilter !== symbols.length) {
+        logger.info(`[Server] Fallback: Discarded ${beforeTextFilter - symbols.length} text symbols (code symbols available)`);
+      }
+    }
     
     // OPTIMIZATION 2: Apply precision filters (self-reference, imports, exact name match)
     symbols = filterPrecisionResults(symbols, uri, line, character, word);

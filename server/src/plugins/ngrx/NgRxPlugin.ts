@@ -237,7 +237,8 @@ export class NgRxPlugin implements FrameworkPlugin {
             type: eventKey,
             role: 'action'
           } as NgRxSymbolMetadata
-        }
+        },
+        isDefinition: true
       });
     }
 

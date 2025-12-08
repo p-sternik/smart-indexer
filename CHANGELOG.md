@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.68.0](https://github.com/p-sternik/smart-indexer/compare/v1.67.0...v1.68.0) (2025-12-08)
+
+
+### Features
+
+* refactor dead code analysis to trigger only on file save events and integrate with FileWatcher ([c09a027](https://github.com/p-sternik/smart-indexer/commit/c09a0276a21a8db7a53665e97c72c40f270388a7))
+
 ## [1.67.0](https://github.com/p-sternik/smart-indexer/compare/v1.66.0...v1.67.0) (2025-12-08)
 
 

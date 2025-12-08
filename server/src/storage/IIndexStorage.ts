@@ -184,4 +184,19 @@ export interface IIndexStorage {
    * Called after bulk indexing operations.
    */
   saveMetadataSummary(): Promise<void>;
+
+  /**
+   * Search symbols using full-text search (FTS5).
+   * Falls back to simple name matching if FTS is not available.
+   * 
+   * @param query - Search query (supports FTS5 syntax if available)
+   * @param mode - Search mode: 'exact' (default), 'fuzzy', or 'fulltext'
+   * @param limit - Maximum number of results (default: 100)
+   * @returns Array of matching symbols with their file URIs
+   */
+  searchSymbols(query: string, mode?: 'exact' | 'fuzzy' | 'fulltext', limit?: number): Promise<Array<{
+    uri: string;
+    symbol: any; // IndexedSymbol, but avoiding circular dependency
+    rank?: number;
+  }>>;
 }

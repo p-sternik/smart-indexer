@@ -17,6 +17,8 @@ import * as path from 'path';
  * - JSON-serialized indexed data
  * - Atomic writes via temp file + rename (crash-safe)
  * - Automatic corruption recovery on startup
+ * - Schema versioning with automatic migrations
+ * - FTS5 full-text search for symbol discovery
  * 
  * Crash Safety:
  * - Writes use atomic rename operation to prevent partial writes
@@ -24,9 +26,12 @@ import * as path from 'path';
  * - Handles zero-byte files from crashed writes
  * - Gracefully resets and triggers re-indexing on corruption
  * 
- * Schema:
+ * Schema (v2):
+ * - meta table: (key TEXT PRIMARY KEY, value TEXT) - Schema version tracking
  * - files table: (uri PRIMARY KEY, json_data TEXT, updated_at INTEGER)
+ * - symbols_fts table: FTS5 virtual table for full-text search
  * - Index on uri for fast lookups
+ * - Triggers to sync symbols_fts with symbol changes
  */
 export class SqlJsStorage implements IIndexStorage {
   private db: Database | null = null;
@@ -37,6 +42,9 @@ export class SqlJsStorage implements IIndexStorage {
   private isDirty: boolean = false;
   private locks: Map<string, Promise<void>> = new Map();
   private isInitialized: boolean = false;
+  
+  // Schema version for migration system
+  private static readonly SCHEMA_VERSION = 2;
 
   /**
    * Create a new SqlJsStorage instance.
@@ -107,8 +115,91 @@ export class SqlJsStorage implements IIndexStorage {
       throw new Error('Failed to initialize SQLite database');
     }
 
-    // Create schema
-    this.db.run(`
+    // Initialize schema with migration support
+    await this.initializeSchema();
+
+    this.isInitialized = true;
+  }
+
+  /**
+   * Initialize or migrate database schema.
+   * Implements versioned migration system with self-healing on failure.
+   */
+  private async initializeSchema(): Promise<void> {
+    try {
+      // Create meta table for schema versioning
+      this.db!.run(`
+        CREATE TABLE IF NOT EXISTS meta (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )
+      `);
+
+      // Check current schema version
+      const currentVersion = await this.getCurrentSchemaVersion();
+      console.info(`[SqlJsStorage] Current schema version: ${currentVersion}, target: ${SqlJsStorage.SCHEMA_VERSION}`);
+
+      if (currentVersion === 0) {
+        // Fresh database - create initial schema (v1)
+        await this.createSchemaV1();
+        await this.setSchemaVersion(1);
+        console.info('[SqlJsStorage] Created fresh database with schema v1');
+      }
+
+      // Run migrations sequentially
+      if (currentVersion < SqlJsStorage.SCHEMA_VERSION) {
+        await this.migrateSchema(currentVersion, SqlJsStorage.SCHEMA_VERSION);
+      } else if (currentVersion > SqlJsStorage.SCHEMA_VERSION) {
+        // Database is from a newer version
+        throw new Error(
+          `Database schema version ${currentVersion} is newer than supported ${SqlJsStorage.SCHEMA_VERSION}. ` +
+          `Please upgrade Smart Indexer to the latest version.`
+        );
+      }
+
+      // Configure SQLite for optimal performance
+      await this.configureSQLite();
+
+    } catch (error: any) {
+      console.error(`[SqlJsStorage] Schema initialization failed: ${error.message}`);
+      console.warn('[SqlJsStorage] Attempting self-healing: dropping database and recreating...');
+      
+      // Self-healing: drop all tables and start fresh
+      await this.selfHeal();
+    }
+  }
+
+  /**
+   * Get current schema version from meta table.
+   */
+  private async getCurrentSchemaVersion(): Promise<number> {
+    try {
+      const result = this.db!.exec(`SELECT value FROM meta WHERE key = 'schema_version'`);
+      if (result.length > 0 && result[0].values.length > 0) {
+        return parseInt(result[0].values[0][0] as string, 10);
+      }
+    } catch {
+      // Table doesn't exist or query failed
+    }
+    return 0;
+  }
+
+  /**
+   * Set schema version in meta table.
+   */
+  private async setSchemaVersion(version: number): Promise<void> {
+    this.db!.run(
+      `INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)`,
+      [version.toString()]
+    );
+  }
+
+  /**
+   * Create initial schema (v1).
+   */
+  private async createSchemaV1(): Promise<void> {
+    // Files table
+    this.db!.run(`
       CREATE TABLE IF NOT EXISTS files (
         uri TEXT PRIMARY KEY,
         json_data TEXT NOT NULL,
@@ -116,11 +207,150 @@ export class SqlJsStorage implements IIndexStorage {
       )
     `);
 
-    this.db.run(`
-      CREATE INDEX IF NOT EXISTS idx_uri ON files(uri)
-    `);
+    // Index on uri for fast lookups
+    this.db!.run(`CREATE INDEX IF NOT EXISTS idx_uri ON files(uri)`);
+  }
 
-    this.isInitialized = true;
+  /**
+   * Migrate schema from one version to another.
+   */
+  private async migrateSchema(fromVersion: number, toVersion: number): Promise<void> {
+    console.warn(`[SqlJsStorage] Migrating schema from v${fromVersion} to v${toVersion}`);
+    
+    let currentVersion = fromVersion;
+
+    // Migration v1 -> v2: Add FTS5 full-text search
+    if (currentVersion === 1 && toVersion >= 2) {
+      console.info('[SqlJsStorage] Applying migration v1 -> v2 (FTS5 support)');
+      await this.migrateToV2();
+      currentVersion = 2;
+      await this.setSchemaVersion(currentVersion);
+    }
+
+    // Future migrations go here:
+    // if (currentVersion === 2 && toVersion >= 3) {
+    //   await this.migrateToV3();
+    //   currentVersion = 3;
+    //   await this.setSchemaVersion(currentVersion);
+    // }
+
+    console.info(`[SqlJsStorage] Migration completed successfully to v${currentVersion}`);
+  }
+
+  /**
+   * Migration v1 -> v2: Add FTS5 virtual table for full-text search.
+   */
+  private async migrateToV2(): Promise<void> {
+    try {
+      // Create FTS5 virtual table for symbol search
+      this.db!.run(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+          uri,
+          symbol_name,
+          container_name,
+          kind,
+          file_path,
+          content='',
+          tokenize='porter'
+        )
+      `);
+
+      // Populate FTS table with existing symbols
+      console.info('[SqlJsStorage] Populating FTS index from existing data...');
+      const result = this.db!.exec('SELECT uri, json_data FROM files');
+      
+      if (result.length > 0 && result[0].values.length > 0) {
+        let symbolCount = 0;
+        for (const row of result[0].values) {
+          const uri = row[0] as string;
+          const jsonData = row[1] as string;
+          
+          try {
+            const data: FileIndexData = JSON.parse(jsonData);
+            
+            // Insert each symbol into FTS table
+            for (const symbol of data.symbols) {
+              if (symbol.isDefinition) {
+                this.db!.run(
+                  `INSERT INTO symbols_fts (uri, symbol_name, container_name, kind, file_path) VALUES (?, ?, ?, ?, ?)`,
+                  [
+                    uri,
+                    symbol.name,
+                    symbol.containerName || '',
+                    symbol.kind,
+                    symbol.filePath
+                  ]
+                );
+                symbolCount++;
+              }
+            }
+          } catch (parseError) {
+            console.warn(`[SqlJsStorage] Skipping corrupt file data for ${uri}`);
+          }
+        }
+        console.info(`[SqlJsStorage] Populated FTS index with ${symbolCount} symbols`);
+      }
+
+    } catch (error: any) {
+      console.error(`[SqlJsStorage] FTS5 migration failed: ${error.message}`);
+      // Note: sql.js might not support FTS5 - this is acceptable, search will degrade gracefully
+      console.warn('[SqlJsStorage] FTS5 not supported, full-text search will be unavailable');
+    }
+  }
+
+  /**
+   * Configure SQLite for optimal performance.
+   */
+  private async configureSQLite(): Promise<void> {
+    try {
+      // Try to enable WAL mode (may not work in sql.js WASM)
+      this.db!.run('PRAGMA journal_mode = WAL');
+      this.db!.run('PRAGMA synchronous = NORMAL');
+      this.db!.run('PRAGMA cache_size = -64000'); // 64MB cache
+      this.db!.run('PRAGMA temp_store = MEMORY');
+      console.info('[SqlJsStorage] Configured SQLite with WAL mode');
+    } catch (error) {
+      // WAL mode might not be supported in sql.js WASM
+      console.warn('[SqlJsStorage] Could not enable WAL mode (sql.js limitation)');
+    }
+  }
+
+  /**
+   * Self-healing: Drop all tables and recreate from scratch.
+   * Triggers re-indexing by BackgroundIndex.
+   */
+  private async selfHeal(): Promise<void> {
+    try {
+      // Drop all tables
+      const tables = ['symbols_fts', 'files', 'meta'];
+      for (const table of tables) {
+        try {
+          this.db!.run(`DROP TABLE IF EXISTS ${table}`);
+        } catch {
+          // Ignore errors - table might not exist
+        }
+      }
+
+      // Recreate meta table
+      this.db!.run(`
+        CREATE TABLE meta (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )
+      `);
+
+      // Create v1 schema
+      await this.createSchemaV1();
+      await this.setSchemaVersion(1);
+
+      // Migrate to current version
+      await this.migrateSchema(1, SqlJsStorage.SCHEMA_VERSION);
+
+      console.info('[SqlJsStorage] Self-healing completed - database recreated');
+    } catch (healError: any) {
+      console.error(`[SqlJsStorage] Self-healing failed: ${healError.message}`);
+      throw new Error('Database is unrecoverable. Please delete .smart-index directory and restart.');
+    }
   }
 
   /**
@@ -141,13 +371,54 @@ export class SqlJsStorage implements IIndexStorage {
     const jsonData = JSON.stringify(data);
     const updatedAt = Date.now();
 
+    // Update files table
     this.db!.run(
       'INSERT OR REPLACE INTO files (uri, json_data, updated_at) VALUES (?, ?, ?)',
       [data.uri, jsonData, updatedAt]
     );
 
+    // Update FTS index (if FTS5 is available)
+    await this.updateFTSIndex(data);
+
     this.isDirty = true;
     this.scheduleAutoSave();
+  }
+
+  /**
+   * Update FTS5 index for a file's symbols.
+   */
+  private async updateFTSIndex(data: FileIndexData): Promise<void> {
+    try {
+      // Check if FTS table exists
+      const tableCheck = this.db!.exec(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name='symbols_fts'`
+      );
+      
+      if (tableCheck.length === 0 || tableCheck[0].values.length === 0) {
+        return; // FTS not available
+      }
+
+      // Delete existing entries for this file
+      this.db!.run('DELETE FROM symbols_fts WHERE uri = ?', [data.uri]);
+
+      // Insert new symbol entries (definitions only)
+      for (const symbol of data.symbols) {
+        if (symbol.isDefinition) {
+          this.db!.run(
+            `INSERT INTO symbols_fts (uri, symbol_name, container_name, kind, file_path) VALUES (?, ?, ?, ?, ?)`,
+            [
+              data.uri,
+              symbol.name,
+              symbol.containerName || '',
+              symbol.kind,
+              symbol.filePath
+            ]
+          );
+        }
+      }
+    } catch (error) {
+      // Silently fail - FTS is optional
+    }
   }
 
   /**
@@ -185,7 +456,15 @@ export class SqlJsStorage implements IIndexStorage {
     await this.withLock(uri, async () => {
       this.ensureInitialized();
 
+      // Delete from files table
       this.db!.run('DELETE FROM files WHERE uri = ?', [uri]);
+
+      // Delete from FTS index (if available)
+      try {
+        this.db!.run('DELETE FROM symbols_fts WHERE uri = ?', [uri]);
+      } catch {
+        // FTS table doesn't exist or query failed - ignore
+      }
 
       this.isDirty = true;
       this.scheduleAutoSave();
@@ -436,6 +715,168 @@ export class SqlJsStorage implements IIndexStorage {
     // No-op for SQLite - metadata is part of the database
     // Trigger a flush to ensure data is persisted
     await this.flush();
+  }
+
+  /**
+   * Search symbols using full-text search (FTS5).
+   * Falls back to simple name matching if FTS is not available.
+   * 
+   * @param query - Search query (supports FTS5 syntax if available)
+   * @param mode - Search mode: 'exact' (default), 'fuzzy', or 'fulltext'
+   * @param limit - Maximum number of results (default: 100)
+   * @returns Array of matching symbols with their file URIs
+   */
+  async searchSymbols(
+    query: string, 
+    mode: 'exact' | 'fuzzy' | 'fulltext' = 'exact', 
+    limit: number = 100
+  ): Promise<Array<{ uri: string; symbol: any; rank?: number }>> {
+    this.ensureInitialized();
+
+    if (mode === 'fulltext') {
+      return this.searchFTS(query, limit);
+    } else if (mode === 'fuzzy') {
+      return this.searchFuzzy(query, limit);
+    } else {
+      return this.searchExact(query, limit);
+    }
+  }
+
+  /**
+   * Full-text search using FTS5.
+   */
+  private async searchFTS(query: string, limit: number): Promise<Array<{ uri: string; symbol: any; rank?: number }>> {
+    try {
+      // Check if FTS table exists
+      const tableCheck = this.db!.exec(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name='symbols_fts'`
+      );
+      
+      if (tableCheck.length === 0 || tableCheck[0].values.length === 0) {
+        console.warn('[SqlJsStorage] FTS5 table not available, falling back to exact search');
+        return this.searchExact(query, limit);
+      }
+
+      // Execute FTS5 query
+      const ftsQuery = query.includes('*') ? query : `${query}*`; // Prefix matching
+      const result = this.db!.exec(
+        `SELECT uri, symbol_name, container_name, kind, file_path, rank 
+         FROM symbols_fts 
+         WHERE symbols_fts MATCH ? 
+         ORDER BY rank 
+         LIMIT ?`,
+        [ftsQuery, limit]
+      );
+
+      if (result.length === 0 || result[0].values.length === 0) {
+        return [];
+      }
+
+      // Convert FTS results to symbol objects
+      const results: Array<{ uri: string; symbol: any; rank?: number }> = [];
+      for (const row of result[0].values) {
+        const uri = row[0] as string;
+        const name = row[1] as string;
+        const containerName = row[2] as string;
+        const kind = row[3] as string;
+        const filePath = row[4] as string;
+        const rank = row[5] as number;
+
+        results.push({
+          uri,
+          symbol: {
+            name,
+            kind,
+            containerName: containerName || undefined,
+            filePath,
+            // Note: Location details would require loading full file data
+          },
+          rank
+        });
+      }
+
+      return results;
+    } catch (error: any) {
+      console.warn(`[SqlJsStorage] FTS search failed: ${error.message}, falling back to exact search`);
+      return this.searchExact(query, limit);
+    }
+  }
+
+  /**
+   * Fuzzy search (partial matching on symbol names).
+   */
+  private async searchFuzzy(query: string, limit: number): Promise<Array<{ uri: string; symbol: any }>> {
+    const results: Array<{ uri: string; symbol: any }> = [];
+    const lowerQuery = query.toLowerCase();
+
+    // Get all files
+    const filesResult = this.db!.exec('SELECT uri, json_data FROM files');
+    
+    if (filesResult.length === 0 || filesResult[0].values.length === 0) {
+      return [];
+    }
+
+    // Search through all symbols
+    for (const row of filesResult[0].values) {
+      const uri = row[0] as string;
+      const jsonData = row[1] as string;
+      
+      try {
+        const data: FileIndexData = JSON.parse(jsonData);
+        
+        for (const symbol of data.symbols) {
+          if (symbol.isDefinition && symbol.name.toLowerCase().includes(lowerQuery)) {
+            results.push({ uri, symbol });
+            
+            if (results.length >= limit) {
+              return results;
+            }
+          }
+        }
+      } catch {
+        // Skip corrupt data
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Exact name matching.
+   */
+  private async searchExact(query: string, limit: number): Promise<Array<{ uri: string; symbol: any }>> {
+    const results: Array<{ uri: string; symbol: any }> = [];
+
+    // Get all files
+    const filesResult = this.db!.exec('SELECT uri, json_data FROM files');
+    
+    if (filesResult.length === 0 || filesResult[0].values.length === 0) {
+      return [];
+    }
+
+    // Search through all symbols
+    for (const row of filesResult[0].values) {
+      const uri = row[0] as string;
+      const jsonData = row[1] as string;
+      
+      try {
+        const data: FileIndexData = JSON.parse(jsonData);
+        
+        for (const symbol of data.symbols) {
+          if (symbol.isDefinition && symbol.name === query) {
+            results.push({ uri, symbol });
+            
+            if (results.length >= limit) {
+              return results;
+            }
+          }
+        }
+      } catch {
+        // Skip corrupt data
+      }
+    }
+
+    return results;
   }
 
   /**

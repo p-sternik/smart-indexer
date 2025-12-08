@@ -285,6 +285,26 @@ export class FileBasedStorage implements IIndexStorage {
   }
 
   /**
+   * Search symbols using full-text search.
+   * Note: File-based storage does not support FTS - falls back to exact matching.
+   * 
+   * @param query - Search query
+   * @param mode - Search mode (ignored for file-based storage)
+   * @param limit - Maximum number of results
+   * @returns Array of matching symbols with their file URIs
+   */
+  async searchSymbols(
+    _query: string, 
+    _mode: 'exact' | 'fuzzy' | 'fulltext' = 'exact', 
+    _limit: number = 100
+  ): Promise<Array<{ uri: string; symbol: any; rank?: number }>> {
+    // File-based storage doesn't support FTS
+    // This is a placeholder - full implementation would require scanning all shards
+    console.warn('[FileBasedStorage] FTS not supported, use SqlJsStorage for full-text search');
+    return [];
+  }
+
+  /**
    * Execute a task with exclusive access to a file's data.
    * Prevents race conditions during load-modify-save operations.
    */

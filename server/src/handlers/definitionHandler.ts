@@ -401,6 +401,11 @@ export class DefinitionHandler implements IHandler {
         // Standard resolution: get all candidates by name
         const candidates = await mergedIndex.findDefinitions(symbolAtCursor.name);
         logger.info(`[Server] Found ${candidates.length} candidates by name`);
+        
+        // DEBUG: Log each candidate's isDefinition status
+        candidates.forEach((c, idx) => {
+          logger.info(`[Server] Candidate ${idx}: ${c.name} (${c.kind}) isDefinition=${c.isDefinition} in ${c.filePath?.substring(c.filePath.lastIndexOf('\\') + 1) || 'unknown'}`);
+        });
 
         // PRECISION FILTER 1: Only return symbols marked as definitions
         let definitionCandidates = candidates.filter(candidate => candidate.isDefinition === true);

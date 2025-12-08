@@ -516,6 +516,15 @@ function traverseAST(
           symbolKind = 'class';
           identifierNode = (node as TSESTree.ClassDeclaration).id!;
           
+          // DEBUG LOGGING
+          console.log(`[Worker] Processing ClassDeclaration: ${symbolName} at line ${identifierNode.loc.start.line}`);
+          console.log(`[Worker] Class node details:`, {
+            name: symbolName,
+            kind: symbolKind,
+            hasImplements: !!(node as TSESTree.ClassDeclaration).implements,
+            implementsCount: (node as TSESTree.ClassDeclaration).implements?.length || 0
+          });
+          
           // Check if this class implements Action interface (legacy NgRx)
           const classNode = node as TSESTree.ClassDeclaration;
           if (hasActionInterface(classNode)) {
@@ -796,6 +805,15 @@ function traverseAST(
         ngrxMetadata: pendingNgRxMetadata,
         isDefinition: true
       };
+      
+      // DEBUG LOGGING
+      console.log(`[Worker] Created symbol:`, {
+        name: symbolName,
+        kind: symbolKind,
+        isDefinition: newSymbol.isDefinition,
+        location: newSymbol.location,
+        uri: uri.substring(uri.lastIndexOf('/') + 1)
+      });
       
       // Invoke plugins to collect metadata and additional symbols/references
       const pluginContext: PluginVisitorContext = {

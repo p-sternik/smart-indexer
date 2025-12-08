@@ -26,194 +26,6 @@ import { disambiguateSymbols } from '../utils/disambiguation.js';
 import { getWordRangeAtPosition } from '../utils/textUtils.js';
 
 /**
- * Symbol kinds that represent primary definitions (classes, functions, etc.)
- * These are prioritized over secondary kinds like decorators or constructors.
- */
-const PRIMARY_DEFINITION_KINDS = new Set([
-  'class',
-  'interface',
-  'function',
-  'enum',
-  'type',
-  'variable',
-  'constant'
-]);
-
-/**
- * Filter precision results to remove unwanted matches:
- * 1. Remove self-references (same file + overlapping cursor position)
- * 2. Remove import statements (ImportSpecifier, ImportDeclaration, ImportClause, etc.)
- * 3. Prefer exact name matches over fuzzy matches
- */
-function filterPrecisionResults(
-  symbols: IndexedSymbol[],
-  requestUri: string,
-  requestLine: number,
-  requestCharacter: number,
-  requestedName: string
-): IndexedSymbol[] {
-  return symbols.filter(symbol => {
-    // FILTER 1: Remove self-reference (cursor overlaps with result)
-    if (symbol.location.uri === requestUri) {
-      const cursorInRange = 
-        requestLine >= symbol.range.startLine &&
-        requestLine <= symbol.range.endLine &&
-        (requestLine !== symbol.range.startLine || requestCharacter >= symbol.range.startCharacter) &&
-        (requestLine !== symbol.range.endLine || requestCharacter <= symbol.range.endCharacter);
-      
-      if (cursorInRange) {
-        return false; // Skip self-reference
-      }
-    }
-
-    // FILTER 2: Remove ALL import-related kinds (we want the definition, not the import)
-    const importKinds = [
-      'import',
-      'ImportSpecifier',
-      'ImportDeclaration',
-      'ImportClause',
-      'ImportDefaultSpecifier',
-      'ImportNamespaceSpecifier',
-      'NamedImports',
-      'NamespaceImport'
-    ];
-    
-    if (importKinds.includes(symbol.kind)) {
-      return false;
-    }
-
-    // FILTER 3: Exact name match preferred (already handled by caller, but double-check)
-    if (symbol.name !== requestedName) {
-      return false;
-    }
-
-    return true;
-  });
-}
-
-/**
- * Deduplicate definition results to ensure only one location per file.
- * 
- * When multiple symbols in the same file match (e.g., Class + Constructor, or
- * @Component decorator + class declaration), this function picks the best one:
- * 1. Prioritize class/interface/function/enum/type over constructors/methods/decorators
- * 2. If both are primary kinds and within 5 lines, pick the first (class over interface)
- * 3. If both are secondary and close, pick the one with exact name match to requested name
- * 4. Otherwise, pick the primary definition kind
- * 
- * @param symbols - Array of indexed symbols to deduplicate
- * @returns Deduplicated array with at most one symbol per file
- */
-function deduplicateByFile(symbols: IndexedSymbol[]): IndexedSymbol[] {
-  if (symbols.length <= 1) {
-    return symbols;
-  }
-  
-  // Group symbols by file URI
-  const byFile = new Map<string, IndexedSymbol[]>();
-  for (const symbol of symbols) {
-    const uri = symbol.location.uri;
-    const existing = byFile.get(uri);
-    if (existing) {
-      existing.push(symbol);
-    } else {
-      byFile.set(uri, [symbol]);
-    }
-  }
-  
-  // Pick the best symbol from each file
-  const results: IndexedSymbol[] = [];
-  for (const fileSymbols of byFile.values()) {
-    if (fileSymbols.length === 1) {
-      results.push(fileSymbols[0]);
-      continue;
-    }
-    
-    // Multiple symbols in the same file - pick the best one
-    let best = fileSymbols[0];
-    for (let i = 1; i < fileSymbols.length; i++) {
-      const candidate = fileSymbols[i];
-      best = pickBetterSymbol(best, candidate);
-    }
-    results.push(best);
-  }
-  
-  // STRICT DEDUPLICATION: If all results are exact matches, return only the best one globally
-  if (results.length > 1) {
-    const allSameName = results.every(r => r.name === results[0].name);
-    if (allSameName) {
-      // Pick the single best result across all files
-      let globalBest = results[0];
-      for (let i = 1; i < results.length; i++) {
-        globalBest = pickBetterSymbol(globalBest, results[i]);
-      }
-      return [globalBest];
-    }
-  }
-  
-  return results;
-}
-
-/**
- * Compare two symbols and return the "better" one for Go to Definition.
- * 
- * Priority logic:
- * 1. Primary definition kinds (class, interface, function) ALWAYS win over secondary (constructor, method)
- * 2. If both are primary, prefer class > interface > function > enum > type
- * 3. If both are secondary, prefer the one at an earlier line (constructor before method)
- * 4. Special case: If one is 'class' and the other is 'constructor', always pick 'class'
- */
-function pickBetterSymbol(a: IndexedSymbol, b: IndexedSymbol): IndexedSymbol {
-  const aIsPrimary = PRIMARY_DEFINITION_KINDS.has(a.kind);
-  const bIsPrimary = PRIMARY_DEFINITION_KINDS.has(b.kind);
-  
-  // Special case: Class vs Constructor -> always pick Class
-  if (a.kind === 'class' && b.kind === 'constructor') {
-    return a;
-  }
-  if (b.kind === 'class' && a.kind === 'constructor') {
-    return b;
-  }
-  
-  // Rule 1: Primary kinds ALWAYS win over secondary
-  if (aIsPrimary && !bIsPrimary) {
-    return a;
-  }
-  if (bIsPrimary && !aIsPrimary) {
-    return b;
-  }
-  
-  // Rule 2: Both are primary - use kind priority ranking
-  if (aIsPrimary && bIsPrimary) {
-    const kindPriority: Record<string, number> = {
-      'class': 1,
-      'interface': 2,
-      'function': 3,
-      'enum': 4,
-      'type': 5,
-      'variable': 6,
-      'constant': 7
-    };
-    
-    const aPriority = kindPriority[a.kind] ?? 999;
-    const bPriority = kindPriority[b.kind] ?? 999;
-    
-    if (aPriority < bPriority) {
-      return a;
-    }
-    if (bPriority < aPriority) {
-      return b;
-    }
-    
-    // Same priority - pick the first one (earlier in file)
-    return a.location.line <= b.location.line ? a : b;
-  }
-  
-  // Rule 3: Both are secondary - pick the earlier one
-  return a.location.line <= b.location.line ? a : b;
-}
-
-/**
  * Handler for textDocument/definition requests.
  */
 export class DefinitionHandler implements IHandler {
@@ -230,25 +42,6 @@ export class DefinitionHandler implements IHandler {
   register(): void {
     const { connection } = this.services;
     connection.onDefinition(this.handleDefinition.bind(this));
-  }
-
-  /**
-   * Deduplicate symbols with exact same location (uri:line:character).
-   * This handles database duplicates from inconsistent path normalization.
-   */
-  private deduplicateExactLocations(symbols: IndexedSymbol[]): IndexedSymbol[] {
-    const seen = new Set<string>();
-    const result: IndexedSymbol[] = [];
-    
-    for (const symbol of symbols) {
-      const key = `${symbol.location.uri}:${symbol.location.line}:${symbol.location.character}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        result.push(symbol);
-      }
-    }
-    
-    return result;
   }
 
   /**
@@ -398,18 +191,62 @@ export class DefinitionHandler implements IHandler {
               }
               
               if (matchingSymbols.length > 0) {
-                // Apply precision filters
-                let filteredSymbols = filterPrecisionResults(
-                  matchingSymbols,
-                  uri,
-                  line,
-                  character,
-                  symbolAtCursor.name
-                );
+                // Apply strict filtering pipeline (same 5 rules)
+                logger.info(`[Server] Import-resolved: Applying strict filtering to ${matchingSymbols.length} symbols`);
+                let filteredSymbols = matchingSymbols;
+                
+                // RULE 1: Self-reference already excluded (different file)
+                // RULE 2: Code superiority
+                const hasCodeDefs = filteredSymbols.some(s => s.isDefinition === true);
+                if (hasCodeDefs) {
+                  filteredSymbols = filteredSymbols.filter(s => s.kind !== 'text');
+                }
+                
+                // RULE 3: Implementation over abstraction
+                const byName = new Map<string, IndexedSymbol[]>();
+                for (const sym of filteredSymbols) {
+                  const existing = byName.get(sym.name);
+                  if (existing) {
+                    existing.push(sym);
+                  } else {
+                    byName.set(sym.name, [sym]);
+                  }
+                }
+                
+                const afterAbstraction: IndexedSymbol[] = [];
+                for (const syms of byName.values()) {
+                  const hasClass = syms.some(s => s.kind === 'class');
+                  const hasInterface = syms.some(s => s.kind === 'interface');
+                  if (hasClass && hasInterface) {
+                    afterAbstraction.push(...syms.filter(s => s.kind === 'class'));
+                  } else {
+                    afterAbstraction.push(...syms);
+                  }
+                }
+                filteredSymbols = afterAbstraction;
+                
+                // RULE 4: Import ban
+                const importKinds = new Set([
+                  'import', 'ImportSpecifier', 'ImportDeclaration', 'ImportClause',
+                  'ImportDefaultSpecifier', 'ImportNamespaceSpecifier', 'NamedImports', 'NamespaceImport'
+                ]);
+                filteredSymbols = filteredSymbols.filter(s => !importKinds.has(s.kind));
+                
+                // RULE 5: Single winner
+                if (filteredSymbols.length > 1) {
+                  const kindPriority: Record<string, number> = {
+                    'class': 1, 'function': 2, 'interface': 3, 'enum': 4,
+                    'type': 5, 'variable': 6, 'constant': 7
+                  };
+                  const best = filteredSymbols.reduce((winner, current) => {
+                    const winnerPri = kindPriority[winner.kind] ?? 999;
+                    const currentPri = kindPriority[current.kind] ?? 999;
+                    return currentPri < winnerPri ? current : winner;
+                  });
+                  filteredSymbols = [best];
+                }
 
-                // Deduplicate to ensure one location per file
-                const deduplicated = deduplicateByFile(filteredSymbols);
-                const results = deduplicated.map(sym => ({
+                const results = filteredSymbols.map(sym => ({
                   uri: URI.file(sym.location.uri).toString(),
                   range: {
                     start: { line: sym.range.startLine, character: sym.range.startCharacter },
@@ -440,66 +277,163 @@ export class DefinitionHandler implements IHandler {
         });
 
         // ============================================================
-        // CODE-FIRST FILTERING PIPELINE (Task 2)
+        // STRICT FILTERING PIPELINE FOR INSTANT JUMP (UX-FIRST)
         // ============================================================
         
-        // STEP 1: Deduplicate exact matches (uri:line:character)
-        let definitionCandidates = this.deduplicateExactLocations(candidates);
-        logger.info(`[Server] Step 1 - Deduplicated exact locations: ${candidates.length} → ${definitionCandidates.length}`);
+        logger.info(`[Server] Starting strict filtering pipeline with ${candidates.length} candidates`);
+        let definitionCandidates = candidates;
         
-        // STEP 2: Prioritize Definitions - If ANY result has isDefinition=true, discard ALL isDefinition=false
-        const hasDefinitions = definitionCandidates.some(c => c.isDefinition === true);
-        if (hasDefinitions) {
-          const beforeDefFilter = definitionCandidates.length;
-          definitionCandidates = definitionCandidates.filter(c => c.isDefinition === true);
-          if (beforeDefFilter !== definitionCandidates.length) {
-            logger.info(`[Server] Step 2 - Discarded ${beforeDefFilter - definitionCandidates.length} non-definition symbols (isDefinition=false)`);
+        // RULE 1: Remove Self-Reference
+        // If result URI == Request URI AND result Range contains Cursor Position -> DROP IT
+        const beforeSelfRefFilter = definitionCandidates.length;
+        definitionCandidates = definitionCandidates.filter(symbol => {
+          if (symbol.location.uri === uri) {
+            const cursorInRange = 
+              line >= symbol.range.startLine &&
+              line <= symbol.range.endLine &&
+              (line !== symbol.range.startLine || character >= symbol.range.startCharacter) &&
+              (line !== symbol.range.endLine || character <= symbol.range.endCharacter);
+            return !cursorInRange; // Keep if cursor NOT in range
           }
+          return true; // Keep if different file
+        });
+        if (beforeSelfRefFilter !== definitionCandidates.length) {
+          logger.info(`[Server] Rule 1 (Self-Ref) - Removed ${beforeSelfRefFilter - definitionCandidates.length} self-references`);
         }
         
-        // STEP 3: Prioritize Code - If ANY result has kind != 'text', discard ALL kind='text'
-        const hasCodeSymbols = definitionCandidates.some(c => c.kind !== 'text');
-        if (hasCodeSymbols) {
+        // RULE 2: Code Superiority
+        // If ANY result has isDefinition=true, DROP all kind='text' (Markdown/Comments)
+        const hasCodeDefinitions = definitionCandidates.some(c => c.isDefinition === true);
+        if (hasCodeDefinitions) {
           const beforeTextFilter = definitionCandidates.length;
           definitionCandidates = definitionCandidates.filter(c => c.kind !== 'text');
           if (beforeTextFilter !== definitionCandidates.length) {
-            logger.info(`[Server] Step 3 - Discarded ${beforeTextFilter - definitionCandidates.length} text symbols (code symbols available)`);
+            logger.info(`[Server] Rule 2 (Code Superiority) - Removed ${beforeTextFilter - definitionCandidates.length} text/markdown symbols`);
           }
         }
         
-        // PRECISION FILTER: Apply comprehensive filters (self-reference, imports)
-        definitionCandidates = filterPrecisionResults(
-          definitionCandidates,
-          uri,
-          line,
-          character,
-          symbolAtCursor.name
-        );
-        logger.info(`[Server] After precision filtering: ${definitionCandidates.length} candidates`);
-
-        // Filter candidates to match the exact symbol
-        const filtered = definitionCandidates.filter(candidate => {
-          const nameMatch = candidate.name === symbolAtCursor.name;
-          const kindMatch = candidate.kind === symbolAtCursor.kind || 
-                           (symbolAtCursor.kind === 'function' && candidate.kind === 'method') ||
-                           (symbolAtCursor.kind === 'property' && candidate.kind === 'method');
-          const containerMatch = !symbolAtCursor.containerName || 
-                                candidate.containerName === symbolAtCursor.containerName;
-          const staticMatch = symbolAtCursor.isStatic === undefined || 
-                             candidate.isStatic === symbolAtCursor.isStatic;
+        // RULE 3: Implementation over Abstraction
+        // If we have both Class AND Interface with same name, keep ONLY the Class
+        const symbolsByName = new Map<string, IndexedSymbol[]>();
+        for (const sym of definitionCandidates) {
+          const existing = symbolsByName.get(sym.name);
+          if (existing) {
+            existing.push(sym);
+          } else {
+            symbolsByName.set(sym.name, [sym]);
+          }
+        }
+        
+        const beforeAbstractionFilter = definitionCandidates.length;
+        const filteredByAbstraction: IndexedSymbol[] = [];
+        for (const [name, symbols] of symbolsByName.entries()) {
+          const hasClass = symbols.some(s => s.kind === 'class');
+          const hasInterface = symbols.some(s => s.kind === 'interface');
           
-          return nameMatch && kindMatch && containerMatch && staticMatch;
-        });
+          if (hasClass && hasInterface) {
+            // Keep ONLY classes, drop interfaces
+            filteredByAbstraction.push(...symbols.filter(s => s.kind === 'class'));
+            logger.info(`[Server] Rule 3 (Implementation) - For "${name}": Kept class, dropped interface`);
+          } else {
+            // No conflict, keep all
+            filteredByAbstraction.push(...symbols);
+          }
+        }
+        definitionCandidates = filteredByAbstraction;
+        if (beforeAbstractionFilter !== definitionCandidates.length) {
+          logger.info(`[Server] Rule 3 (Implementation over Abstraction) - ${beforeAbstractionFilter} → ${definitionCandidates.length}`);
+        }
+        
+        // RULE 4: Import Ban
+        // Explicitly filter out kind='import' or ImportSpecifier variants
+        const beforeImportFilter = definitionCandidates.length;
+        const importKinds = new Set([
+          'import',
+          'ImportSpecifier',
+          'ImportDeclaration',
+          'ImportClause',
+          'ImportDefaultSpecifier',
+          'ImportNamespaceSpecifier',
+          'NamedImports',
+          'NamespaceImport'
+        ]);
+        definitionCandidates = definitionCandidates.filter(c => !importKinds.has(c.kind));
+        if (beforeImportFilter !== definitionCandidates.length) {
+          logger.info(`[Server] Rule 4 (Import Ban) - Removed ${beforeImportFilter - definitionCandidates.length} import statements`);
+        }
+        
+        // RULE 5: Single Winner (per file, then globally)
+        // Within same file: pick earliest start line
+        // Globally: if all exact name matches, return only 1 best result
+        const beforeSingleWinner = definitionCandidates.length;
+        if (definitionCandidates.length > 1) {
+          // Group by file
+          const byFile = new Map<string, IndexedSymbol[]>();
+          for (const sym of definitionCandidates) {
+            const existing = byFile.get(sym.location.uri);
+            if (existing) {
+              existing.push(sym);
+            } else {
+              byFile.set(sym.location.uri, [sym]);
+            }
+          }
+          
+          // Pick earliest in each file
+          const onePerFile: IndexedSymbol[] = [];
+          for (const fileSymbols of byFile.values()) {
+            if (fileSymbols.length === 1) {
+              onePerFile.push(fileSymbols[0]);
+            } else {
+              // Pick earliest start line
+              const earliest = fileSymbols.reduce((best, current) => 
+                current.range.startLine < best.range.startLine ? current : best
+              );
+              onePerFile.push(earliest);
+            }
+          }
+          
+          definitionCandidates = onePerFile;
+          
+          // If all have exact same name, return ONLY the best one globally
+          if (definitionCandidates.length > 1) {
+            const allSameName = definitionCandidates.every(s => s.name === symbolAtCursor.name);
+            if (allSameName) {
+              // Priority: class > function > interface > variable > others
+              const kindPriority: Record<string, number> = {
+                'class': 1,
+                'function': 2,
+                'interface': 3,
+                'enum': 4,
+                'type': 5,
+                'variable': 6,
+                'constant': 7,
+                'method': 8,
+                'property': 9
+              };
+              
+              const best = definitionCandidates.reduce((winner, current) => {
+                const winnerPriority = kindPriority[winner.kind] ?? 999;
+                const currentPriority = kindPriority[current.kind] ?? 999;
+                return currentPriority < winnerPriority ? current : winner;
+              });
+              
+              definitionCandidates = [best];
+              logger.info(`[Server] Rule 5 (Single Winner) - ${beforeSingleWinner} → 1 (best: ${best.kind} in ${best.filePath?.split(/[\\/]/).pop()})`);
+            }
+          }
+        }
+        
+        logger.info(`[Server] Strict pipeline complete: ${candidates.length} → ${definitionCandidates.length} candidates`);
 
-        logger.info(`[Server] Filtered to ${filtered.length} exact matches`);
+        logger.info(`[Server] Filtered to ${definitionCandidates.length} exact matches after strict pipeline`);
 
-        if (filtered.length > 0) {
+        if (definitionCandidates.length > 0) {
           // If multiple candidates remain, use TypeScript for semantic disambiguation
-          let finalCandidates = filtered;
-          if (filtered.length > 1) {
+          let finalCandidates = definitionCandidates;
+          if (definitionCandidates.length > 1) {
             logger.info(`[Server] Multiple candidates detected, attempting TypeScript disambiguation...`);
             finalCandidates = await this.disambiguateWithTypeScript(
-              filtered,
+              definitionCandidates,
               uri,
               text,
               line,
@@ -508,12 +442,19 @@ export class DefinitionHandler implements IHandler {
             );
           }
           
-          // Apply disambiguation heuristics as final ranking
-          const ranked = disambiguateSymbols(finalCandidates, uri, symbolAtCursor.containerName);
+          // Apply disambiguation heuristics as final ranking if still multiple
+          let rankedCandidates = finalCandidates;
+          if (finalCandidates.length > 1) {
+            rankedCandidates = disambiguateSymbols(finalCandidates, uri, symbolAtCursor.containerName);
+            
+            // ULTRA-STRICT: Even after all filtering, return only 1 result for instant jump
+            if (rankedCandidates.length > 1) {
+              logger.info(`[Server] Multiple results remain, forcing single winner for instant jump`);
+              rankedCandidates = [rankedCandidates[0]]; // Take the best-ranked one
+            }
+          }
           
-          // Deduplicate to ensure one location per file
-          const deduplicated = deduplicateByFile(ranked);
-          const results = deduplicated.map(sym => ({
+          const results = rankedCandidates.map(sym => ({
             uri: URI.file(sym.location.uri).toString(),
             range: {
               start: { line: sym.range.startLine, character: sym.range.startCharacter },
@@ -525,7 +466,7 @@ export class DefinitionHandler implements IHandler {
           profiler.record('definition', duration);
           statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
           
-          logger.info(`[Server] Definition result: ${ranked.length} → ${results.length} locations (deduplicated) in ${duration} ms`);
+          logger.info(`[Server] Definition result: ${candidates.length} → ${results.length} location${results.length === 1 ? '' : 's'} (INSTANT JUMP) in ${duration} ms`);
           return results;
         }
       }
@@ -591,13 +532,14 @@ export class DefinitionHandler implements IHandler {
   }
 
   /**
-   * Execute fallback search with optimizations to prevent extreme latency.
+   * Execute fallback search with strict filtering for instant jumps.
    * 
-   * Optimizations:
-   * 1. Deduplicate exact locations
-   * 2. Code-first filtering (definitions only, code over text)
-   * 3. Exclude cursor position to prevent self-reference
-   * 4. Limit result processing for large result sets
+   * Applies same 5-rule pipeline as main definition handler:
+   * 1. Remove self-references
+   * 2. Code superiority (drop text/markdown if code exists)
+   * 3. Implementation over abstraction (class > interface)
+   * 4. Import ban (no import statements)
+   * 5. Single winner (prefer earliest, return 1 if possible)
    */
   private async executeFallbackSearch(
     word: string,
@@ -610,56 +552,129 @@ export class DefinitionHandler implements IHandler {
     let symbols = await mergedIndex.findDefinitions(word);
     logger.info(`[Server] Fallback: Found ${symbols.length} candidates for "${word}"`);
     
-    // CODE-FIRST FILTERING (Task 2)
+    // STRICT FILTERING PIPELINE
     
-    // Step 1: Deduplicate exact locations
-    symbols = this.deduplicateExactLocations(symbols);
-    logger.info(`[Server] Fallback: Deduplicated to ${symbols.length} unique locations`);
-    
-    // Step 2: Prioritize definitions - If ANY has isDefinition=true, discard ALL isDefinition=false
-    const hasDefinitions = symbols.some(s => s.isDefinition === true);
-    if (hasDefinitions) {
-      const beforeDefFilter = symbols.length;
-      symbols = symbols.filter(s => s.isDefinition === true);
-      if (beforeDefFilter !== symbols.length) {
-        logger.info(`[Server] Fallback: Discarded ${beforeDefFilter - symbols.length} non-definition symbols`);
+    // RULE 1: Remove Self-Reference
+    const beforeSelfRef = symbols.length;
+    symbols = symbols.filter(symbol => {
+      if (symbol.location.uri === uri) {
+        const cursorInRange = 
+          line >= symbol.range.startLine &&
+          line <= symbol.range.endLine &&
+          (line !== symbol.range.startLine || character >= symbol.range.startCharacter) &&
+          (line !== symbol.range.endLine || character <= symbol.range.endCharacter);
+        return !cursorInRange;
       }
+      return true;
+    });
+    if (beforeSelfRef !== symbols.length) {
+      logger.info(`[Server] Fallback Rule 1 - Removed ${beforeSelfRef - symbols.length} self-references`);
     }
     
-    // Step 3: Prioritize code - If ANY has kind != 'text', discard ALL kind='text'
-    const hasCodeSymbols = symbols.some(s => s.kind !== 'text');
-    if (hasCodeSymbols) {
-      const beforeTextFilter = symbols.length;
+    // RULE 2: Code Superiority
+    const hasCodeDefinitions = symbols.some(s => s.isDefinition === true);
+    if (hasCodeDefinitions) {
+      const beforeText = symbols.length;
       symbols = symbols.filter(s => s.kind !== 'text');
-      if (beforeTextFilter !== symbols.length) {
-        logger.info(`[Server] Fallback: Discarded ${beforeTextFilter - symbols.length} text symbols (code symbols available)`);
+      if (beforeText !== symbols.length) {
+        logger.info(`[Server] Fallback Rule 2 - Removed ${beforeText - symbols.length} text symbols`);
       }
     }
     
-    // OPTIMIZATION 2: Apply precision filters (self-reference, imports, exact name match)
-    symbols = filterPrecisionResults(symbols, uri, line, character, word);
-    logger.info(`[Server] Fallback: After precision filtering: ${symbols.length} candidates`);
-    
-    // OPTIMIZATION 3: Limit processing for large result sets
-    const MAX_FALLBACK_RESULTS = 50;
-    if (symbols.length > MAX_FALLBACK_RESULTS) {
-      logger.info(`[Server] Fallback: Limiting to first ${MAX_FALLBACK_RESULTS} results (${symbols.length} total)`);
-      symbols = symbols.slice(0, MAX_FALLBACK_RESULTS);
+    // RULE 3: Implementation over Abstraction
+    const symbolsByName = new Map<string, IndexedSymbol[]>();
+    for (const sym of symbols) {
+      const existing = symbolsByName.get(sym.name);
+      if (existing) {
+        existing.push(sym);
+      } else {
+        symbolsByName.set(sym.name, [sym]);
+      }
     }
-
-    // Apply ranking heuristics
+    
+    const beforeAbstraction = symbols.length;
+    const filteredByAbstraction: IndexedSymbol[] = [];
+    for (const [, syms] of symbolsByName.entries()) {
+      const hasClass = syms.some(s => s.kind === 'class');
+      const hasInterface = syms.some(s => s.kind === 'interface');
+      
+      if (hasClass && hasInterface) {
+        filteredByAbstraction.push(...syms.filter(s => s.kind === 'class'));
+      } else {
+        filteredByAbstraction.push(...syms);
+      }
+    }
+    symbols = filteredByAbstraction;
+    if (beforeAbstraction !== symbols.length) {
+      logger.info(`[Server] Fallback Rule 3 - ${beforeAbstraction} → ${symbols.length}`);
+    }
+    
+    // RULE 4: Import Ban
+    const beforeImport = symbols.length;
+    const importKinds = new Set([
+      'import', 'ImportSpecifier', 'ImportDeclaration', 'ImportClause',
+      'ImportDefaultSpecifier', 'ImportNamespaceSpecifier', 'NamedImports', 'NamespaceImport'
+    ]);
+    symbols = symbols.filter(s => !importKinds.has(s.kind));
+    if (beforeImport !== symbols.length) {
+      logger.info(`[Server] Fallback Rule 4 - Removed ${beforeImport - symbols.length} imports`);
+    }
+    
+    // RULE 5: Single Winner
     if (symbols.length > 1) {
-      symbols = disambiguateSymbols(symbols, uri);
+      // Group by file, pick earliest in each
+      const byFile = new Map<string, IndexedSymbol[]>();
+      for (const sym of symbols) {
+        const existing = byFile.get(sym.location.uri);
+        if (existing) {
+          existing.push(sym);
+        } else {
+          byFile.set(sym.location.uri, [sym]);
+        }
+      }
+      
+      const onePerFile: IndexedSymbol[] = [];
+      for (const fileSymbols of byFile.values()) {
+        if (fileSymbols.length === 1) {
+          onePerFile.push(fileSymbols[0]);
+        } else {
+          const earliest = fileSymbols.reduce((best, current) => 
+            current.range.startLine < best.range.startLine ? current : best
+          );
+          onePerFile.push(earliest);
+        }
+      }
+      
+      symbols = onePerFile;
+      
+      // If all same name, return best one globally
+      if (symbols.length > 1) {
+        const allSameName = symbols.every(s => s.name === word);
+        if (allSameName) {
+          const kindPriority: Record<string, number> = {
+            'class': 1, 'function': 2, 'interface': 3, 'enum': 4,
+            'type': 5, 'variable': 6, 'constant': 7
+          };
+          
+          const best = symbols.reduce((winner, current) => {
+            const winnerPriority = kindPriority[winner.kind] ?? 999;
+            const currentPriority = kindPriority[current.kind] ?? 999;
+            return currentPriority < winnerPriority ? current : winner;
+          });
+          
+          symbols = [best];
+          logger.info(`[Server] Fallback Rule 5 - Reduced to single best result: ${best.kind}`);
+        }
+      }
     }
     
-    // Deduplicate to ensure one location per file
-    const deduplicated = deduplicateByFile(symbols);
+    logger.info(`[Server] Fallback: After strict filtering: ${symbols.length} results`);
 
-    if (deduplicated.length === 0) {
+    if (symbols.length === 0) {
       return null;
     }
 
-    return deduplicated.map(sym => ({
+    return symbols.map(sym => ({
       uri: URI.file(sym.location.uri).toString(),
       range: {
         start: { line: sym.range.startLine, character: sym.range.startCharacter },

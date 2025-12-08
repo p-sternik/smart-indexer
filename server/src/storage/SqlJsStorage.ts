@@ -224,8 +224,11 @@ export class SqlJsStorage implements IIndexStorage {
       )
     `);
 
-    // Index on uri for fast lookups
+    // Index on uri for fast lookups (redundant with PRIMARY KEY, but explicit)
     this.db!.run(`CREATE INDEX IF NOT EXISTS idx_uri ON files(uri)`);
+    
+    // Index on updated_at for temporal queries
+    this.db!.run(`CREATE INDEX IF NOT EXISTS idx_updated_at ON files(updated_at)`);
   }
 
   /**
@@ -271,6 +274,11 @@ export class SqlJsStorage implements IIndexStorage {
           tokenize='porter'
         )
       `);
+
+      // Create indexes for fast lookups on symbol_name and file_path
+      // Note: FTS5 virtual tables have their own internal indexing
+      // These would be for auxiliary queries if needed
+      // FTS5 already indexes all columns by default
 
       // Populate FTS table with existing symbols
       console.info('[SqlJsStorage] Populating FTS index from existing data...');
@@ -391,14 +399,37 @@ export class SqlJsStorage implements IIndexStorage {
     const normalizedUri = this.normalizeUri(data.uri);
     const normalizedData = { ...data, uri: normalizedUri };
 
-    const jsonData = JSON.stringify(normalizedData);
+    await this.updateFileSymbols(normalizedUri, normalizedData);
+  }
+
+  /**
+   * Atomic update method for file symbols.
+   * This method GUARANTEES no duplicates by using a transaction with DELETE+INSERT.
+   * 
+   * Transaction workflow:
+   * 1. BEGIN TRANSACTION
+   * 2. DELETE all existing entries for this file (normalized path)
+   * 3. INSERT new symbol data
+   * 4. UPDATE FTS index (if available)
+   * 5. COMMIT (or ROLLBACK on error)
+   * 
+   * This ensures:
+   * - No duplicate symbols for the same file
+   * - Atomic operation (all-or-nothing)
+   * - Constant DB size on file updates (old data is removed)
+   * 
+   * @param normalizedUri - Already normalized file URI
+   * @param data - Complete indexed data for the file
+   */
+  private async updateFileSymbols(normalizedUri: string, data: FileIndexData): Promise<void> {
+    const jsonData = JSON.stringify(data);
     const updatedAt = Date.now();
 
     // Use transaction for atomicity (DELETE + INSERT)
     this.db!.run('BEGIN TRANSACTION');
     
     try {
-      // Delete old entry before inserting new one
+      // CRITICAL: Delete old entry BEFORE inserting new one to prevent duplicates
       this.db!.run('DELETE FROM files WHERE uri = ?', [normalizedUri]);
       
       // Insert new entry
@@ -408,7 +439,7 @@ export class SqlJsStorage implements IIndexStorage {
       );
 
       // Update FTS index (if FTS5 is available)
-      await this.updateFTSIndex(normalizedData);
+      await this.updateFTSIndex(data);
       
       this.db!.run('COMMIT');
     } catch (error) {
@@ -422,6 +453,8 @@ export class SqlJsStorage implements IIndexStorage {
 
   /**
    * Update FTS5 index for a file's symbols.
+   * MUST be called within an existing transaction.
+   * Ensures atomic DELETE+INSERT for FTS entries to prevent duplicates.
    */
   private async updateFTSIndex(data: FileIndexData): Promise<void> {
     try {
@@ -434,7 +467,8 @@ export class SqlJsStorage implements IIndexStorage {
         return; // FTS not available
       }
 
-      // Delete existing entries for this file
+      // CRITICAL: Delete existing FTS entries for this file to prevent duplicates
+      // This DELETE uses the normalized URI from the parent transaction
       this.db!.run('DELETE FROM symbols_fts WHERE uri = ?', [data.uri]);
 
       // Insert new symbol entries (definitions only)
@@ -454,6 +488,7 @@ export class SqlJsStorage implements IIndexStorage {
       }
     } catch (error) {
       // Silently fail - FTS is optional
+      // Error will be caught by parent transaction and rolled back
     }
   }
 

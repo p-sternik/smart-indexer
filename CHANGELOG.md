@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.62.0](https://github.com/p-sternik/smart-indexer/compare/v1.61.2...v1.62.0) (2025-12-08)
+
+
+### Features
+
+* implement full-text search and schema versioning in SqlJsStorage ([c883ac5](https://github.com/p-sternik/smart-indexer/commit/c883ac5498a94d7966b59b7982ee4139f16230ce))
+
 ## [1.61.2](https://github.com/p-sternik/smart-indexer/compare/v1.61.1...v1.61.2) (2025-12-07)
 
 

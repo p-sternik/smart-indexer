@@ -482,7 +482,7 @@ export class ServerInitializer {
 
     try {
       connection.console.info('[ServerInitializer] Starting full workspace background indexing...');
-      const allFiles = await fileScanner.scanWorkspace(this.workspaceRoot);
+      const allFiles = await fileScanner.scanWorkspace(this.workspaceRoot, true); // Skip folder hash optimization for full scan
       connection.console.info(`[ServerInitializer] File scanner discovered ${allFiles.length} indexable files`);
       
       if (allFiles.length === 0) {

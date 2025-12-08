@@ -57,19 +57,20 @@ export class FileScanner {
     this.useFolderHashing = options.useFolderHashing !== undefined ? options.useFolderHashing : true;
   }
 
-  async scanWorkspace(workspaceRoot: string): Promise<string[]> {
+  async scanWorkspace(workspaceRoot: string, skipFolderHashOptimization: boolean = false): Promise<string[]> {
     const files: string[] = [];
     console.info(`[FileScanner] Starting workspace scan from: ${workspaceRoot}`);
+    console.info(`[FileScanner] Folder hashing: ${this.useFolderHashing ? 'enabled' : 'disabled'}, skip optimization: ${skipFolderHashOptimization}`);
     const limiter = new ConcurrencyLimiter(FileScanner.STAT_CONCURRENCY);
-    await this.scanDirectory(workspaceRoot, files, limiter);
+    await this.scanDirectory(workspaceRoot, files, limiter, skipFolderHashOptimization);
     console.info(`[FileScanner] Workspace scan complete. Found ${files.length} indexable files`);
     return files;
   }
 
-  private async scanDirectory(dir: string, files: string[], limiter: ConcurrencyLimiter): Promise<void> {
+  private async scanDirectory(dir: string, files: string[], limiter: ConcurrencyLimiter, skipFolderHashOptimization: boolean = false): Promise<void> {
     try {
-      // Check folder hash early exit if enabled
-      if (this.useFolderHashing && this.folderHasher) {
+      // Check folder hash early exit if enabled (but skip during full workspace scans)
+      if (!skipFolderHashOptimization && this.useFolderHashing && this.folderHasher) {
         const changed = await this.folderHasher.hasFolderChanged(dir);
         if (changed === false) {
           console.info(`[FileScanner] Skipping unchanged folder: ${dir} (hash unchanged)`);
@@ -115,7 +116,7 @@ export class FileScanner {
 
       // Recurse into subdirectories (sequentially to avoid excessive parallelism)
       for (const subdir of subdirs) {
-        await this.scanDirectory(subdir, files, limiter);
+        await this.scanDirectory(subdir, files, limiter, skipFolderHashOptimization);
       }
     } catch (error: any) {
       if (error.code !== 'ENOENT' && error.code !== 'EACCES') {

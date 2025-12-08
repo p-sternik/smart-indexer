@@ -455,7 +455,7 @@ export class InitializationHandler implements IHandler {
 
     try {
       connection.console.info('[Server] Starting full workspace background indexing...');
-      const allFiles = await fileScanner.scanWorkspace(this.state.workspaceRoot);
+      const allFiles = await fileScanner.scanWorkspace(this.state.workspaceRoot, true); // Skip folder hash optimization for full scan
       connection.console.info(`[Server] File scanner discovered ${allFiles.length} indexable files`);
       
       if (allFiles.length === 0) {

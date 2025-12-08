@@ -71,14 +71,23 @@ export class HybridDefinitionProvider implements vscode.DefinitionProvider {
     token: vscode.CancellationToken
   ): Promise<vscode.Location[] | null> {
     try {
+      let timeoutId: NodeJS.Timeout | null = null;
+      
       const result = await Promise.race([
         vscode.commands.executeCommand<vscode.Location[]>(
           'vscode.executeDefinitionProvider',
           document.uri,
           position
         ),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), this.nativeTimeout))
+        new Promise<null>((resolve) => {
+          timeoutId = setTimeout(() => resolve(null), this.nativeTimeout);
+        })
       ]);
+      
+      // Clear timeout if command completed before timeout
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
 
       if (token.isCancellationRequested) {
         return null;

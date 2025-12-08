@@ -138,6 +138,19 @@ function deduplicateByFile(symbols: IndexedSymbol[]): IndexedSymbol[] {
     results.push(best);
   }
   
+  // STRICT DEDUPLICATION: If all results are exact matches, return only the best one globally
+  if (results.length > 1) {
+    const allSameName = results.every(r => r.name === results[0].name);
+    if (allSameName) {
+      // Pick the single best result across all files
+      let globalBest = results[0];
+      for (let i = 1; i < results.length; i++) {
+        globalBest = pickBetterSymbol(globalBest, results[i]);
+      }
+      return [globalBest];
+    }
+  }
+  
   return results;
 }
 
@@ -497,14 +510,21 @@ export class DefinitionHandler implements IHandler {
       // OPTIMIZATION: Apply timeout to fallback search to prevent 30s+ delays
       const FALLBACK_TIMEOUT_MS = 500;
       const fallbackPromise = this.executeFallbackSearch(word, uri, line, character);
+      
+      let timeoutId: NodeJS.Timeout | null = null;
       const timeoutPromise = new Promise<Location[] | null>((resolve) => {
-        setTimeout(() => {
+        timeoutId = setTimeout(() => {
           logger.warn(`[Server] Fallback search timed out after ${FALLBACK_TIMEOUT_MS}ms for "${word}"`);
           resolve(null);
         }, FALLBACK_TIMEOUT_MS);
       });
       
       const results = await Promise.race([fallbackPromise, timeoutPromise]);
+      
+      // Clear timeout if search completed before timeout
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
 
       const duration = Date.now() - start;
       profiler.record('definition', duration);
@@ -744,14 +764,22 @@ export class DefinitionHandler implements IHandler {
         })();
       });
 
+      let timeoutId: NodeJS.Timeout | null = null;
       const timeoutPromise = new Promise<IndexedSymbol[]>((resolve) => {
-        setTimeout(() => {
+        timeoutId = setTimeout(() => {
           logger.warn(`[Server] TypeScript disambiguation timed out after ${timeoutMs}ms`);
           resolve(candidates);
         }, timeoutMs);
       });
 
-      return await Promise.race([disambiguationPromise, timeoutPromise]);
+      const result = await Promise.race([disambiguationPromise, timeoutPromise]);
+      
+      // Clear timeout if disambiguation completed before timeout
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+      
+      return result;
     } catch (error) {
       logger.error(`[Server] Error in TypeScript disambiguation: ${error}`);
       return candidates;

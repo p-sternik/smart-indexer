@@ -27,13 +27,12 @@ import { getWordRangeAtPosition } from '../utils/textUtils.js';
 
 /**
  * Symbol kinds that represent primary definitions (classes, functions, etc.)
- * These are prioritized over secondary kinds like decorators.
+ * These are prioritized over secondary kinds like decorators or constructors.
  */
 const PRIMARY_DEFINITION_KINDS = new Set([
   'class',
   'interface',
   'function',
-  'method',
   'enum',
   'type',
   'variable',
@@ -43,7 +42,7 @@ const PRIMARY_DEFINITION_KINDS = new Set([
 /**
  * Filter precision results to remove unwanted matches:
  * 1. Remove self-references (same file + overlapping cursor position)
- * 2. Remove import statements (ImportSpecifier, ImportDeclaration)
+ * 2. Remove import statements (ImportSpecifier, ImportDeclaration, ImportClause, etc.)
  * 3. Prefer exact name matches over fuzzy matches
  */
 function filterPrecisionResults(
@@ -67,10 +66,19 @@ function filterPrecisionResults(
       }
     }
 
-    // FILTER 2: Remove import statements (we want the definition, not the import)
-    if (symbol.kind === 'import' || 
-        symbol.kind === 'ImportSpecifier' || 
-        symbol.kind === 'ImportDeclaration') {
+    // FILTER 2: Remove ALL import-related kinds (we want the definition, not the import)
+    const importKinds = [
+      'import',
+      'ImportSpecifier',
+      'ImportDeclaration',
+      'ImportClause',
+      'ImportDefaultSpecifier',
+      'ImportNamespaceSpecifier',
+      'NamedImports',
+      'NamespaceImport'
+    ];
+    
+    if (importKinds.includes(symbol.kind)) {
       return false;
     }
 
@@ -86,12 +94,12 @@ function filterPrecisionResults(
 /**
  * Deduplicate definition results to ensure only one location per file.
  * 
- * When multiple symbols in the same file match (e.g., @Component decorator and 
- * the class declaration), this function picks the best one:
- * 1. Prioritize class/interface/function over decorators or unclassified symbols
- * 2. If kinds are similar and locations are close (within 10 lines), pick the later one
- *    (class declaration usually follows the decorator)
- * 3. Otherwise, pick the one with the primary definition kind
+ * When multiple symbols in the same file match (e.g., Class + Constructor, or
+ * @Component decorator + class declaration), this function picks the best one:
+ * 1. Prioritize class/interface/function/enum/type over constructors/methods/decorators
+ * 2. If both are primary kinds and within 5 lines, pick the first (class over interface)
+ * 3. If both are secondary and close, pick the one with exact name match to requested name
+ * 4. Otherwise, pick the primary definition kind
  * 
  * @param symbols - Array of indexed symbols to deduplicate
  * @returns Deduplicated array with at most one symbol per file
@@ -137,15 +145,24 @@ function deduplicateByFile(symbols: IndexedSymbol[]): IndexedSymbol[] {
  * Compare two symbols and return the "better" one for Go to Definition.
  * 
  * Priority logic:
- * 1. Primary definition kinds (class, interface, function) win over secondary kinds
- * 2. If both are primary or both are secondary and within 10 lines, pick the later one
- * 3. Otherwise, prefer primary definition kinds
+ * 1. Primary definition kinds (class, interface, function) ALWAYS win over secondary (constructor, method)
+ * 2. If both are primary, prefer class > interface > function > enum > type
+ * 3. If both are secondary, prefer the one at an earlier line (constructor before method)
+ * 4. Special case: If one is 'class' and the other is 'constructor', always pick 'class'
  */
 function pickBetterSymbol(a: IndexedSymbol, b: IndexedSymbol): IndexedSymbol {
   const aIsPrimary = PRIMARY_DEFINITION_KINDS.has(a.kind);
   const bIsPrimary = PRIMARY_DEFINITION_KINDS.has(b.kind);
   
-  // If one is primary and the other isn't, pick the primary one
+  // Special case: Class vs Constructor -> always pick Class
+  if (a.kind === 'class' && b.kind === 'constructor') {
+    return a;
+  }
+  if (b.kind === 'class' && a.kind === 'constructor') {
+    return b;
+  }
+  
+  // Rule 1: Primary kinds ALWAYS win over secondary
   if (aIsPrimary && !bIsPrimary) {
     return a;
   }
@@ -153,23 +170,34 @@ function pickBetterSymbol(a: IndexedSymbol, b: IndexedSymbol): IndexedSymbol {
     return b;
   }
   
-  // Both are primary or both are secondary - use proximity heuristic
-  const lineDiff = Math.abs(a.location.line - b.location.line);
-  const PROXIMITY_THRESHOLD = 10;
-  
-  if (lineDiff <= PROXIMITY_THRESHOLD) {
-    // Close together (e.g., decorator + class) - pick the later one (usually the class name)
-    return a.location.line >= b.location.line ? a : b;
+  // Rule 2: Both are primary - use kind priority ranking
+  if (aIsPrimary && bIsPrimary) {
+    const kindPriority: Record<string, number> = {
+      'class': 1,
+      'interface': 2,
+      'function': 3,
+      'enum': 4,
+      'type': 5,
+      'variable': 6,
+      'constant': 7
+    };
+    
+    const aPriority = kindPriority[a.kind] ?? 999;
+    const bPriority = kindPriority[b.kind] ?? 999;
+    
+    if (aPriority < bPriority) {
+      return a;
+    }
+    if (bPriority < aPriority) {
+      return b;
+    }
+    
+    // Same priority - pick the first one (earlier in file)
+    return a.location.line <= b.location.line ? a : b;
   }
   
-  // Far apart - prefer primary kinds, otherwise pick the first one
-  if (aIsPrimary) {
-    return a;
-  }
-  if (bIsPrimary) {
-    return b;
-  }
-  return a;
+  // Rule 3: Both are secondary - pick the earlier one
+  return a.location.line <= b.location.line ? a : b;
 }
 
 /**

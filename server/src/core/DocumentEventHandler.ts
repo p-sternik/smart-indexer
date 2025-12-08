@@ -84,12 +84,7 @@ export class DocumentEventHandler {
         this.typeScriptService.updateFile(uri, content);
       }
       
-      // Analyze for dead code (fire-and-forget, non-blocking)
-      if (this.deadCodeHandler) {
-        this.deadCodeHandler.analyzeFile(uri).catch(error => {
-          this.logger.error(`[DocumentEventHandler] Dead code analysis error for ${uri}: ${error}`);
-        });
-      }
+      // NOTE: Dead code analysis removed from didOpen - only run on didSave to avoid blocking
       
       this.updateStats();
     } catch (error) {

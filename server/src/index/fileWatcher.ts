@@ -6,6 +6,7 @@ import { ILogger } from '../utils/Logger.js';
 import { URI } from 'vscode-uri';
 import * as chokidar from 'chokidar';
 import * as path from 'path';
+import type { DeadCodeHandler } from '../handlers/deadCodeHandler.js';
 
 /**
  * FileWatcher with per-file debouncing for live index synchronization.
@@ -24,6 +25,7 @@ export class FileWatcher {
   private configManager: ConfigurationManager;
   private workspaceRoot: string;
   private logger: ILogger;
+  private deadCodeHandler: DeadCodeHandler | null = null;
   
   // Per-file debounce timers
   private debounceMap: Map<string, NodeJS.Timeout> = new Map();
@@ -51,6 +53,13 @@ export class FileWatcher {
     this.workspaceRoot = workspaceRoot;
     this.logger = logger;
     this.debounceDelayMs = debounceDelayMs;
+  }
+
+  /**
+   * Set the dead code handler (set after initialization).
+   */
+  setDeadCodeHandler(handler: DeadCodeHandler): void {
+    this.deadCodeHandler = handler;
   }
 
   /**
@@ -166,6 +175,13 @@ export class FileWatcher {
       this.reindexFile(uri, 'file-saved').catch(error => {
         this.logger.error(`[FileWatcher] Error re-indexing saved file ${uri}: ${error}`);
       });
+      
+      // Trigger dead code analysis on save (fire-and-forget, non-blocking)
+      if (this.deadCodeHandler) {
+        this.deadCodeHandler.analyzeFile(uri).catch(error => {
+          this.logger.error(`[FileWatcher] Dead code analysis error for ${uri}: ${error}`);
+        });
+      }
     } catch (error) {
       this.logger.error(`[FileWatcher] Error in onDocumentSaved: ${error}`);
     }

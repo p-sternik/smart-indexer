@@ -228,6 +228,12 @@ connection.onInitialized(async () => {
     deadCodeHandler = createDeadCodeHandler(serverServices, serverState);
     deadCodeHandler.register();
     documentEventHandler.setDeadCodeHandler(deadCodeHandler);
+    
+    // Wire DeadCodeHandler to FileWatcher for didSave events
+    if (initResult.fileWatcher) {
+      initResult.fileWatcher.setDeadCodeHandler(deadCodeHandler);
+    }
+    
     connection.console.info('[Server] DeadCodeHandler registered');
   }
   

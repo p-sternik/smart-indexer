@@ -71,7 +71,7 @@ export class DeadCodeHandler implements IHandler {
    * Analyze a file for dead code (unused exports) and publish diagnostics.
    * 
    * This method is debounced to avoid excessive analysis during rapid edits.
-   * Call this from didOpen and didSave events.
+   * Call this ONLY from didSave events (not didOpen to avoid blocking).
    * 
    * @param uri - File path to analyze (not URI format)
    */

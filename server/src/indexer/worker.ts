@@ -495,6 +495,7 @@ function traverseAST(
     let isStatic: boolean | undefined;
     let parametersCount: number | undefined;
     let needsScopeTracking = false;
+    let identifierNode: TSESTree.Node | undefined;
 
     switch (node.type) {
       case AST_NODE_TYPES.FunctionDeclaration:
@@ -503,6 +504,7 @@ function traverseAST(
           symbolName = interner.intern((node as TSESTree.FunctionDeclaration).id!.name);
           symbolKind = 'function';
           parametersCount = (node as TSESTree.FunctionDeclaration).params.length;
+          identifierNode = (node as TSESTree.FunctionDeclaration).id!;
           needsScopeTracking = true;
         }
         break;
@@ -512,6 +514,7 @@ function traverseAST(
           // Intern the class name
           symbolName = interner.intern((node as TSESTree.ClassDeclaration).id!.name);
           symbolKind = 'class';
+          identifierNode = (node as TSESTree.ClassDeclaration).id!;
           
           // Check if this class implements Action interface (legacy NgRx)
           const classNode = node as TSESTree.ClassDeclaration;
@@ -556,6 +559,7 @@ function traverseAST(
           // Intern the interface name
           symbolName = interner.intern((node as TSESTree.TSInterfaceDeclaration).id.name);
           symbolKind = 'interface';
+          identifierNode = (node as TSESTree.TSInterfaceDeclaration).id;
         }
         break;
 
@@ -564,6 +568,7 @@ function traverseAST(
           // Intern the type alias name
           symbolName = interner.intern((node as TSESTree.TSTypeAliasDeclaration).id.name);
           symbolKind = 'type';
+          identifierNode = (node as TSESTree.TSTypeAliasDeclaration).id;
         }
         break;
 
@@ -572,6 +577,7 @@ function traverseAST(
           // Intern the enum name
           symbolName = interner.intern((node as TSESTree.TSEnumDeclaration).id.name);
           symbolKind = 'enum';
+          identifierNode = (node as TSESTree.TSEnumDeclaration).id;
         }
         break;
 
@@ -749,6 +755,9 @@ function traverseAST(
     }
 
     if (symbolName && symbolKind) {
+      // Use identifier node location if available, otherwise fall back to declaration node location
+      const locNode = identifierNode || node;
+      
       const fullContainerPath = containerPath.length > 0 ? containerPath.join('.') : undefined;
       const id = createSymbolId(
         uri,
@@ -758,8 +767,8 @@ function traverseAST(
         symbolKind,
         isStatic,
         parametersCount,
-        node.loc.start.line - 1,
-        node.loc.start.column
+        locNode.loc.start.line - 1,
+        locNode.loc.start.column
       );
       
       // Build the base symbol
@@ -769,8 +778,8 @@ function traverseAST(
         kind: symbolKind,
         location: {
           uri,
-          line: node.loc.start.line - 1,
-          character: node.loc.start.column
+          line: locNode.loc.start.line - 1,
+          character: locNode.loc.start.column
         },
         range: {
           startLine: node.loc.start.line - 1,

@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.65.0](https://github.com/p-sternik/smart-indexer/compare/v1.64.0...v1.65.0) (2025-12-08)
+
+
+### Features
+
+* update fileScanner to support skipping folder hash optimization during full workspace scans ([6fbb645](https://github.com/p-sternik/smart-indexer/commit/6fbb64530f7320741c6e0d6268597271a18502ec))
+
 ## [1.64.0](https://github.com/p-sternik/smart-indexer/compare/v1.63.0...v1.64.0) (2025-12-08)
 
 

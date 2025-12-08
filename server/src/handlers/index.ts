@@ -61,7 +61,11 @@ export {
   createRenameHandler
 } from './renameHandler.js';
 
+export {
+  WorkspaceSymbolHandler,
+  createWorkspaceSymbolHandler
+} from './WorkspaceSymbolHandler.js';
+
 // Future handlers (to be implemented):
-// export { WorkspaceSymbolHandler, createWorkspaceSymbolHandler } from './WorkspaceSymbolHandler.js';
 // export { DocumentHandler, createDocumentHandler } from './DocumentHandler.js';
 // export { CommandsHandler, createCommandsHandler } from './CommandsHandler.js';

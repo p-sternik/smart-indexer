@@ -13,9 +13,6 @@ import {
   createConnection,
   TextDocuments,
   ProposedFeatures,
-  WorkspaceSymbol,
-  WorkspaceSymbolParams,
-  SymbolKind,
   CancellationToken,
   ResponseError
 } from 'vscode-languageserver/node';
@@ -35,10 +32,8 @@ import { NgRxLinkResolver } from './index/resolvers/NgRxLinkResolver.js';
 import { WorkerPool } from './utils/workerPool.js';
 import { Profiler } from './profiler/profiler.js';
 import { FolderHasher } from './cache/folderHasher.js';
-import { RankingContext } from './utils/fuzzySearch.js';
 import { TypeScriptService } from './typescript/typeScriptService.js';
 import { LoggerService, LogLevel } from './utils/Logger.js';
-import { URI } from 'vscode-uri';
 import * as path from 'path';
 
 // Core module imports
@@ -63,6 +58,7 @@ import {
   createDeadCodeHandler,
   createHoverHandler,
   createRenameHandler,
+  createWorkspaceSymbolHandler,
   DeadCodeHandler
 } from './handlers/index.js';
 
@@ -182,6 +178,7 @@ handlerRegistry.register(createReferencesHandler);
 handlerRegistry.register(createCompletionHandler);
 handlerRegistry.register(createHoverHandler);
 handlerRegistry.register(createRenameHandler);
+handlerRegistry.register(createWorkspaceSymbolHandler);
 
 // ============================================================================
 // LSP Lifecycle Handlers
@@ -259,61 +256,6 @@ connection.onDidChangeConfiguration(change => {
     logger.error(`[Server] Error updating configuration: ${error}`);
   }
 });
-
-// ============================================================================
-// Workspace Symbol Handler
-// ============================================================================
-
-connection.onWorkspaceSymbol(
-  async (params: WorkspaceSymbolParams): Promise<WorkspaceSymbol[]> => {
-    const start = Date.now();
-    const query = params.query;
-    
-    logger.info(`[Server] WorkspaceSymbol request: query="${query}"`);
-    
-    try {
-      if (!query) {
-        logger.info(`[Server] WorkspaceSymbol result: empty query, 0 results, ${Date.now() - start} ms`);
-        return [];
-      }
-
-      // Build ranking context with open files and current file
-      const openFiles = new Set<string>();
-      for (const doc of documents.all()) {
-        const uri = URI.parse(doc.uri).fsPath;
-        openFiles.add(uri);
-      }
-
-      const currentActiveUri = documentEventHandler?.getCurrentActiveDocumentUri();
-      const context: RankingContext = {
-        openFiles,
-        currentFileUri: currentActiveUri
-      };
-
-      // Use fuzzy search with ranking
-      const symbols = await mergedIndex.searchSymbols(query, 200, context);
-
-      const results = symbols.map(sym => ({
-        name: sym.name,
-        kind: mapSymbolKind(sym.kind),
-        location: {
-          uri: URI.file(sym.location.uri).toString(),
-          range: {
-            start: { line: sym.location.line, character: sym.location.character },
-            end: { line: sym.location.line, character: sym.location.character + sym.name.length }
-          }
-        },
-        containerName: sym.containerName
-      }));
-
-      logger.info(`[Server] WorkspaceSymbol result: query="${query}", ${results.length} symbols in ${Date.now() - start} ms`);
-      return results;
-    } catch (error) {
-      logger.error(`[Server] WorkspaceSymbol error: ${error}, ${Date.now() - start} ms`);
-      return [];
-    }
-  }
-);
 
 // ============================================================================
 // Custom Request Handlers
@@ -511,31 +453,6 @@ function updateStats(): void {
   
   statsManager.updateDynamicStats(dynamicStats.files, dynamicStats.symbols);
   statsManager.updateBackgroundStats(backgroundStats.files, backgroundStats.symbols, backgroundStats.shards);
-}
-
-function mapSymbolKind(kind: string): SymbolKind {
-  switch (kind) {
-    case 'function':
-      return SymbolKind.Function;
-    case 'class':
-      return SymbolKind.Class;
-    case 'interface':
-      return SymbolKind.Interface;
-    case 'type':
-      return SymbolKind.TypeParameter;
-    case 'enum':
-      return SymbolKind.Enum;
-    case 'variable':
-      return SymbolKind.Variable;
-    case 'constant':
-      return SymbolKind.Constant;
-    case 'method':
-      return SymbolKind.Method;
-    case 'property':
-      return SymbolKind.Property;
-    default:
-      return SymbolKind.Variable;
-  }
 }
 
 // ============================================================================

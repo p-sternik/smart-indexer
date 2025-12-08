@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.63.0](https://github.com/p-sternik/smart-indexer/compare/v1.62.0...v1.63.0) (2025-12-08)
+
+
+### Features
+
+* add WorkspaceSymbolHandler for workspace-wide symbol search with FTS5 ([3ff3bd5](https://github.com/p-sternik/smart-indexer/commit/3ff3bd50b3f957cc17eb7e315b168a2731ed615e))
+
 ## [1.62.0](https://github.com/p-sternik/smart-indexer/compare/v1.61.2...v1.62.0) (2025-12-08)
 
 

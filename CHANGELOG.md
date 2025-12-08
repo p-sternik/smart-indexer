@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.69.0](https://github.com/p-sternik/smart-indexer/compare/v1.68.0...v1.69.0) (2025-12-08)
+
+
+### Features
+
+* add debug logging for candidate definitions and class declarations in definition handling ([c00df0b](https://github.com/p-sternik/smart-indexer/commit/c00df0bf18fe790e718adfb6d42f604829aef3df))
+
 ## [1.68.0](https://github.com/p-sternik/smart-indexer/compare/v1.67.0...v1.68.0) (2025-12-08)
 
 

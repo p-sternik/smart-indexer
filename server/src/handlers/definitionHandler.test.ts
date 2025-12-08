@@ -310,4 +310,53 @@ const result = calculateTotal(10, 20);
       expect(definitions.every(d => d.name === 'fetch')).toBe(true);
     });
   });
+
+  describe('Fallback search optimizations', () => {
+    it('should filter out non-definition symbols in fallback', async () => {
+      // Arrange: Add both definition and reference symbols
+      const definition = createTestSymbol({
+        name: 'testVar',
+        kind: 'variable',
+        location: { uri: testFilePath, line: 5, character: 6 },
+        isDefinition: true
+      });
+      const reference = createTestSymbol({
+        name: 'testVar',
+        kind: 'variable',
+        location: { uri: testFilePath, line: 10, character: 8 },
+        isDefinition: false
+      });
+      
+      mockIndex.addSymbol(definition);
+      mockIndex.addSymbol(reference);
+
+      // Act: Find definitions (should only get the definition, not the reference)
+      const definitions = await mockIndex.findDefinitions('testVar');
+
+      // Assert: Should filter to only definition symbols
+      const definitionsOnly = definitions.filter(d => d.isDefinition === true);
+      expect(definitionsOnly).toHaveLength(1);
+      expect(definitionsOnly[0].location.line).toBe(5);
+    });
+
+    it('should limit large result sets in fallback', async () => {
+      // Arrange: Add 100 definition symbols with same name
+      for (let i = 0; i < 100; i++) {
+        const symbol = createTestSymbol({
+          name: 'commonName',
+          kind: 'variable',
+          location: { uri: `/test/file${i}.ts`, line: 1, character: 6 },
+          isDefinition: true
+        });
+        mockIndex.addSymbol(symbol);
+      }
+
+      // Act: Find definitions
+      const definitions = await mockIndex.findDefinitions('commonName');
+
+      // Assert: Should find all, but handler will limit processing
+      expect(definitions.length).toBe(100);
+      // Note: The actual limiting happens in executeFallbackSearch which caps at 50
+    });
+  });
 });

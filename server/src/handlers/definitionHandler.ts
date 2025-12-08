@@ -388,7 +388,7 @@ export class DefinitionHandler implements IHandler {
         }
       }
 
-      // Fallback: use simple word-based lookup
+      // Fallback: use simple word-based lookup with timeout
       const offset = document.offsetAt(params.position);
       const wordRange = getWordRangeAtPosition(text, offset);
       if (!wordRange) {
@@ -397,35 +397,90 @@ export class DefinitionHandler implements IHandler {
       }
 
       const word = text.substring(wordRange.start, wordRange.end);
-      let symbols = await mergedIndex.findDefinitions(word);
-
-      // Apply ranking heuristics even for fallback
-      if (symbols.length > 1) {
-        symbols = disambiguateSymbols(symbols, uri);
-      }
       
-      // Deduplicate to ensure one location per file
-      const deduplicated = deduplicateByFile(symbols);
-
-      const results = deduplicated.length === 0 ? null : deduplicated.map(sym => ({
-        uri: URI.file(sym.location.uri).toString(),
-        range: {
-          start: { line: sym.range.startLine, character: sym.range.startCharacter },
-          end: { line: sym.range.endLine, character: sym.range.endCharacter }
-        }
-      }));
+      // OPTIMIZATION: Apply timeout to fallback search to prevent 30s+ delays
+      const FALLBACK_TIMEOUT_MS = 500;
+      const fallbackPromise = this.executeFallbackSearch(word, uri, line, character);
+      const timeoutPromise = new Promise<Location[] | null>((resolve) => {
+        setTimeout(() => {
+          logger.warn(`[Server] Fallback search timed out after ${FALLBACK_TIMEOUT_MS}ms for "${word}"`);
+          resolve(null);
+        }, FALLBACK_TIMEOUT_MS);
+      });
+      
+      const results = await Promise.race([fallbackPromise, timeoutPromise]);
 
       const duration = Date.now() - start;
       profiler.record('definition', duration);
       statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
       
-      logger.info(`[Server] Definition result (fallback): symbol="${word}", ${symbols.length} → ${deduplicated.length} locations in ${duration} ms`);
+      logger.info(`[Server] Definition result (fallback): symbol="${word}", ${results ? results.length : 0} locations in ${duration} ms`);
       return results;
     } catch (error) {
       const duration = Date.now() - start;
       logger.error(`[Server] Definition error: ${error}, ${duration} ms`);
       return null;
     }
+  }
+
+  /**
+   * Execute fallback search with optimizations to prevent extreme latency.
+   * 
+   * Optimizations:
+   * 1. Filter by isDefinition=true to reduce noise
+   * 2. Exclude cursor position to prevent self-reference
+   * 3. Limit result processing for large result sets
+   */
+  private async executeFallbackSearch(
+    word: string,
+    uri: string,
+    line: number,
+    character: number
+  ): Promise<Location[] | null> {
+    const { mergedIndex, logger } = this.services;
+    
+    let symbols = await mergedIndex.findDefinitions(word);
+    logger.info(`[Server] Fallback: Found ${symbols.length} candidates for "${word}"`);
+    
+    // OPTIMIZATION 1: Filter by isDefinition to get only actual definitions
+    symbols = symbols.filter(sym => sym.isDefinition === true);
+    logger.info(`[Server] Fallback: Filtered to ${symbols.length} definition symbols`);
+    
+    // OPTIMIZATION 2: Exclude cursor position
+    symbols = symbols.filter(candidate => {
+      const isSameFile = candidate.location.uri === uri;
+      const isSameLine = candidate.location.line === line;
+      const isSameChar = candidate.location.character === character;
+      return !(isSameFile && isSameLine && isSameChar);
+    });
+    logger.info(`[Server] Fallback: After excluding cursor: ${symbols.length} candidates`);
+    
+    // OPTIMIZATION 3: Limit processing for large result sets
+    const MAX_FALLBACK_RESULTS = 50;
+    if (symbols.length > MAX_FALLBACK_RESULTS) {
+      logger.info(`[Server] Fallback: Limiting to first ${MAX_FALLBACK_RESULTS} results (${symbols.length} total)`);
+      symbols = symbols.slice(0, MAX_FALLBACK_RESULTS);
+    }
+
+    // Apply ranking heuristics
+    if (symbols.length > 1) {
+      symbols = disambiguateSymbols(symbols, uri);
+    }
+    
+    // Deduplicate to ensure one location per file
+    const deduplicated = deduplicateByFile(symbols);
+
+    if (deduplicated.length === 0) {
+      return null;
+    }
+
+    return deduplicated.map(sym => ({
+      uri: URI.file(sym.location.uri).toString(),
+      range: {
+        start: { line: sym.range.startLine, character: sym.range.startCharacter },
+        end: { line: sym.range.endLine, character: sym.range.endCharacter }
+      }
+    }));
   }
 
   /**

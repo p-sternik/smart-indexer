@@ -312,12 +312,31 @@ export class ImportResolver {
 
   /**
    * Try to resolve a base path as a file with various extensions.
+   * Handles ESM imports with .js extensions that map to .ts/.tsx source files.
    */
   private async tryResolveFile(basePath: string): Promise<string | null> {
-    // Try with various extensions
     const extensions = ['.ts', '.tsx', '.d.ts', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'];
     
-    // Try as file with extensions
+    // ESM Fix: If basePath ends with .js, try the TypeScript source equivalents first
+    if (basePath.endsWith('.js')) {
+      const basePathWithoutExt = basePath.slice(0, -3);
+      
+      // Try .ts and .tsx for ESM imports (e.g., import './foo.js' -> foo.ts)
+      for (const ext of ['.ts', '.tsx']) {
+        const filePath = basePathWithoutExt + ext;
+        if (await this.fileExistsAsync(filePath)) {
+          return filePath;
+        }
+      }
+    }
+    
+    // Try exact path first (might already have extension)
+    const stat = await this.statAsync(basePath);
+    if (stat?.isFile) {
+      return basePath;
+    }
+    
+    // Try with various extensions
     for (const ext of extensions) {
       const filePath = basePath + ext;
       if (await this.fileExistsAsync(filePath)) {
@@ -331,12 +350,6 @@ export class ImportResolver {
       if (await this.fileExistsAsync(indexPath)) {
         return indexPath;
       }
-    }
-
-    // Try exact path (might already have extension)
-    const stat = await this.statAsync(basePath);
-    if (stat?.isFile) {
-      return basePath;
     }
 
     return null;

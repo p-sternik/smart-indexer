@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.67.0](https://github.com/p-sternik/smart-indexer/compare/v1.66.0...v1.67.0) (2025-12-08)
+
+
+### Features
+
+* enhance dead code analysis to be non-blocking and implement precision filtering for definition results ([b9e8a32](https://github.com/p-sternik/smart-indexer/commit/b9e8a327bd353391d38f13abf2e974dc09f40c94))
+
 ## [1.66.0](https://github.com/p-sternik/smart-indexer/compare/v1.65.0...v1.66.0) (2025-12-08)
 
 

@@ -84,9 +84,11 @@ export class DocumentEventHandler {
         this.typeScriptService.updateFile(uri, content);
       }
       
-      // Analyze for dead code (debounced)
+      // Analyze for dead code (fire-and-forget, non-blocking)
       if (this.deadCodeHandler) {
-        await this.deadCodeHandler.analyzeFile(uri);
+        this.deadCodeHandler.analyzeFile(uri).catch(error => {
+          this.logger.error(`[DocumentEventHandler] Dead code analysis error for ${uri}: ${error}`);
+        });
       }
       
       this.updateStats();

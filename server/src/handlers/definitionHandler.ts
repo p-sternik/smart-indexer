@@ -41,6 +41,49 @@ const PRIMARY_DEFINITION_KINDS = new Set([
 ]);
 
 /**
+ * Filter precision results to remove unwanted matches:
+ * 1. Remove self-references (same file + overlapping cursor position)
+ * 2. Remove import statements (ImportSpecifier, ImportDeclaration)
+ * 3. Prefer exact name matches over fuzzy matches
+ */
+function filterPrecisionResults(
+  symbols: IndexedSymbol[],
+  requestUri: string,
+  requestLine: number,
+  requestCharacter: number,
+  requestedName: string
+): IndexedSymbol[] {
+  return symbols.filter(symbol => {
+    // FILTER 1: Remove self-reference (cursor overlaps with result)
+    if (symbol.location.uri === requestUri) {
+      const cursorInRange = 
+        requestLine >= symbol.range.startLine &&
+        requestLine <= symbol.range.endLine &&
+        (requestLine !== symbol.range.startLine || requestCharacter >= symbol.range.startCharacter) &&
+        (requestLine !== symbol.range.endLine || requestCharacter <= symbol.range.endCharacter);
+      
+      if (cursorInRange) {
+        return false; // Skip self-reference
+      }
+    }
+
+    // FILTER 2: Remove import statements (we want the definition, not the import)
+    if (symbol.kind === 'import' || 
+        symbol.kind === 'ImportSpecifier' || 
+        symbol.kind === 'ImportDeclaration') {
+      return false;
+    }
+
+    // FILTER 3: Exact name match preferred (already handled by caller, but double-check)
+    if (symbol.name !== requestedName) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+/**
  * Deduplicate definition results to ensure only one location per file.
  * 
  * When multiple symbols in the same file match (e.g., @Component decorator and 
@@ -295,8 +338,17 @@ export class DefinitionHandler implements IHandler {
               }
               
               if (matchingSymbols.length > 0) {
+                // Apply precision filters
+                let filteredSymbols = filterPrecisionResults(
+                  matchingSymbols,
+                  uri,
+                  line,
+                  character,
+                  symbolAtCursor.name
+                );
+
                 // Deduplicate to ensure one location per file
-                const deduplicated = deduplicateByFile(matchingSymbols);
+                const deduplicated = deduplicateByFile(filteredSymbols);
                 const results = deduplicated.map(sym => ({
                   uri: URI.file(sym.location.uri).toString(),
                   range: {
@@ -326,14 +378,15 @@ export class DefinitionHandler implements IHandler {
         let definitionCandidates = candidates.filter(candidate => candidate.isDefinition === true);
         logger.info(`[Server] Filtered to ${definitionCandidates.length} definition symbols (isDefinition=true)`);
         
-        // PRECISION FILTER 2: Exclude the cursor position itself (prevents self-reference)
-        definitionCandidates = definitionCandidates.filter(candidate => {
-          const isSameFile = candidate.location.uri === uri;
-          const isSameLine = candidate.location.line === line;
-          const isSameChar = candidate.location.character === character;
-          return !(isSameFile && isSameLine && isSameChar);
-        });
-        logger.info(`[Server] Excluded cursor position, now ${definitionCandidates.length} candidates`);
+        // PRECISION FILTER 2: Apply comprehensive filters (self-reference, imports)
+        definitionCandidates = filterPrecisionResults(
+          definitionCandidates,
+          uri,
+          line,
+          character,
+          symbolAtCursor.name
+        );
+        logger.info(`[Server] After precision filtering: ${definitionCandidates.length} candidates`);
 
         // Filter candidates to match the exact symbol
         const filtered = definitionCandidates.filter(candidate => {
@@ -446,14 +499,9 @@ export class DefinitionHandler implements IHandler {
     symbols = symbols.filter(sym => sym.isDefinition === true);
     logger.info(`[Server] Fallback: Filtered to ${symbols.length} definition symbols`);
     
-    // OPTIMIZATION 2: Exclude cursor position
-    symbols = symbols.filter(candidate => {
-      const isSameFile = candidate.location.uri === uri;
-      const isSameLine = candidate.location.line === line;
-      const isSameChar = candidate.location.character === character;
-      return !(isSameFile && isSameLine && isSameChar);
-    });
-    logger.info(`[Server] Fallback: After excluding cursor: ${symbols.length} candidates`);
+    // OPTIMIZATION 2: Apply precision filters (self-reference, imports, exact name match)
+    symbols = filterPrecisionResults(symbols, uri, line, character, word);
+    logger.info(`[Server] Fallback: After precision filtering: ${symbols.length} candidates`);
     
     // OPTIMIZATION 3: Limit processing for large result sets
     const MAX_FALLBACK_RESULTS = 50;

@@ -52,6 +52,7 @@ export class DeadCodeHandler implements IHandler {
   // Diagnostic state
   private diagnosticsCache: Map<string, Diagnostic[]> = new Map();
   private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
+  private runningAnalyses: Map<string, AbortController> = new Map();
 
   constructor(services: ServerServices, state: ServerState) {
     this.services = services;
@@ -75,7 +76,7 @@ export class DeadCodeHandler implements IHandler {
    * @param uri - File path to analyze (not URI format)
    */
   async analyzeFile(uri: string): Promise<void> {
-    const { connection, configManager, logger } = this.services;
+    const { configManager, logger } = this.services;
     const { deadCodeDetector } = this.state;
     
     // Check if dead code detection is enabled
@@ -84,6 +85,13 @@ export class DeadCodeHandler implements IHandler {
     }
 
     try {
+      // Cancel existing analysis for this file
+      const existingController = this.runningAnalyses.get(uri);
+      if (existingController) {
+        existingController.abort();
+        this.runningAnalyses.delete(uri);
+      }
+
       // Clear existing timer for this file
       const existingTimer = this.debounceTimers.get(uri);
       if (existingTimer) {
@@ -92,49 +100,79 @@ export class DeadCodeHandler implements IHandler {
 
       const config = this.getConfig();
       
-      // Debounce the analysis
-      const timer = setTimeout(async () => {
-        try {
-          const startTime = Date.now();
-          logger.info(`[DeadCodeHandler] Analyzing ${uri}`);
-          
-          // Run the analysis
-          const candidates = await deadCodeDetector.analyzeFile(uri, {
-            entryPoints: config.entryPoints,
-            excludePatterns: config.excludePatterns,
-            checkBarrierFiles: config.checkBarrierFiles
-          });
-
-          // Convert candidates to diagnostics
-          const diagnostics = this.candidatesToDiagnostics(candidates);
-
-          // Cache diagnostics
-          this.diagnosticsCache.set(uri, diagnostics);
-
-          // Publish to client
-          connection.sendDiagnostics({
-            uri: URI.file(uri).toString(),
-            diagnostics
-          });
-
-          const duration = Date.now() - startTime;
-          if (candidates.length > 0) {
-            logger.info(
-              `[DeadCodeHandler] Found ${candidates.length} unused exports in ${uri} (${duration}ms)`
-            );
-          } else {
-            logger.info(`[DeadCodeHandler] No unused exports in ${uri} (${duration}ms)`);
-          }
-        } catch (error) {
-          logger.error(`[DeadCodeHandler] Error analyzing ${uri}: ${error}`);
-        } finally {
-          this.debounceTimers.delete(uri);
-        }
+      // Debounce the analysis (5000ms for low-priority diagnostic)
+      const timer = setTimeout(() => {
+        // Run asynchronously without blocking
+        this.runAnalysisAsync(uri, config).catch(error => {
+          logger.error(`[DeadCodeHandler] Async analysis error for ${uri}: ${error}`);
+        });
+        this.debounceTimers.delete(uri);
       }, config.debounceMs);
 
       this.debounceTimers.set(uri, timer);
     } catch (error) {
       logger.error(`[DeadCodeHandler] Error setting up analysis for ${uri}: ${error}`);
+    }
+  }
+
+  /**
+   * Run dead code analysis asynchronously without blocking the main thread.
+   * This method is fire-and-forget and uses an AbortController for cancellation.
+   */
+  private async runAnalysisAsync(uri: string, config: DeadCodeDiagnosticConfig): Promise<void> {
+    const { connection, logger } = this.services;
+    const { deadCodeDetector } = this.state;
+    
+    if (!deadCodeDetector) {
+      return;
+    }
+
+    const abortController = new AbortController();
+    this.runningAnalyses.set(uri, abortController);
+
+    try {
+      const startTime = Date.now();
+      logger.info(`[DeadCodeHandler] Analyzing ${uri} (async, low-priority)`);
+      
+      // Run the analysis
+      const candidates = await deadCodeDetector.analyzeFile(uri, {
+        entryPoints: config.entryPoints,
+        excludePatterns: config.excludePatterns,
+        checkBarrierFiles: config.checkBarrierFiles
+      });
+
+      // Check if aborted
+      if (abortController.signal.aborted) {
+        logger.info(`[DeadCodeHandler] Analysis cancelled for ${uri}`);
+        return;
+      }
+
+      // Convert candidates to diagnostics
+      const diagnostics = this.candidatesToDiagnostics(candidates);
+
+      // Cache diagnostics
+      this.diagnosticsCache.set(uri, diagnostics);
+
+      // Publish to client
+      connection.sendDiagnostics({
+        uri: URI.file(uri).toString(),
+        diagnostics
+      });
+
+      const duration = Date.now() - startTime;
+      if (candidates.length > 0) {
+        logger.info(
+          `[DeadCodeHandler] Found ${candidates.length} unused exports in ${uri} (${duration}ms)`
+        );
+      } else {
+        logger.info(`[DeadCodeHandler] No unused exports in ${uri} (${duration}ms)`);
+      }
+    } catch (error) {
+      if (!abortController.signal.aborted) {
+        logger.error(`[DeadCodeHandler] Error analyzing ${uri}: ${error}`);
+      }
+    } finally {
+      this.runningAnalyses.delete(uri);
     }
   }
 
@@ -146,6 +184,13 @@ export class DeadCodeHandler implements IHandler {
    */
   clearDiagnostics(uri: string): void {
     const { connection } = this.services;
+    
+    // Cancel running analysis
+    const controller = this.runningAnalyses.get(uri);
+    if (controller) {
+      controller.abort();
+      this.runningAnalyses.delete(uri);
+    }
     
     // Cancel pending analysis
     const timer = this.debounceTimers.get(uri);
@@ -175,6 +220,12 @@ export class DeadCodeHandler implements IHandler {
    * Dispose of resources.
    */
   async dispose(): Promise<void> {
+    // Cancel all running analyses
+    for (const controller of this.runningAnalyses.values()) {
+      controller.abort();
+    }
+    this.runningAnalyses.clear();
+    
     // Cancel all pending timers
     for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
@@ -339,7 +390,7 @@ export class DeadCodeHandler implements IHandler {
     const config = configManager.getDeadCodeConfig();
     
     return {
-      debounceMs: config.debounceMs ?? 1000,
+      debounceMs: config.debounceMs ?? 5000, // Increased to 5000ms for low-priority diagnostic
       entryPoints: config.entryPoints ?? [],
       excludePatterns: config.excludePatterns ?? [],
       checkBarrierFiles: config.checkBarrierFiles ?? false

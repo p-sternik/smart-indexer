@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.66.0](https://github.com/p-sternik/smart-indexer/compare/v1.65.0...v1.66.0) (2025-12-08)
+
+
+### Features
+
+* enhance traverseAST to utilize identifier node for improved symbol location tracking ([5d7b9e4](https://github.com/p-sternik/smart-indexer/commit/5d7b9e45d4c6051d2ab5df365ef38dd877a67dc3))
+
 ## [1.65.0](https://github.com/p-sternik/smart-indexer/compare/v1.64.0...v1.65.0) (2025-12-08)
 
 

@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.79.0](https://github.com/p-sternik/smart-indexer/compare/v1.78.0...v1.79.0) (2025-12-09)
+
+
+### Features
+
+* **logging:** Implement RequestTracer for forensic performance diagnostics ([481dba4](https://github.com/p-sternik/smart-indexer/commit/481dba42bf9d864d641d67b8b5d4b80b9faf8072))
+
 ## [1.78.0](https://github.com/p-sternik/smart-indexer/compare/v1.77.0...v1.78.0) (2025-12-09)
 
 

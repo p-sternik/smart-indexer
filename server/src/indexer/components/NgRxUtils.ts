@@ -2,7 +2,7 @@ import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
 import { IndexedSymbol } from '../../types.js';
 import { createSymbolId } from '../symbolResolver.js';
 import { StringInterner } from './StringInterner.js';
-import { toCamelCase } from '../../utils/stringUtils.js';
+import { toNgRxCamelCase } from '../../utils/stringUtils.js';
 
 /**
  * NgRx-specific utility functions for detecting and processing NgRx patterns.
@@ -184,7 +184,7 @@ export function processCreateActionGroup(
     }
 
     // Convert the event key to camelCase (this is what NgRx generates at runtime)
-    const camelCaseName = interner.intern(toCamelCase(eventKey) || '');
+    const camelCaseName = interner.intern(toNgRxCamelCase(eventKey) || '');
 
     if (!camelCaseName) {
       continue;

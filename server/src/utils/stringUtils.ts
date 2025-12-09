@@ -84,6 +84,31 @@ export function toSnakeCase(str: string): string {
 }
 
 /**
+ * Convert a string to NgRx-compatible camelCase
+ * This is an alias for toCamelCase that matches NgRx's createActionGroup behavior exactly.
+ * 
+ * NgRx Logic:
+ * 1. Trim whitespace
+ * 2. Split by spaces, underscores, dashes, and camelCase boundaries
+ * 3. First word: lowercase
+ * 4. Subsequent words: capitalize first letter
+ * 5. Join all words
+ * 
+ * Examples:
+ *   'Load User' -> 'loadUser'
+ *   'Update Signing Action' -> 'updateSigningAction'
+ *   'Log Out' -> 'logOut'
+ *   'load_user_data' -> 'loadUserData'
+ *   'AlreadyCamel' -> 'alreadyCamel'
+ * 
+ * @param str The event name string from createActionGroup
+ * @returns The camelCase method name that NgRx generates at runtime
+ */
+export function toNgRxCamelCase(str: string): string {
+  return toCamelCase(str);
+}
+
+/**
  * Sanitize a file path to handle Git's quoted/escaped output.
  * Handles:
  * - Surrounding double quotes: "path/to/file" -> path/to/file

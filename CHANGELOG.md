@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.76.0](https://github.com/p-sternik/smart-indexer/compare/v1.75.0...v1.76.0) (2025-12-09)
+
+
+### Features
+
+* Enhance NgRx context detection and support for loose mode ([deab8f7](https://github.com/p-sternik/smart-indexer/commit/deab8f7fd05508981c82c5bcccaef52da4d14301))
+
 ## [1.75.0](https://github.com/p-sternik/smart-indexer/compare/v1.74.0...v1.75.0) (2025-12-09)
 
 

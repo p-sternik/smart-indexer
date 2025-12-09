@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.80.0](https://github.com/p-sternik/smart-indexer/compare/v1.79.0...v1.80.0) (2025-12-09)
+
+
+### Features
+
+* **debug:** Add command to show forensic traces and enhance menu options ([734307a](https://github.com/p-sternik/smart-indexer/commit/734307a65ed6fbe52b64019c042b2bc27c8aa159))
+
 ## [1.79.0](https://github.com/p-sternik/smart-indexer/compare/v1.78.0...v1.79.0) (2025-12-09)
 
 

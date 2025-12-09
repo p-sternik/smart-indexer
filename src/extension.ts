@@ -7,8 +7,6 @@ import {
   ServerOptions,
   TransportKind
 } from 'vscode-languageclient/node';
-import { HybridDefinitionProvider } from './providers/HybridDefinitionProvider';
-import { HybridReferencesProvider } from './providers/HybridReferencesProvider';
 import { SmartIndexerStatusBar, IndexProgress } from './ui/statusBar';
 import { showQuickMenu } from './commands/showMenu';
 
@@ -88,8 +86,8 @@ export async function activate(context: vscode.ExtensionContext) {
   };
 
   const config = vscode.workspace.getConfiguration('smartIndexer');
-  const mode = config.get<string>('mode', 'standalone');
-  const hybridTimeout = config.get<number>('hybridTimeoutMs', 100);
+  const mode = config.get<string>('mode', 'hybrid');
+  const hybridTimeout = config.get<number>('hybridTimeoutMs', 200);
   const cacheDirectory = config.get<string>('cacheDirectory', '.smart-index');
   
   // Ensure cache directory is in .gitignore
@@ -128,7 +126,111 @@ export async function activate(context: vscode.ExtensionContext) {
       fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{ts,tsx,js,jsx,mts,cts,mjs,cjs}')
     },
     initializationOptions,
-    outputChannel: logChannel
+    outputChannel: logChannel,
+    
+    // Middleware: Implement fallback strategy (Native TS first, Smart Indexer fallback)
+    middleware: mode === 'hybrid' ? {
+      provideDefinition: async (document, position, token, next) => {
+        const start = Date.now();
+        logChannel.info(`[Middleware] Definition request for ${document.uri.fsPath}:${position.line}:${position.character}`);
+        
+        try {
+          // Race Native TS with configurable timeout
+          const nativePromise = next(document, position, token);
+          const timeoutPromise = new Promise<null>((resolve) => 
+            setTimeout(() => resolve(null), hybridTimeout)
+          );
+          
+          const nativeResult = await Promise.race([nativePromise, timeoutPromise]);
+          
+          // Check if cancellation was requested
+          if (token.isCancellationRequested) {
+            logChannel.info(`[Middleware] Definition request cancelled`);
+            return null;
+          }
+          
+          // If Native TS returned valid results, use them (Native wins)
+          if (nativeResult && Array.isArray(nativeResult) && nativeResult.length > 0) {
+            logChannel.info(`[Middleware] Native TS returned ${nativeResult.length} results in ${Date.now() - start}ms`);
+            return nativeResult;
+          }
+          
+          // Fallback to Smart Indexer
+          logChannel.info(`[Middleware] Native TS returned nothing, falling back to Smart Indexer...`);
+          const smartResult = await client.sendRequest(
+            'textDocument/definition',
+            {
+              textDocument: { uri: document.uri.toString() },
+              position: { line: position.line, character: position.character }
+            },
+            token
+          );
+          
+          const duration = Date.now() - start;
+          if (smartResult && Array.isArray(smartResult) && smartResult.length > 0) {
+            logChannel.info(`[Middleware] Smart Indexer returned ${smartResult.length} results in ${duration}ms`);
+          } else {
+            logChannel.info(`[Middleware] Smart Indexer returned nothing in ${duration}ms`);
+          }
+          
+          return smartResult as vscode.Definition | vscode.LocationLink[] | null;
+        } catch (error) {
+          logChannel.error(`[Middleware] Definition error: ${error}`);
+          return null;
+        }
+      },
+      
+      provideReferences: async (document, position, context, token, next) => {
+        const start = Date.now();
+        logChannel.info(`[Middleware] References request for ${document.uri.fsPath}:${position.line}:${position.character}`);
+        
+        try {
+          // Race Native TS with configurable timeout
+          const nativePromise = next(document, position, context, token);
+          const timeoutPromise = new Promise<null>((resolve) => 
+            setTimeout(() => resolve(null), hybridTimeout)
+          );
+          
+          const nativeResult = await Promise.race([nativePromise, timeoutPromise]);
+          
+          // Check if cancellation was requested
+          if (token.isCancellationRequested) {
+            logChannel.info(`[Middleware] References request cancelled`);
+            return null;
+          }
+          
+          // If Native TS returned valid results, use them (Native wins)
+          if (nativeResult && Array.isArray(nativeResult) && nativeResult.length > 0) {
+            logChannel.info(`[Middleware] Native TS returned ${nativeResult.length} references in ${Date.now() - start}ms`);
+            return nativeResult;
+          }
+          
+          // Fallback to Smart Indexer
+          logChannel.info(`[Middleware] Native TS returned nothing, falling back to Smart Indexer...`);
+          const smartResult = await client.sendRequest(
+            'textDocument/references',
+            {
+              textDocument: { uri: document.uri.toString() },
+              position: { line: position.line, character: position.character },
+              context: { includeDeclaration: context.includeDeclaration }
+            },
+            token
+          );
+          
+          const duration = Date.now() - start;
+          if (smartResult && Array.isArray(smartResult) && smartResult.length > 0) {
+            logChannel.info(`[Middleware] Smart Indexer returned ${smartResult.length} references in ${duration}ms`);
+          } else {
+            logChannel.info(`[Middleware] Smart Indexer returned nothing in ${duration}ms`);
+          }
+          
+          return smartResult as vscode.Location[] | null;
+        } catch (error) {
+          logChannel.error(`[Middleware] References error: ${error}`);
+          return null;
+        }
+      }
+    } : undefined
   };
 
   client = new LanguageClient(
@@ -148,91 +250,17 @@ export async function activate(context: vscode.ExtensionContext) {
       smartStatusBar.updateProgress(progress);
     });
     logChannel.info('[Client] Registered progress notification listener');
+    
+    if (mode === 'hybrid') {
+      logChannel.info('[Client] Hybrid mode active - using middleware fallback strategy (Native TS → Smart Indexer)');
+    } else {
+      logChannel.info('[Client] Standalone mode active - Smart Indexer only');
+    }
   } catch (error) {
     logChannel.error('[Client] Failed to start language client:', error);
     smartStatusBar.setError('Failed to start');
     vscode.window.showErrorMessage(`Smart Indexer failed to start: ${error}`);
     throw error;
-  }
-
-  // Register hybrid providers to deduplicate results from native TS and Smart Indexer
-  if (mode === 'hybrid') {
-    logChannel.info('[Client] Registering hybrid providers for deduplication');
-
-    const languageSelector: vscode.DocumentSelector = [
-      { scheme: 'file', language: 'typescript' },
-      { scheme: 'file', language: 'javascript' },
-      { scheme: 'file', language: 'typescriptreact' },
-      { scheme: 'file', language: 'javascriptreact' }
-    ];
-
-    // Create wrapper functions to call the LSP client
-    const smartDefinitionProvider = async (
-      document: vscode.TextDocument,
-      position: vscode.Position,
-      token: vscode.CancellationToken
-    ): Promise<vscode.Definition | vscode.LocationLink[] | null | undefined> => {
-      try {
-        const result = await client.sendRequest(
-          'textDocument/definition',
-          {
-            textDocument: { uri: document.uri.toString() },
-            position: { line: position.line, character: position.character }
-          },
-          token
-        );
-        return result as vscode.Definition | vscode.LocationLink[] | null | undefined;
-      } catch (error) {
-        logChannel.error(`[Client] Smart definition provider error: ${error}`);
-        return null;
-      }
-    };
-
-    const smartReferencesProvider = async (
-      document: vscode.TextDocument,
-      position: vscode.Position,
-      context: vscode.ReferenceContext,
-      token: vscode.CancellationToken
-    ): Promise<vscode.Location[] | null | undefined> => {
-      try {
-        const result = await client.sendRequest(
-          'textDocument/references',
-          {
-            textDocument: { uri: document.uri.toString() },
-            position: { line: position.line, character: position.character },
-            context: { includeDeclaration: context.includeDeclaration }
-          },
-          token
-        );
-        return result as vscode.Location[] | null | undefined;
-      } catch (error) {
-        logChannel.error(`[Client] Smart references provider error: ${error}`);
-        return null;
-      }
-    };
-
-    const hybridDefinitionProvider = new HybridDefinitionProvider(
-      smartDefinitionProvider,
-      hybridTimeout,
-      logChannel
-    );
-
-    const hybridReferencesProvider = new HybridReferencesProvider(
-      smartReferencesProvider,
-      hybridTimeout,
-      logChannel
-    );
-
-    // Register with high priority to intercept before other providers
-    context.subscriptions.push(
-      vscode.languages.registerDefinitionProvider(languageSelector, hybridDefinitionProvider)
-    );
-
-    context.subscriptions.push(
-      vscode.languages.registerReferenceProvider(languageSelector, hybridReferencesProvider)
-    );
-
-    logChannel.info('[Client] Hybrid providers registered successfully');
   }
 
   // Command: Show quick menu

@@ -79,6 +79,26 @@ export class FileBasedStorage implements IIndexStorage {
   }
 
   /**
+   * Retrieve indexed data for multiple files in a single batch.
+   * 
+   * Note: FileBasedStorage doesn't benefit from batching like SQLite does,
+   * but we implement it for interface compatibility.
+   */
+  async batchGetFiles(uris: string[]): Promise<FileIndexData[]> {
+    const results: FileIndexData[] = [];
+    
+    // For file-based storage, we just iterate (no batch optimization possible)
+    for (const uri of uris) {
+      const data = await this.getFile(uri);
+      if (data) {
+        results.push(data);
+      }
+    }
+    
+    return results;
+  }
+
+  /**
    * Retrieve indexed data for a file WITHOUT acquiring a lock.
    * Use ONLY when already holding a lock (inside withLock callback).
    */

@@ -68,15 +68,15 @@ export class FileWatcher {
   async init(): Promise<void> {
     this.connection.console.info('[FileWatcher] Initializing file watcher...');
     
-    // Listen to LSP text document changes
-    this.documents.onDidChangeContent(this.onDocumentChanged.bind(this));
+    // NOTE: onDidChangeContent is handled by DocumentEventHandler for DynamicIndex updates.
+    // FileWatcher only handles onDidSave (persist to BackgroundIndex) and external FS changes.
     this.documents.onDidSave(this.onDocumentSaved.bind(this));
     
     // Setup external file system watcher with chokidar
     await this.setupFileSystemWatcher();
     
     this.connection.console.info(
-      `[FileWatcher] File watcher initialized with ${this.debounceDelayMs}ms debounce delay`
+      `[FileWatcher] File watcher initialized (onDidSave + external FS monitoring)`
     );
   }
 
@@ -134,24 +134,6 @@ export class FileWatcher {
       this.connection.console.info('[FileWatcher] External file system watcher (chokidar) initialized');
     } catch (error) {
       this.logger.error(`[FileWatcher] Error setting up file system watcher: ${error}`);
-    }
-  }
-
-  /**
-   * Handle text document changes from LSP.
-   */
-  private onDocumentChanged(event: { document: TextDocument }): void {
-    try {
-      const uri = URI.parse(event.document.uri).fsPath;
-      
-      if (!this.shouldIndex(uri)) {
-        return;
-      }
-      
-      // Don't log every keystroke, only when scheduling
-      this.scheduleReindex(uri, 'document-change');
-    } catch (error) {
-      this.logger.error(`[FileWatcher] Error in onDocumentChanged: ${error}`);
     }
   }
 

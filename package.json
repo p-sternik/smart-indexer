@@ -147,12 +147,12 @@
             "hybrid"
           ],
           "default": "hybrid",
-          "description": "Operation mode: 'standalone' uses only Smart Indexer, 'hybrid' delegates to VS Code's built-in TypeScript service when available"
+          "description": "Operation mode: 'standalone' uses only Smart Indexer, 'hybrid' uses Native TypeScript first with Smart Indexer as fallback (zero duplication)"
         },
         "smartIndexer.hybridTimeoutMs": {
           "type": "number",
-          "default": 100,
-          "description": "Timeout in milliseconds for delegating to native TypeScript service in hybrid mode"
+          "default": 200,
+          "description": "Timeout in milliseconds for waiting on native TypeScript service in hybrid mode before falling back to Smart Indexer"
         }
       }
     }

@@ -74,6 +74,18 @@ export interface IIndexStorage {
   getFile(uri: string): Promise<FileIndexData | null>;
 
   /**
+   * Retrieve indexed data for multiple files in a single batch operation.
+   * This is significantly faster than calling getFile() multiple times due to:
+   * - Single SQL query with IN clause (vs N separate queries)
+   * - Reduced lock contention
+   * - Better cache locality
+   * 
+   * @param uris - Array of file URIs to fetch
+   * @returns Array of indexed data (null entries for missing files are omitted)
+   */
+  batchGetFiles(uris: string[]): Promise<FileIndexData[]>;
+
+  /**
    * Retrieve indexed data for a file WITHOUT acquiring a lock.
    * Use ONLY when already holding a lock (inside withLock callback).
    * 

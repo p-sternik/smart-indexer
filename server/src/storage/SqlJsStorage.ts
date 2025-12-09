@@ -734,15 +734,78 @@ export class SqlJsStorage implements IIndexStorage {
   }
 
   /**
-   * Clear all indexed data.
+   * Clear all indexed data by closing DB, deleting files, and re-initializing.
+   * This ensures proper file handle cleanup on Windows before deletion.
    */
   async clear(): Promise<void> {
     this.ensureInitialized();
 
-    this.db!.run('DELETE FROM files');
+    // Step A: Close the database to release file handles
+    if (this.db) {
+      try {
+        this.db.close();
+        this.db = null;
+      } catch (error: any) {
+        console.warn(`[SqlJsStorage] Error closing database during clear: ${error.message}`);
+      }
+    }
 
+    // Cancel any pending auto-save
+    if (this.autoSaveTimer) {
+      clearTimeout(this.autoSaveTimer);
+      this.autoSaveTimer = null;
+    }
+
+    // Step B: Wait for Windows to release file handles (critical for Windows)
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Step C: Delete all SQLite artifacts with safe error handling
+    const filesToDelete = [
+      this.dbPath,           // Main database file
+      this.dbPath + '.tmp',  // Temp file from atomic writes
+      this.dbPath + '-wal',  // Write-Ahead Log (if WAL mode was enabled)
+      this.dbPath + '-shm'   // Shared memory file (if WAL mode was enabled)
+    ];
+
+    for (const filePath of filesToDelete) {
+      try {
+        await fs.promises.unlink(filePath);
+        console.info(`[SqlJsStorage] Deleted: ${path.basename(filePath)}`);
+      } catch (error: any) {
+        if (error.code !== 'ENOENT') {
+          // Log non-ENOENT errors but continue (don't fail the entire clear operation)
+          console.warn(`[SqlJsStorage] Could not delete ${path.basename(filePath)}: ${error.message}`);
+        }
+        // ENOENT is OK - file doesn't exist
+      }
+    }
+
+    // Step D: Re-initialize the database with fresh schema
+    this.isInitialized = false;
+    
+    // Ensure cache directory exists
+    const cacheDir = path.dirname(this.dbPath);
+    if (!fs.existsSync(cacheDir)) {
+      fs.mkdirSync(cacheDir, { recursive: true });
+    }
+
+    // Create fresh database
+    this.db = new this.SQL.Database();
+    
+    if (!this.db) {
+      throw new Error('[SqlJsStorage] Failed to create fresh database after clear');
+    }
+
+    // Initialize schema
+    await this.initializeSchema();
+    
+    this.isInitialized = true;
     this.isDirty = true;
+    
+    // Save the empty database to disk
     await this.flush();
+    
+    console.info('[SqlJsStorage] Database cleared and reinitialized successfully');
   }
 
   /**

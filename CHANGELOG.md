@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.78.0](https://github.com/p-sternik/smart-indexer/compare/v1.77.0...v1.78.0) (2025-12-09)
+
+
+### Features
+
+* Enhance clear method to ensure proper file handle cleanup on Windows and reinitialize database ([941d2b5](https://github.com/p-sternik/smart-indexer/commit/941d2b57c314c6bfbaff2cea20f7395df5699d00))
+
 ## [1.77.0](https://github.com/p-sternik/smart-indexer/compare/v1.76.0...v1.77.0) (2025-12-09)
 
 

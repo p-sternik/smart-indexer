@@ -308,6 +308,23 @@ connection.onRequest('smart-indexer/getStats', async () => {
   }
 });
 
+// Get forensic debug traces (flight recorder data)
+connection.onRequest('smart-indexer/getDebugTraces', async () => {
+  try {
+    connection.console.info('[Server] ========== GET DEBUG TRACES REQUEST ==========');
+    
+    // Import RequestTracer to access static history
+    const { RequestTracer } = await import('./utils/RequestTracer.js');
+    const traces = RequestTracer.getHistory();
+    
+    connection.console.info(`[Server] Returning ${traces.length} debug traces to client`);
+    return traces;
+  } catch (error) {
+    logger.error(`[Server] Error getting debug traces: ${error}`);
+    throw error;
+  }
+});
+
 connection.onRequest('smart-indexer/inspectIndex', async () => {
   try {
     connection.console.info('[Server] ========== INSPECT INDEX REQUEST ==========');

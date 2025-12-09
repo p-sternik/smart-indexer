@@ -43,6 +43,10 @@
         "title": "Smart Indexer: Inspect Index"
       },
       {
+        "command": "smart-indexer.showDebugInfo",
+        "title": "Smart Indexer: Show Search Debug Info"
+      },
+      {
         "command": "smart-indexer.findDeadCode",
         "title": "Smart Indexer: Find Dead Code (Beta)"
       },

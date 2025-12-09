@@ -25,7 +25,6 @@ import { parseMemberAccess, resolvePropertyRecursively } from '../indexer/recurs
 import { disambiguateSymbols } from '../utils/disambiguation.js';
 import { getWordRangeAtPosition } from '../utils/textUtils.js';
 import { shouldEnableLooseMode } from '../utils/ngrxContextDetector.js';
-import { RequestTracer } from '../utils/RequestTracer.js';
 
 /**
  * Handler for textDocument/definition requests.
@@ -35,7 +34,6 @@ export class DefinitionHandler implements IHandler {
   
   private services: ServerServices;
   private state: ServerState;
-  private requestTracer: RequestTracer;
   
   // Query result cache (LRU) to eliminate redundant I/O + filtering
   private queryCache: Map<string, Location | Location[] | null> = new Map();
@@ -44,7 +42,6 @@ export class DefinitionHandler implements IHandler {
   constructor(services: ServerServices, state: ServerState) {
     this.services = services;
     this.state = state;
-    this.requestTracer = new RequestTracer(services.logger);
   }
   
   /**
@@ -76,12 +73,8 @@ export class DefinitionHandler implements IHandler {
     const { line, character } = params.position;
     const start = Date.now();
     
-    const { documents, mergedIndex, profiler, statsManager, typeScriptService, logger, infrastructure } = this.services;
+    const { documents, mergedIndex, profiler, statsManager, typeScriptService, logger } = this.services;
     const { importResolver } = this.state;
-    
-    // Forensic tracing: Capture start state
-    const startMemoryMB = this.requestTracer.captureMemory();
-    const ioTracker = this.requestTracer.createIOTracker();
     
     // OPTIMIZATION: Check query cache FIRST (0ms latency for repeated clicks)
     const cacheKey = `${uri}:${line}:${character}`;
@@ -93,22 +86,6 @@ export class DefinitionHandler implements IHandler {
       // Move to end for LRU (delete + re-add makes it most recently used)
       this.queryCache.delete(cacheKey);
       this.queryCache.set(cacheKey, cached);
-      
-      // Log cache hit trace
-      const endMemoryMB = this.requestTracer.captureMemory();
-      const workerPoolStats = (infrastructure as any).workerPool?.getStats?.();
-      ioTracker.recordCacheHit();
-      this.requestTracer.logTrace(
-        'definition',
-        uri,
-        `${line}:${character}`,
-        startMemoryMB,
-        endMemoryMB,
-        ioTracker,
-        duration,
-        cached ? (Array.isArray(cached) ? cached.length : 1) : 0,
-        workerPoolStats
-      );
       
       return cached;
     }
@@ -188,9 +165,6 @@ export class DefinitionHandler implements IHandler {
                 end: { line: resolved.range.endLine, character: resolved.range.endCharacter }
               }
             };
-            
-            // Forensic tracing
-            this.logDefinitionTrace(uri, line, character, startMemoryMB, ioTracker, duration, 1);
             
             // Cache result with LRU eviction
             this.cacheResult(cacheKey, result);
@@ -324,9 +298,6 @@ export class DefinitionHandler implements IHandler {
                 statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
                 
                 logger.info(`[Server] Definition result (import-resolved): ${matchingSymbols.length} → ${results.length} locations in ${duration} ms`);
-                
-                // Forensic tracing
-                this.logDefinitionTrace(uri, line, character, startMemoryMB, ioTracker, duration, results.length);
                 
                 // Cache result with LRU eviction
                 this.cacheResult(cacheKey, results);
@@ -554,9 +525,6 @@ export class DefinitionHandler implements IHandler {
           
           logger.info(`[Server] Definition result: ${candidates.length} → ${results.length} location${results.length === 1 ? '' : 's'} (INSTANT JUMP) in ${duration} ms`);
           
-          // Forensic tracing
-          this.logDefinitionTrace(uri, line, character, startMemoryMB, ioTracker, duration, results.length);
-          
           // Cache result with LRU eviction
           this.cacheResult(cacheKey, results);
           return results;
@@ -616,9 +584,6 @@ export class DefinitionHandler implements IHandler {
       
       logger.info(`[Server] Definition result (fallback): symbol="${word}", ${results ? results.length : 0} locations in ${duration} ms`);
       
-      // Forensic tracing
-      this.logDefinitionTrace(uri, line, character, startMemoryMB, ioTracker, duration, results ? results.length : 0);
-      
       // Cache result with LRU eviction
       this.cacheResult(cacheKey, results);
       return results;
@@ -626,40 +591,10 @@ export class DefinitionHandler implements IHandler {
       const duration = Date.now() - start;
       logger.error(`[Server] Definition error: ${error}, ${duration} ms`);
       
-      // Forensic tracing (error case)
-      this.logDefinitionTrace(uri, line, character, startMemoryMB, ioTracker, duration, 0);
-      
       // Cache null result to prevent repeated expensive failures
       this.cacheResult(cacheKey, null);
       return null;
     }
-  }
-  
-  /**
-   * Log forensic trace for definition request.
-   */
-  private logDefinitionTrace(
-    uri: string,
-    line: number,
-    character: number,
-    startMemoryMB: number,
-    ioTracker: any,
-    duration: number,
-    resultCount: number
-  ): void {
-    const endMemoryMB = this.requestTracer.captureMemory();
-    const workerPoolStats = (this.services.infrastructure as any).workerPool?.getStats?.();
-    this.requestTracer.logTrace(
-      'definition',
-      uri,
-      `${line}:${character}`,
-      startMemoryMB,
-      endMemoryMB,
-      ioTracker,
-      duration,
-      resultCount,
-      workerPoolStats
-    );
   }
   
   /**

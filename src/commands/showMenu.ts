@@ -19,6 +19,11 @@ export async function showQuickMenu(
       action: 'stats'
     },
     {
+      label: '$(bug) Show Search Debug Info',
+      description: 'View forensic traces of recent searches',
+      action: 'debug'
+    },
+    {
       label: '$(refresh) Rebuild Index',
       description: 'Clear cache and re-index entire workspace',
       action: 'rebuild'
@@ -52,6 +57,9 @@ export async function showQuickMenu(
   switch (selected.action) {
     case 'stats':
       await showStatistics(client, logChannel);
+      break;
+    case 'debug':
+      await vscode.commands.executeCommand('smart-indexer.showDebugInfo');
       break;
     case 'rebuild':
       await vscode.commands.executeCommand('smart-indexer.rebuildIndex');

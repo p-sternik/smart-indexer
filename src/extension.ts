@@ -337,6 +337,58 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Command: Show Debug Info (Forensic Traces)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('smart-indexer.showDebugInfo', async () => {
+      logChannel.info('[Client] ========== SHOW DEBUG INFO COMMAND ==========');
+      try {
+        logChannel.info('[Client] Requesting forensic traces from server...');
+        
+        // Request trace history from server
+        const traces = await client.sendRequest('smart-indexer/getDebugTraces');
+        
+        if (!traces || (Array.isArray(traces) && traces.length === 0)) {
+          vscode.window.showInformationMessage(
+            'No debug traces available yet. Perform some searches (Go to Definition, Find References) to generate traces.'
+          );
+          return;
+        }
+        
+        logChannel.info(`[Client] Received ${(traces as any[]).length} traces`);
+        
+        // Format traces as readable JSON
+        const formattedJson = JSON.stringify(traces, null, 2);
+        
+        // Create untitled document with JSON content
+        const doc = await vscode.workspace.openTextDocument({
+          content: formattedJson,
+          language: 'json'
+        });
+        
+        // Show document in editor
+        await vscode.window.showTextDocument(doc, {
+          preview: false,
+          viewColumn: vscode.ViewColumn.Beside
+        });
+        
+        logChannel.info('[Client] Debug info displayed in editor');
+        
+        // Show summary notification
+        const traceArray = traces as any[];
+        const avgTotalMs = traceArray.reduce((sum, t) => sum + (t.timings?.totalMs || 0), 0) / traceArray.length;
+        const totalOutliers = traceArray.reduce((sum, t) => sum + (t.performance?.outliers?.length || 0), 0);
+        
+        vscode.window.showInformationMessage(
+          `Debug Info: ${traceArray.length} traces, avg ${Math.round(avgTotalMs)}ms, ${totalOutliers} outlier files`
+        );
+        
+      } catch (error) {
+        logChannel.error('[Client] Failed to get debug traces:', error);
+        vscode.window.showErrorMessage(`Failed to get debug info: ${error}`);
+      }
+    })
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('smart-indexer.showStats', async () => {
       logChannel.info('[Client] ========== SHOW STATS COMMAND ==========');

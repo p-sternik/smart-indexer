@@ -66,15 +66,14 @@ export class ReferencesHandler implements IHandler {
   private async handleReferences(params: ReferenceParams): Promise<Location[] | null> {
     const uri = URI.parse(params.textDocument.uri).fsPath;
     const { line, character } = params.position;
-    const start = Date.now();
     
-    const { documents, mergedIndex, backgroundIndex, profiler, statsManager, logger, infrastructure } = this.services;
-    
-    // Forensic tracing: Capture start state
-    const startMemoryMB = this.requestTracer.captureMemory();
-    const ioTracker = this.requestTracer.createIOTracker();
+    const { documents, mergedIndex, backgroundIndex, profiler, statsManager, logger } = this.services;
     
     logger.info(`[Server] References request: ${uri}:${line}:${character}`);
+    
+    // Start forensic trace
+    let trace: any = null;
+    let symbolName = '';
     
     try {
       const document = documents.get(params.textDocument.uri);
@@ -89,18 +88,37 @@ export class ReferencesHandler implements IHandler {
       const symbolAtCursor = findSymbolAtPosition(uri, text, line, character);
       
       if (symbolAtCursor) {
+        symbolName = symbolAtCursor.name;
+        
+        // Check if NgRx loose mode
+        const lineContent = text.split('\n')[line] || '';
+        const isNgRx = shouldEnableLooseMode(text, symbolName, lineContent);
+        
+        // Start trace session
+        trace = this.requestTracer.start('references', symbolName, uri, `${line}:${character}`, isNgRx);
+        
+        if (isNgRx) {
+          trace.addFilter('NgRxLooseMode');
+        }
+        
         logger.info(
-          `[Server] Resolved symbol: name="${symbolAtCursor.name}", kind="${symbolAtCursor.kind}", ` +
+          `[Server] Resolved symbol: name="${symbolName}", kind="${symbolAtCursor.kind}", ` +
           `container="${symbolAtCursor.containerName || '<none>'}", isStatic=${symbolAtCursor.isStatic}`
         );
 
+        // Start DB query timing
+        trace.startDbQuery();
+        
         // Use enhanced import-aware reference finding
         const references = await this.findReferencesWithImportTracking(
-          symbolAtCursor.name,
+          symbolName,
           uri,
           params.context.includeDeclaration,
           backgroundIndex
         );
+        
+        trace.endDbQuery(references.length);
+        trace.startProcessing();
 
         logger.info(`[Server] Found ${references.length} references with import tracking`);
 
@@ -112,26 +130,16 @@ export class ReferencesHandler implements IHandler {
           }
         }));
 
-        const duration = Date.now() - start;
-        profiler.record('references', duration);
+        trace.endProcessing();
+        
+        // Record and log trace
+        const completedTrace = trace.end(results.length);
+        this.requestTracer.recordTrace(completedTrace);
+        
+        profiler.record('references', completedTrace.timings.totalMs);
         statsManager.updateProfilingMetrics({ avgReferencesTimeMs: profiler.getAverageMs('references') });
 
-        // Forensic tracing: Log complete trace
-        const endMemoryMB = this.requestTracer.captureMemory();
-        const workerPoolStats = (infrastructure as any).workerPool?.getStats?.();
-        this.requestTracer.logTrace(
-          'references',
-          uri,
-          `${line}:${character}`,
-          startMemoryMB,
-          endMemoryMB,
-          ioTracker,
-          duration,
-          results.length,
-          workerPoolStats
-        );
-
-        logger.info(`[Server] References result: ${results.length} locations in ${duration} ms`);
+        logger.info(`[Server] References result: ${results.length} locations in ${completedTrace.timings.totalMs} ms`);
         return results.length > 0 ? results : null;
       }
 
@@ -139,12 +147,21 @@ export class ReferencesHandler implements IHandler {
       const offset = document.offsetAt(params.position);
       const wordRange = getWordRangeAtPosition(text, offset);
       if (!wordRange) {
-        logger.info(`[Server] References result: no word at position, ${Date.now() - start} ms`);
+        logger.info(`[Server] References result: no word at position`);
         return null;
       }
 
       const word = text.substring(wordRange.start, wordRange.end);
+      
+      // Start fallback trace
+      trace = this.requestTracer.start('references', word, uri, `${line}:${character}`, false);
+      trace.addFilter('FallbackWordLookup');
+      
+      trace.startDbQuery();
       const references = await mergedIndex.findReferencesByName(word);
+      trace.endDbQuery(references.length);
+      
+      trace.startProcessing();
 
       // Deduplicate fallback results
       const seenFallback = new Set<string>();
@@ -165,30 +182,22 @@ export class ReferencesHandler implements IHandler {
         }
       }));
 
-      const duration = Date.now() - start;
-      profiler.record('references', duration);
+      trace.endProcessing();
+      const completedTrace = trace.end(dedupedRefs.length);
+      this.requestTracer.recordTrace(completedTrace);
+      
+      profiler.record('references', completedTrace.timings.totalMs);
       statsManager.updateProfilingMetrics({ avgReferencesTimeMs: profiler.getAverageMs('references') });
 
-      // Forensic tracing: Log fallback path trace
-      const endMemoryMB = this.requestTracer.captureMemory();
-      const workerPoolStats = (infrastructure as any).workerPool?.getStats?.();
-      this.requestTracer.logTrace(
-        'references',
-        uri,
-        `${line}:${character}`,
-        startMemoryMB,
-        endMemoryMB,
-        ioTracker,
-        duration,
-        dedupedRefs.length,
-        workerPoolStats
-      );
-
-      logger.info(`[Server] References result (fallback): symbol="${word}", ${dedupedRefs.length} locations in ${duration} ms`);
+      logger.info(`[Server] References result (fallback): symbol="${word}", ${dedupedRefs.length} locations in ${completedTrace.timings.totalMs} ms`);
       return results;
     } catch (error) {
-      const duration = Date.now() - start;
-      logger.error(`[Server] References error: ${error}, ${duration} ms`);
+      if (trace) {
+        trace.logError(String(error));
+        const completedTrace = trace.end(0);
+        this.requestTracer.recordTrace(completedTrace);
+      }
+      logger.error(`[Server] References error: ${error}`);
       return null;
     }
   }

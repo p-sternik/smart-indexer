@@ -34,6 +34,7 @@ import { Profiler } from './profiler/profiler.js';
 import { FolderHasher } from './cache/folderHasher.js';
 import { TypeScriptService } from './typescript/typeScriptService.js';
 import { LoggerService, LogLevel } from './utils/Logger.js';
+import { RequestTracer } from './utils/RequestTracer.js';
 import * as path from 'path';
 
 // Core module imports
@@ -94,6 +95,7 @@ const dynamicIndex = new DynamicIndex(symbolIndexer);
 const backgroundIndex = new BackgroundIndex(symbolIndexer, storage, workerPool, ngrxResolver, logger);
 const mergedIndex = new MergedIndex(dynamicIndex, backgroundIndex);
 const statsManager = new StatsManager();
+const requestTracer = new RequestTracer(logger);
 
 // ============================================================================
 // Server Initializer and Document Event Handler
@@ -159,6 +161,7 @@ const serverServices: ServerServices = {
   deadCodeDetector: null,
   profiler,
   statsManager,
+  requestTracer,
   workspaceRoot: '',
   logger,
   infrastructure: {

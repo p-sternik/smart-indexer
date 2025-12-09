@@ -33,7 +33,6 @@ import {
   extractActionTypeString,
   isNgRxReducerOrEffect 
 } from '../utils/ngrxContextDetector.js';
-import { RequestTracer } from '../utils/RequestTracer.js';
 
 interface ReferenceCandidateMatch {
   uri: string;
@@ -48,11 +47,9 @@ export class ReferencesHandler implements IHandler {
   readonly name = 'ReferencesHandler';
   
   private services: ServerServices;
-  private requestTracer: RequestTracer;
 
   constructor(services: ServerServices, _state: ServerState) {
     this.services = services;
-    this.requestTracer = new RequestTracer(services.logger);
   }
 
   register(): void {
@@ -67,18 +64,18 @@ export class ReferencesHandler implements IHandler {
     const uri = URI.parse(params.textDocument.uri).fsPath;
     const { line, character } = params.position;
     
-    const { documents, mergedIndex, backgroundIndex, profiler, statsManager, logger } = this.services;
+    const { documents, mergedIndex, backgroundIndex, profiler, statsManager, logger, requestTracer } = this.services;
     
     logger.info(`[Server] References request: ${uri}:${line}:${character}`);
     
     // Start forensic trace
-    let trace: any = null;
-    let symbolName = '';
+    const trace = requestTracer.start('references', '<resolving>', uri, `${line}:${character}`, false);
+    let result: Location[] | null = null;
     
     try {
       const document = documents.get(params.textDocument.uri);
       if (!document) {
-        logger.info(`[Server] References result: document not found, 0 ms`);
+        logger.info(`[Server] References result: document not found`);
         return null;
       }
 
@@ -88,14 +85,11 @@ export class ReferencesHandler implements IHandler {
       const symbolAtCursor = findSymbolAtPosition(uri, text, line, character);
       
       if (symbolAtCursor) {
-        symbolName = symbolAtCursor.name;
+        const symbolName = symbolAtCursor.name;
         
         // Check if NgRx loose mode
         const lineContent = text.split('\n')[line] || '';
         const isNgRx = shouldEnableLooseMode(text, symbolName, lineContent);
-        
-        // Start trace session
-        trace = this.requestTracer.start('references', symbolName, uri, `${line}:${character}`, isNgRx);
         
         if (isNgRx) {
           trace.addFilter('NgRxLooseMode');
@@ -122,7 +116,7 @@ export class ReferencesHandler implements IHandler {
 
         logger.info(`[Server] Found ${references.length} references with import tracking`);
 
-        const results = references.map(ref => ({
+        result = references.map(ref => ({
           uri: URI.file(ref.location.uri).toString(),
           range: {
             start: { line: ref.range.startLine, character: ref.range.startCharacter },
@@ -131,16 +125,9 @@ export class ReferencesHandler implements IHandler {
         }));
 
         trace.endProcessing();
+        logger.info(`[Server] References result: ${result.length} locations`);
         
-        // Record and log trace
-        const completedTrace = trace.end(results.length);
-        this.requestTracer.recordTrace(completedTrace);
-        
-        profiler.record('references', completedTrace.timings.totalMs);
-        statsManager.updateProfilingMetrics({ avgReferencesTimeMs: profiler.getAverageMs('references') });
-
-        logger.info(`[Server] References result: ${results.length} locations in ${completedTrace.timings.totalMs} ms`);
-        return results.length > 0 ? results : null;
+        return result.length > 0 ? result : null;
       }
 
       // Fallback: use simple word-based lookup
@@ -152,9 +139,6 @@ export class ReferencesHandler implements IHandler {
       }
 
       const word = text.substring(wordRange.start, wordRange.end);
-      
-      // Start fallback trace
-      trace = this.requestTracer.start('references', word, uri, `${line}:${character}`, false);
       trace.addFilter('FallbackWordLookup');
       
       trace.startDbQuery();
@@ -174,7 +158,7 @@ export class ReferencesHandler implements IHandler {
         return true;
       });
 
-      const results = dedupedRefs.length === 0 ? null : dedupedRefs.map(ref => ({
+      result = dedupedRefs.length === 0 ? null : dedupedRefs.map(ref => ({
         uri: URI.file(ref.location.uri).toString(),
         range: {
           start: { line: ref.range.startLine, character: ref.range.startCharacter },
@@ -183,22 +167,22 @@ export class ReferencesHandler implements IHandler {
       }));
 
       trace.endProcessing();
-      const completedTrace = trace.end(dedupedRefs.length);
-      this.requestTracer.recordTrace(completedTrace);
+      logger.info(`[Server] References result (fallback): symbol="${word}", ${dedupedRefs.length} locations`);
+      
+      return result;
+    } catch (error) {
+      trace.logError(String(error));
+      logger.error(`[Server] References error: ${error}`);
+      result = null;
+      return null;
+    } finally {
+      // CRITICAL: Ensure trace is ALWAYS recorded (exceptions, normal flow)
+      const resultCount = result ? result.length : 0;
+      const completedTrace = trace.end(resultCount);
+      requestTracer.recordTrace(completedTrace);
       
       profiler.record('references', completedTrace.timings.totalMs);
       statsManager.updateProfilingMetrics({ avgReferencesTimeMs: profiler.getAverageMs('references') });
-
-      logger.info(`[Server] References result (fallback): symbol="${word}", ${dedupedRefs.length} locations in ${completedTrace.timings.totalMs} ms`);
-      return results;
-    } catch (error) {
-      if (trace) {
-        trace.logError(String(error));
-        const completedTrace = trace.end(0);
-        this.requestTracer.recordTrace(completedTrace);
-      }
-      logger.error(`[Server] References error: ${error}`);
-      return null;
     }
   }
 

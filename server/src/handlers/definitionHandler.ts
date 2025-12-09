@@ -71,35 +71,46 @@ export class DefinitionHandler implements IHandler {
   private async handleDefinition(params: DefinitionParams): Promise<Location | Location[] | null> {
     const uri = URI.parse(params.textDocument.uri).fsPath;
     const { line, character } = params.position;
-    const start = Date.now();
     
-    const { documents, mergedIndex, profiler, statsManager, typeScriptService, logger } = this.services;
+    const { documents, mergedIndex, profiler, statsManager, typeScriptService, logger, requestTracer } = this.services;
     const { importResolver } = this.state;
     
     // OPTIMIZATION: Check query cache FIRST (0ms latency for repeated clicks)
     const cacheKey = `${uri}:${line}:${character}`;
     const cached = this.queryCache.get(cacheKey);
     if (cached !== undefined) {
-      const duration = Date.now() - start;
-      logger.info(`[Server] Definition cache hit: ${uri}:${line}:${character} in ${duration}ms (0ms actual)`);
+      // Start trace for cache hit
+      const trace = requestTracer.start('definition', '<cached>', uri, `${line}:${character}`, false);
+      trace.addFilter('QueryCache');
+      trace.recordCacheHit();
+      const completedTrace = trace.end(Array.isArray(cached) ? cached.length : (cached ? 1 : 0));
+      requestTracer.recordTrace(completedTrace);
       
       // Move to end for LRU (delete + re-add makes it most recently used)
       this.queryCache.delete(cacheKey);
       this.queryCache.set(cacheKey, cached);
       
+      logger.info(`[Server] Definition cache hit: ${uri}:${line}:${character} in ${completedTrace.timings.totalMs}ms`);
       return cached;
     }
     
     logger.info(`[Server] Definition request: ${uri}:${line}:${character}`);
     
+    // Start trace session
+    const trace = requestTracer.start('definition', '<resolving>', uri, `${line}:${character}`, false);
+    let result: Location | Location[] | null = null;
+    
     try {
       const document = documents.get(params.textDocument.uri);
       if (!document) {
-        logger.info(`[Server] Definition result: document not found, 0 ms`);
+        logger.info(`[Server] Definition result: document not found`);
         return null;
       }
 
       const text = document.getText();
+      
+      // Update trace with resolved symbol name (will be updated later if found)
+      let symbolName = '<unknown>';
 
       // Check if this is a member expression (e.g., myStore.actions.opened)
       const memberAccess = parseMemberAccess(text, line, character);
@@ -149,22 +160,20 @@ export class DefinitionHandler implements IHandler {
           );
 
           if (resolved) {
-            const duration = Date.now() - start;
-            profiler.record('definition', duration);
-            statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
-            
             logger.info(
               `[Server] Recursive resolution succeeded: ${memberAccess.baseName}.${memberAccess.propertyChain.join('.')} ` +
-              `-> ${resolved.location.uri}:${resolved.location.line} in ${duration} ms`
+              `-> ${resolved.location.uri}:${resolved.location.line}`
             );
 
-            const result = {
+            result = {
               uri: URI.file(resolved.location.uri).toString(),
               range: {
                 start: { line: resolved.range.startLine, character: resolved.range.startCharacter },
                 end: { line: resolved.range.endLine, character: resolved.range.endCharacter }
               }
             };
+            
+            trace.addFilter('RecursiveResolver');
             
             // Cache result with LRU eviction
             this.cacheResult(cacheKey, result);
@@ -179,8 +188,9 @@ export class DefinitionHandler implements IHandler {
       const symbolAtCursor = findSymbolAtPosition(uri, text, line, character);
       
       if (symbolAtCursor) {
+        symbolName = symbolAtCursor.name;
         logger.info(
-          `[Server] Resolved symbol: name="${symbolAtCursor.name}", kind="${symbolAtCursor.kind}", ` +
+          `[Server] Resolved symbol: name="${symbolName}", kind="${symbolAtCursor.kind}", ` +
           `container="${symbolAtCursor.containerName || '<none>'}", isStatic=${symbolAtCursor.isStatic}`
         );
 
@@ -293,14 +303,12 @@ export class DefinitionHandler implements IHandler {
                   }
                 }));
                 
-                const duration = Date.now() - start;
-                profiler.record('definition', duration);
-                statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
-                
-                logger.info(`[Server] Definition result (import-resolved): ${matchingSymbols.length} → ${results.length} locations in ${duration} ms`);
+                logger.info(`[Server] Definition result (import-resolved): ${matchingSymbols.length} → ${results.length} locations`);
+                trace.addFilter('ImportResolved');
                 
                 // Cache result with LRU eviction
                 this.cacheResult(cacheKey, results);
+                result = results;
                 return results;
               }
             } else {
@@ -310,7 +318,10 @@ export class DefinitionHandler implements IHandler {
         }
 
         // Standard resolution: get all candidates by name
+        trace.startDbQuery();
         const candidates = await mergedIndex.findDefinitions(symbolAtCursor.name);
+        trace.endDbQuery(candidates.length);
+        
         logger.info(`[Server] Found ${candidates.length} candidates by name`);
         
         // DEBUG: Log each candidate's isDefinition status
@@ -323,6 +334,8 @@ export class DefinitionHandler implements IHandler {
         // ============================================================
         
         logger.info(`[Server] Starting strict filtering pipeline with ${candidates.length} candidates`);
+        trace.startProcessing();
+        
         let definitionCandidates = candidates;
         
         // RULE 1: Remove Self-Reference
@@ -511,7 +524,7 @@ export class DefinitionHandler implements IHandler {
             }
           }
           
-          const results = rankedCandidates.map(sym => ({
+          result = rankedCandidates.map(sym => ({
             uri: URI.file(sym.location.uri).toString(),
             range: {
               start: { line: sym.range.startLine, character: sym.range.startCharacter },
@@ -519,15 +532,13 @@ export class DefinitionHandler implements IHandler {
             }
           }));
 
-          const duration = Date.now() - start;
-          profiler.record('definition', duration);
-          statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
-          
-          logger.info(`[Server] Definition result: ${candidates.length} → ${results.length} location${results.length === 1 ? '' : 's'} (INSTANT JUMP) in ${duration} ms`);
+          trace.endProcessing();
+          trace.addFilter('StrictPipeline');
+          logger.info(`[Server] Definition result: ${candidates.length} → ${result.length} location(s)`);
           
           // Cache result with LRU eviction
-          this.cacheResult(cacheKey, results);
-          return results;
+          this.cacheResult(cacheKey, result);
+          return result;
         }
       }
 
@@ -535,11 +546,12 @@ export class DefinitionHandler implements IHandler {
       const offset = document.offsetAt(params.position);
       const wordRange = getWordRangeAtPosition(text, offset);
       if (!wordRange) {
-        logger.info(`[Server] Definition result: no word at position, ${Date.now() - start} ms`);
+        logger.info(`[Server] Definition result: no word at position`);
         return null;
       }
 
       const word = text.substring(wordRange.start, wordRange.end);
+      symbolName = word;
       
       // CATASTROPHIC FALLBACK PREVENTION: Block searches for common keywords
       const COMMON_KEYWORDS = new Set([
@@ -555,18 +567,23 @@ export class DefinitionHandler implements IHandler {
       ]);
       
       if (COMMON_KEYWORDS.has(word.toLowerCase())) {
-        logger.info(`[Server] Definition result (fallback blocked): "${word}" is a common keyword, ${Date.now() - start} ms`);
+        logger.info(`[Server] Definition result (fallback blocked): "${word}" is a common keyword`);
+        trace.addFilter('KeywordBlocked');
         return null;
       }
       
       // OPTIMIZATION: Apply timeout to fallback search to prevent 30s+ delays
       const FALLBACK_TIMEOUT_MS = 500;
+      trace.addFilter('FallbackSearch');
+      trace.startDbQuery();
+      
       const fallbackPromise = this.executeFallbackSearch(word, uri, line, character);
       
       let timeoutId: NodeJS.Timeout | null = null;
       const timeoutPromise = new Promise<Location[] | null>((resolve) => {
         timeoutId = setTimeout(() => {
           logger.warn(`[Server] Fallback search timed out after ${FALLBACK_TIMEOUT_MS}ms for "${word}"`);
+          trace.logError(`Fallback timeout: ${FALLBACK_TIMEOUT_MS}ms`);
           resolve(null);
         }, FALLBACK_TIMEOUT_MS);
       });
@@ -577,23 +594,31 @@ export class DefinitionHandler implements IHandler {
       if (timeoutId !== null) {
         clearTimeout(timeoutId);
       }
-
-      const duration = Date.now() - start;
-      profiler.record('definition', duration);
-      statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
       
-      logger.info(`[Server] Definition result (fallback): symbol="${word}", ${results ? results.length : 0} locations in ${duration} ms`);
+      trace.endDbQuery(results ? results.length : 0);
+      
+      logger.info(`[Server] Definition result (fallback): symbol="${word}", ${results ? results.length : 0} locations`);
       
       // Cache result with LRU eviction
       this.cacheResult(cacheKey, results);
+      result = results;
       return results;
     } catch (error) {
-      const duration = Date.now() - start;
-      logger.error(`[Server] Definition error: ${error}, ${duration} ms`);
+      trace.logError(String(error));
+      logger.error(`[Server] Definition error: ${error}`);
       
       // Cache null result to prevent repeated expensive failures
       this.cacheResult(cacheKey, null);
+      result = null;
       return null;
+    } finally {
+      // CRITICAL: Ensure trace is ALWAYS recorded (cache hits, exceptions, normal flow)
+      const resultCount = result ? (Array.isArray(result) ? result.length : 1) : 0;
+      const completedTrace = trace.end(resultCount);
+      requestTracer.recordTrace(completedTrace);
+      
+      profiler.record('definition', completedTrace.timings.totalMs);
+      statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
     }
   }
   

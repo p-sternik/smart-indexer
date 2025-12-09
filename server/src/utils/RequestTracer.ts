@@ -240,8 +240,11 @@ export class RequestTracer {
    * Store a completed trace in history.
    */
   recordTrace(trace: SearchTrace): void {
-    // Add to history
+    // Add to history FIRST (before file I/O or logging that might fail)
     RequestTracer.history.push(trace);
+    
+    // Safety log to confirm storage
+    this.logger.info(`[Tracer] Trace stored. History size: ${RequestTracer.history.length}`);
     
     // Enforce rolling window
     if (RequestTracer.history.length > RequestTracer.MAX_HISTORY) {

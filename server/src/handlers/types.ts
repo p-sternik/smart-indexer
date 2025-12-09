@@ -18,6 +18,7 @@ import { LanguageRouter } from '../indexer/languageRouter.js';
 import { FileScanner } from '../indexer/fileScanner.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { Profiler } from '../profiler/profiler.js';
+import { RequestTracer } from '../utils/RequestTracer.js';
 import { StatsManager } from '../index/statsManager.js';
 import { FolderHasher } from '../cache/folderHasher.js';
 import { DeadCodeDetector } from '../features/deadCode.js';
@@ -85,6 +86,8 @@ export interface MonitoringServices {
   profiler: Profiler;
   /** Statistics manager */
   statsManager: StatsManager;
+  /** Request tracer for forensic observability */
+  requestTracer: RequestTracer;
 }
 
 /**

@@ -33,6 +33,7 @@ import {
   extractActionTypeString,
   isNgRxReducerOrEffect 
 } from '../utils/ngrxContextDetector.js';
+import { RequestTracer } from '../utils/RequestTracer.js';
 
 interface ReferenceCandidateMatch {
   uri: string;
@@ -47,9 +48,11 @@ export class ReferencesHandler implements IHandler {
   readonly name = 'ReferencesHandler';
   
   private services: ServerServices;
+  private requestTracer: RequestTracer;
 
   constructor(services: ServerServices, _state: ServerState) {
     this.services = services;
+    this.requestTracer = new RequestTracer(services.logger);
   }
 
   register(): void {
@@ -65,7 +68,11 @@ export class ReferencesHandler implements IHandler {
     const { line, character } = params.position;
     const start = Date.now();
     
-    const { documents, mergedIndex, backgroundIndex, profiler, statsManager, logger } = this.services;
+    const { documents, mergedIndex, backgroundIndex, profiler, statsManager, logger, infrastructure } = this.services;
+    
+    // Forensic tracing: Capture start state
+    const startMemoryMB = this.requestTracer.captureMemory();
+    const ioTracker = this.requestTracer.createIOTracker();
     
     logger.info(`[Server] References request: ${uri}:${line}:${character}`);
     
@@ -109,6 +116,21 @@ export class ReferencesHandler implements IHandler {
         profiler.record('references', duration);
         statsManager.updateProfilingMetrics({ avgReferencesTimeMs: profiler.getAverageMs('references') });
 
+        // Forensic tracing: Log complete trace
+        const endMemoryMB = this.requestTracer.captureMemory();
+        const workerPoolStats = (infrastructure as any).workerPool?.getStats?.();
+        this.requestTracer.logTrace(
+          'references',
+          uri,
+          `${line}:${character}`,
+          startMemoryMB,
+          endMemoryMB,
+          ioTracker,
+          duration,
+          results.length,
+          workerPoolStats
+        );
+
         logger.info(`[Server] References result: ${results.length} locations in ${duration} ms`);
         return results.length > 0 ? results : null;
       }
@@ -146,6 +168,21 @@ export class ReferencesHandler implements IHandler {
       const duration = Date.now() - start;
       profiler.record('references', duration);
       statsManager.updateProfilingMetrics({ avgReferencesTimeMs: profiler.getAverageMs('references') });
+
+      // Forensic tracing: Log fallback path trace
+      const endMemoryMB = this.requestTracer.captureMemory();
+      const workerPoolStats = (infrastructure as any).workerPool?.getStats?.();
+      this.requestTracer.logTrace(
+        'references',
+        uri,
+        `${line}:${character}`,
+        startMemoryMB,
+        endMemoryMB,
+        ioTracker,
+        duration,
+        dedupedRefs.length,
+        workerPoolStats
+      );
 
       logger.info(`[Server] References result (fallback): symbol="${word}", ${dedupedRefs.length} locations in ${duration} ms`);
       return results;

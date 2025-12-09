@@ -12,6 +12,7 @@ import { IndexScheduler, ProgressCallback } from './IndexScheduler.js';
 import { STORAGE_CONFIG, INDEXING_STATE, LOG_PREFIX } from '../constants.js';
 import { ILogger, NullLogger } from '../utils/Logger.js';
 import * as fsPromises from 'fs/promises';
+import { performance } from 'perf_hooks';
 
 /**
  * Represents a single file's indexed data.
@@ -419,6 +420,42 @@ export class BackgroundIndex implements ISymbolIndex {
     }
 
     return shard;
+  }
+
+  /**
+   * Load a shard with cache metrics tracking (for forensic tracing).
+   * Returns shard along with timing and cache hit/miss info.
+   */
+  async loadShardWithMetrics(uri: string): Promise<{ shard: FileShard | null; cacheHit: boolean; durationMs: number }> {
+    const start = performance.now();
+    const cached = this.shardCache.get(uri);
+    
+    if (cached) {
+      this.shardCache.delete(uri);
+      this.shardCache.set(uri, cached);
+      return {
+        shard: cached,
+        cacheHit: true,
+        durationMs: performance.now() - start
+      };
+    }
+
+    const shard = await this.storage.getFile(uri);
+    if (shard) {
+      if (this.shardCache.size >= STORAGE_CONFIG.MAX_LRU_CACHE_SIZE) {
+        const oldestKey = this.shardCache.keys().next().value;
+        if (oldestKey) {
+          this.shardCache.delete(oldestKey);
+        }
+      }
+      this.shardCache.set(uri, shard);
+    }
+
+    return {
+      shard,
+      cacheHit: false,
+      durationMs: performance.now() - start
+    };
   }
 
   /**

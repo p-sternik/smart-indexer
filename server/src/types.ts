@@ -128,7 +128,9 @@ export interface ImportInfo {
   moduleSpecifier: string; // e.g., './bar', '@angular/core'
   isDefault?: boolean;
   isNamespace?: boolean; // import * as NS
-  exportedName?: string; // for re-exports: export { Foo as Bar }
+  exportedName?: string; // Original name from export (for rename tracking: import { User as Admin })
+  isDynamic?: boolean; // true for import() or require()
+  isCJS?: boolean; // true for CommonJS require()
 }
 
 export interface ReExportInfo {

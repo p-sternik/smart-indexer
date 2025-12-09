@@ -1022,6 +1022,69 @@ export class SqlJsStorage implements IIndexStorage {
   }
 
   /**
+   * Find candidate files that might reference a symbol.
+   * Uses SQL LIKE for fast filtering before deep analysis.
+   * 
+   * @param symbolName - Symbol name to search for
+   * @param targetFileBasename - Optional basename of definition file (e.g., "user" from "user.ts")
+   * @param limit - Maximum results (default: 2000 to prevent event loop blocking)
+   * @returns Array of file URIs and their indexed data
+   */
+  async findReferenceCandidates(
+    symbolName: string,
+    targetFileBasename?: string,
+    limit: number = 2000
+  ): Promise<Array<{ uri: string; data: FileIndexData }>> {
+    this.ensureInitialized();
+    
+    const results: Array<{ uri: string; data: FileIndexData }> = [];
+    
+    // Build LIKE patterns for SQL filtering
+    // Pattern 1: Symbol name appears in content (fast heuristic)
+    const symbolPattern = `%${symbolName}%`;
+    
+    // Pattern 2: If we know the target file, look for import paths containing it
+    const filePattern = targetFileBasename ? `%${targetFileBasename}%` : null;
+    
+    try {
+      // Query with LIKE for initial filtering
+      let query = 'SELECT uri, json_data FROM files WHERE json_data LIKE ?';
+      const params: any[] = [symbolPattern];
+      
+      if (filePattern) {
+        query += ' OR json_data LIKE ?';
+        params.push(filePattern);
+      }
+      
+      query += ' LIMIT ?';
+      params.push(limit);
+      
+      const sqlResult = this.db!.exec(query, params);
+      
+      if (sqlResult.length === 0 || sqlResult[0].values.length === 0) {
+        return [];
+      }
+      
+      // Parse JSON and return file data
+      for (const row of sqlResult[0].values) {
+        const uri = row[0] as string;
+        const jsonData = row[1] as string;
+        
+        try {
+          const data: FileIndexData = JSON.parse(jsonData);
+          results.push({ uri, data });
+        } catch {
+          // Skip corrupt data
+        }
+      }
+    } catch (error: any) {
+      console.warn(`[SqlJsStorage] Reference candidate search failed: ${error.message}`);
+    }
+    
+    return results;
+  }
+
+  /**
    * Schedule an auto-save operation with debouncing.
    */
   private scheduleAutoSave(): void {

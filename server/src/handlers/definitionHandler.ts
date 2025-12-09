@@ -24,6 +24,7 @@ import { findSymbolAtPosition } from '../indexer/symbolResolver.js';
 import { parseMemberAccess, resolvePropertyRecursively } from '../indexer/recursiveResolver.js';
 import { disambiguateSymbols } from '../utils/disambiguation.js';
 import { getWordRangeAtPosition } from '../utils/textUtils.js';
+import { shouldEnableLooseMode } from '../utils/ngrxContextDetector.js';
 
 /**
  * Handler for textDocument/definition requests.
@@ -387,6 +388,7 @@ export class DefinitionHandler implements IHandler {
         
         // RULE 4: Import Ban
         // Explicitly filter out kind='import' or ImportSpecifier variants
+        // EXCEPTION: NgRx Actions - allow VariableDeclaration in loose mode
         const beforeImportFilter = definitionCandidates.length;
         const importKinds = new Set([
           'import',
@@ -398,7 +400,21 @@ export class DefinitionHandler implements IHandler {
           'NamedImports',
           'NamespaceImport'
         ]);
-        definitionCandidates = definitionCandidates.filter(c => !importKinds.has(c.kind));
+        
+        // NgRx Context-Aware Filtering
+        const lineContent = text.split('\n')[line] || '';
+        const isNgRxLooseMode = shouldEnableLooseMode(text, symbolAtCursor.name, lineContent);
+        
+        if (isNgRxLooseMode) {
+          logger.info(`[Server] NgRx Loose Mode ENABLED for symbol: ${symbolAtCursor.name}`);
+          // In loose mode, allow VariableDeclaration (for const actions)
+          // But still ban import statements
+          definitionCandidates = definitionCandidates.filter(c => !importKinds.has(c.kind));
+        } else {
+          // Strict mode: ban imports AND prefer non-variable kinds
+          definitionCandidates = definitionCandidates.filter(c => !importKinds.has(c.kind));
+        }
+        
         if (beforeImportFilter !== definitionCandidates.length) {
           logger.info(`[Server] Rule 4 (Import Ban) - Removed ${beforeImportFilter - definitionCandidates.length} import statements`);
         }

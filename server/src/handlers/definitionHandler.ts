@@ -33,10 +33,30 @@ export class DefinitionHandler implements IHandler {
   
   private services: ServerServices;
   private state: ServerState;
+  
+  // Query result cache (LRU) to eliminate redundant I/O + filtering
+  private queryCache: Map<string, Location | Location[] | null> = new Map();
+  private readonly QUERY_CACHE_MAX_SIZE = 500;
 
   constructor(services: ServerServices, state: ServerState) {
     this.services = services;
     this.state = state;
+  }
+  
+  /**
+   * Invalidate cache entries for a specific file URI.
+   * Called when a file is modified to ensure cache coherence.
+   */
+  invalidateCacheForFile(uri: string): void {
+    const keysToDelete: string[] = [];
+    for (const key of this.queryCache.keys()) {
+      if (key.startsWith(uri + ':')) {
+        keysToDelete.push(key);
+      }
+    }
+    for (const key of keysToDelete) {
+      this.queryCache.delete(key);
+    }
   }
 
   register(): void {
@@ -54,6 +74,20 @@ export class DefinitionHandler implements IHandler {
     
     const { documents, mergedIndex, profiler, statsManager, typeScriptService, logger } = this.services;
     const { importResolver } = this.state;
+    
+    // OPTIMIZATION: Check query cache FIRST (0ms latency for repeated clicks)
+    const cacheKey = `${uri}:${line}:${character}`;
+    const cached = this.queryCache.get(cacheKey);
+    if (cached !== undefined) {
+      const duration = Date.now() - start;
+      logger.info(`[Server] Definition cache hit: ${uri}:${line}:${character} in ${duration}ms (0ms actual)`);
+      
+      // Move to end for LRU (delete + re-add makes it most recently used)
+      this.queryCache.delete(cacheKey);
+      this.queryCache.set(cacheKey, cached);
+      
+      return cached;
+    }
     
     logger.info(`[Server] Definition request: ${uri}:${line}:${character}`);
     
@@ -123,13 +157,17 @@ export class DefinitionHandler implements IHandler {
               `-> ${resolved.location.uri}:${resolved.location.line} in ${duration} ms`
             );
 
-            return {
+            const result = {
               uri: URI.file(resolved.location.uri).toString(),
               range: {
                 start: { line: resolved.range.startLine, character: resolved.range.startCharacter },
                 end: { line: resolved.range.endLine, character: resolved.range.endCharacter }
               }
             };
+            
+            // Cache result with LRU eviction
+            this.cacheResult(cacheKey, result);
+            return result;
           } else {
             logger.info(`[Server] Recursive resolution failed, falling back to standard resolution`);
           }
@@ -259,6 +297,9 @@ export class DefinitionHandler implements IHandler {
                 statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
                 
                 logger.info(`[Server] Definition result (import-resolved): ${matchingSymbols.length} → ${results.length} locations in ${duration} ms`);
+                
+                // Cache result with LRU eviction
+                this.cacheResult(cacheKey, results);
                 return results;
               }
             } else {
@@ -438,7 +479,7 @@ export class DefinitionHandler implements IHandler {
               text,
               line,
               character,
-              200 // 200ms timeout
+              500 // 500ms timeout (increased from 200ms for better precision)
             );
           }
           
@@ -467,6 +508,9 @@ export class DefinitionHandler implements IHandler {
           statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
           
           logger.info(`[Server] Definition result: ${candidates.length} → ${results.length} location${results.length === 1 ? '' : 's'} (INSTANT JUMP) in ${duration} ms`);
+          
+          // Cache result with LRU eviction
+          this.cacheResult(cacheKey, results);
           return results;
         }
       }
@@ -523,12 +567,34 @@ export class DefinitionHandler implements IHandler {
       statsManager.updateProfilingMetrics({ avgDefinitionTimeMs: profiler.getAverageMs('definition') });
       
       logger.info(`[Server] Definition result (fallback): symbol="${word}", ${results ? results.length : 0} locations in ${duration} ms`);
+      
+      // Cache result with LRU eviction
+      this.cacheResult(cacheKey, results);
       return results;
     } catch (error) {
       const duration = Date.now() - start;
       logger.error(`[Server] Definition error: ${error}, ${duration} ms`);
+      
+      // Cache null result to prevent repeated expensive failures
+      this.cacheResult(cacheKey, null);
       return null;
     }
+  }
+  
+  /**
+   * Cache a query result with LRU eviction policy.
+   */
+  private cacheResult(key: string, result: Location | Location[] | null): void {
+    // Enforce LRU eviction before adding new entry
+    if (this.queryCache.size >= this.QUERY_CACHE_MAX_SIZE) {
+      // Delete oldest entry (first key in Map)
+      const firstKey = this.queryCache.keys().next().value;
+      if (firstKey !== undefined) {
+        this.queryCache.delete(firstKey);
+      }
+    }
+    
+    this.queryCache.set(key, result);
   }
 
   /**
@@ -756,6 +822,8 @@ export class DefinitionHandler implements IHandler {
   /**
    * Use TypeScript service to disambiguate when multiple candidates exist.
    * Returns filtered candidates based on semantic analysis.
+   * 
+   * @param timeoutMs - Timeout in milliseconds (default: 500ms for better precision in large projects)
    */
   private async disambiguateWithTypeScript(
     candidates: IndexedSymbol[],
@@ -763,7 +831,7 @@ export class DefinitionHandler implements IHandler {
     content: string,
     line: number,
     character: number,
-    timeoutMs: number = 200
+    timeoutMs: number = 500
   ): Promise<IndexedSymbol[]> {
     const { typeScriptService, logger } = this.services;
     

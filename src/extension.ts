@@ -157,23 +157,35 @@ export async function activate(context: vscode.ExtensionContext) {
           
           // Fallback to Smart Indexer
           logChannel.info(`[Middleware] Native TS returned nothing, falling back to Smart Indexer...`);
-          const smartResult = await client.sendRequest(
-            'textDocument/definition',
-            {
-              textDocument: { uri: document.uri.toString() },
-              position: { line: position.line, character: position.character }
-            },
-            token
+          
+          // Show visual feedback that Smart Indexer is working
+          const statusBarDisposable = vscode.window.setStatusBarMessage(
+            '$(search) Smart Indexer...',
+            2000 // Auto-dispose after 2 seconds
           );
           
-          const duration = Date.now() - start;
-          if (smartResult && Array.isArray(smartResult) && smartResult.length > 0) {
-            logChannel.info(`[Middleware] Smart Indexer returned ${smartResult.length} results in ${duration}ms`);
-          } else {
-            logChannel.info(`[Middleware] Smart Indexer returned nothing in ${duration}ms`);
+          try {
+            const smartResult = await client.sendRequest(
+              'textDocument/definition',
+              {
+                textDocument: { uri: document.uri.toString() },
+                position: { line: position.line, character: position.character }
+              },
+              token
+            );
+            
+            const duration = Date.now() - start;
+            if (smartResult && Array.isArray(smartResult) && smartResult.length > 0) {
+              logChannel.info(`[Middleware] Smart Indexer returned ${smartResult.length} results in ${duration}ms`);
+            } else {
+              logChannel.info(`[Middleware] Smart Indexer returned nothing in ${duration}ms`);
+            }
+            
+            return smartResult as vscode.Definition | vscode.LocationLink[] | null;
+          } finally {
+            // Ensure status bar message is disposed
+            statusBarDisposable.dispose();
           }
-          
-          return smartResult as vscode.Definition | vscode.LocationLink[] | null;
         } catch (error) {
           logChannel.error(`[Middleware] Definition error: ${error}`);
           return null;
@@ -207,24 +219,36 @@ export async function activate(context: vscode.ExtensionContext) {
           
           // Fallback to Smart Indexer
           logChannel.info(`[Middleware] Native TS returned nothing, falling back to Smart Indexer...`);
-          const smartResult = await client.sendRequest(
-            'textDocument/references',
-            {
-              textDocument: { uri: document.uri.toString() },
-              position: { line: position.line, character: position.character },
-              context: { includeDeclaration: context.includeDeclaration }
-            },
-            token
+          
+          // Show visual feedback that Smart Indexer is working
+          const statusBarDisposable = vscode.window.setStatusBarMessage(
+            '$(search) Smart Indexer...',
+            2000 // Auto-dispose after 2 seconds
           );
           
-          const duration = Date.now() - start;
-          if (smartResult && Array.isArray(smartResult) && smartResult.length > 0) {
-            logChannel.info(`[Middleware] Smart Indexer returned ${smartResult.length} references in ${duration}ms`);
-          } else {
-            logChannel.info(`[Middleware] Smart Indexer returned nothing in ${duration}ms`);
+          try {
+            const smartResult = await client.sendRequest(
+              'textDocument/references',
+              {
+                textDocument: { uri: document.uri.toString() },
+                position: { line: position.line, character: position.character },
+                context: { includeDeclaration: context.includeDeclaration }
+              },
+              token
+            );
+            
+            const duration = Date.now() - start;
+            if (smartResult && Array.isArray(smartResult) && smartResult.length > 0) {
+              logChannel.info(`[Middleware] Smart Indexer returned ${smartResult.length} references in ${duration}ms`);
+            } else {
+              logChannel.info(`[Middleware] Smart Indexer returned nothing in ${duration}ms`);
+            }
+            
+            return smartResult as vscode.Location[] | null;
+          } finally {
+            // Ensure status bar message is disposed
+            statusBarDisposable.dispose();
           }
-          
-          return smartResult as vscode.Location[] | null;
         } catch (error) {
           logChannel.error(`[Middleware] References error: ${error}`);
           return null;

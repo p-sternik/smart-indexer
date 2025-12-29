@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.82.0](https://github.com/p-sternik/smart-indexer/compare/v1.81.0...v1.82.0) (2025-12-29)
+
+
+### Features
+
+* Implement configuration management and LSP definition handling, alongside core extension components and new documentation. ([26596f8](https://github.com/p-sternik/smart-indexer/commit/26596f869338429528878c0be901b3ea382c3b1e))
+
 ## [1.81.0](https://github.com/p-sternik/smart-indexer/compare/v1.80.0...v1.81.0) (2025-12-09)
 
 

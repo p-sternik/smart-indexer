@@ -3,6 +3,7 @@ import { SqlJsStorage } from './SqlJsStorage';
 import { NativeSqliteStorage } from './NativeSqliteStorage';
 import { IIndexStorage } from './IIndexStorage';
 import * as path from 'path';
+import { encode } from '@msgpack/msgpack';
 
 if (!parentPort) {
   throw new Error('This script must be run as a worker thread');
@@ -39,6 +40,7 @@ parentPort.on('message', async (message) => {
     }
 
     let result: any;
+    let useTransfer = false;
 
     switch (type) {
       case 'storeFile':
@@ -61,6 +63,7 @@ parentPort.on('message', async (message) => {
         break;
       case 'getAllMetadata':
         result = await storage.getAllMetadata();
+        useTransfer = true;
         break;
       case 'updateMetadata':
         result = await storage.updateMetadata(payload);
@@ -79,12 +82,14 @@ parentPort.on('message', async (message) => {
         break;
       case 'searchSymbols':
         result = await storage.searchSymbols(payload.query, payload.mode, payload.limit);
+        useTransfer = true;
         break;
       case 'findDefinitionsInSql':
         result = await storage.findDefinitionsInSql(payload);
         break;
       case 'findReferencesInSql':
         result = await storage.findReferencesInSql(payload);
+        useTransfer = true;
         break;
       case 'findNgRxActionGroups':
         result = await storage.findNgRxActionGroups();
@@ -101,11 +106,30 @@ parentPort.on('message', async (message) => {
       case 'saveMetadataSummary':
         result = await storage.saveMetadataSummary();
         break;
+      case 'getImpactedFiles':
+        if (storage instanceof NativeSqliteStorage) {
+          result = await storage.getImpactedFiles(payload.uri, payload.maxDepth);
+        } else {
+          result = [];
+        }
+        break;
       default:
         throw new Error(`Unknown message type in SqlWorker: ${type}`);
     }
 
-    parentPort!.postMessage({ id, success: true, result });
+    if (useTransfer && result) {
+      const packed = encode(result);
+      const IPC_THRESHOLD = 8192; // 8KB
+      
+      if (packed.byteLength > IPC_THRESHOLD) {
+        const buffer = packed.buffer.slice(packed.byteOffset, packed.byteOffset + packed.byteLength);
+        parentPort!.postMessage({ id, success: true, result: buffer, isPacked: true }, [buffer as any]);
+      } else {
+        parentPort!.postMessage({ id, success: true, result });
+      }
+    } else {
+      parentPort!.postMessage({ id, success: true, result });
+    }
   } catch (error: any) {
     parentPort!.postMessage({ id, success: false, error: error.message });
   }

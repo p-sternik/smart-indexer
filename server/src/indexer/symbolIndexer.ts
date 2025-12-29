@@ -1,6 +1,6 @@
-import { parse } from '@typescript-eslint/typescript-estree';
-import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
+import { parse, AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
 import { IndexedFileResult, IndexedSymbol, IndexedReference, ImportInfo, ReExportInfo, SHARD_VERSION } from '../types.js';
+import { FastRegexParser } from './FastRegexParser.js';
 import { createSymbolId } from './symbolResolver.js';
 import * as crypto from 'crypto';
 import * as fsPromises from 'fs/promises';
@@ -40,7 +40,7 @@ class ScopeTracker {
 }
 
 export class SymbolIndexer {
-  async indexFile(uri: string, content?: string): Promise<IndexedFileResult> {
+  async indexFile(uri: string, content?: string, options: { fast?: boolean, threshold?: number } = {}): Promise<IndexedFileResult> {
     try {
       const fileContent = content !== undefined ? content : await this.readFile(uri);
       const hash = this.computeHash(fileContent);
@@ -48,8 +48,22 @@ export class SymbolIndexer {
       const ext = path.extname(uri).toLowerCase();
       const isCodeFile = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'].includes(ext);
       
+      const threshold = options.threshold || 500000; // 500KB default threshold
+      const useFastParser = options.fast || fileContent.length > threshold;
+
       if (isCodeFile) {
-        const result = this.extractCodeSymbolsAndReferences(uri, fileContent);
+        let result;
+        if (useFastParser) {
+          result = {
+            symbols: FastRegexParser.extractSymbols(uri, fileContent),
+            references: [], // Fast parser doesn't resolve references accurately without names
+            imports: [],
+            reExports: []
+          };
+        } else {
+          result = this.extractCodeSymbolsAndReferences(uri, fileContent);
+        }
+
         return {
           uri,
           hash,

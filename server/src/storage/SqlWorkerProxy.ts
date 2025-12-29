@@ -7,6 +7,7 @@ import {
   StorageStats 
 } from './IIndexStorage.js';
 import { IndexedSymbol, IndexedReference } from '../types.js';
+import { decode } from '@msgpack/msgpack';
 
 // Note: __dirname is available in CommonJS context.
 // In the bundled output, esbuild handles this correctly.
@@ -38,13 +39,17 @@ export class SqlWorkerProxy implements IIndexStorage {
     this.worker = new Worker(workerPath);
     
     this.worker.on('message', (message) => {
-      const { id, success, result, error } = message;
+      const { id, success, result, error, isPacked } = message;
       const request = this.pendingRequests.get(id);
       
       if (request) {
         this.pendingRequests.delete(id);
         if (success) {
-          request.resolve(result);
+          let finalResult = result;
+          if (isPacked && result instanceof ArrayBuffer) {
+            finalResult = decode(new Uint8Array(result));
+          }
+          request.resolve(finalResult);
         } else {
           request.reject(new Error(error));
         }
@@ -191,5 +196,9 @@ export class SqlWorkerProxy implements IIndexStorage {
 
   async findFilesWithPendingRefs(): Promise<string[]> {
     return this.sendRequest('findFilesWithPendingRefs');
+  }
+
+  async getImpactedFiles(uri: string, maxDepth: number = 3): Promise<string[]> {
+    return this.sendRequest('getImpactedFiles', { uri, maxDepth });
   }
 }

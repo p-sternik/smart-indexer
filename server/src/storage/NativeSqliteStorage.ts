@@ -13,7 +13,10 @@ export class NativeSqliteStorage implements IIndexStorage {
   private db: Database.Database | null = null;
   private dbPath: string = '';
   private isInitialized = false;
-  private static readonly SCHEMA_VERSION = 6;
+  private static readonly SCHEMA_VERSION = 7;
+  
+  // Statement Cache
+  private statements: Map<string, Database.Statement> = new Map();
 
   constructor(dbPath?: string) {
     if (dbPath) {
@@ -28,7 +31,9 @@ export class NativeSqliteStorage implements IIndexStorage {
   }
 
   async init(workspaceRoot: string, cacheDirectory: string): Promise<void> {
-    if (this.isInitialized) return;
+    if (this.isInitialized) {
+      return;
+    }
 
     if (!this.dbPath) {
       this.dbPath = path.join(workspaceRoot, cacheDirectory, 'index.db');
@@ -45,15 +50,84 @@ export class NativeSqliteStorage implements IIndexStorage {
       // Performance pragmas
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('synchronous = NORMAL');
-      this.db.pragma('cache_size = -2000'); // 2MB cache
+      this.db.pragma('cache_size = -10000'); // 10MB cache (increased for Level 4)
       this.db.pragma('temp_store = MEMORY');
+      this.db.pragma('foreign_keys = ON');
 
       this.migrateSchema();
+      this.prepareStatements();
       this.isInitialized = true;
       console.info(`[NativeSqliteStorage] Initialized at ${this.dbPath}`);
+      
+      // Initial maintenance
+      this.maintenance();
     } catch (error: any) {
       console.error(`[NativeSqliteStorage] Failed to initialize: ${error.message}`);
       throw error;
+    }
+  }
+
+  private prepareStatements() {
+    if (!this.db) {
+      return;
+    }
+    
+    // Files
+    this.statements.set('insertFile', this.db.prepare(`
+      INSERT OR REPLACE INTO files (uri, hash, last_indexed, has_pending, symbols_count, refs_count, mtime, data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `));
+    this.statements.set('getFileData', this.db.prepare('SELECT data FROM files WHERE uri = ?'));
+    this.statements.set('deleteFile', this.db.prepare('DELETE FROM files WHERE uri = ?'));
+    this.statements.set('hasFile', this.db.prepare('SELECT 1 FROM files WHERE uri = ?'));
+    this.statements.set('getFileMetadata', this.db.prepare('SELECT uri, hash, last_indexed, symbols_count, mtime FROM files WHERE uri = ?'));
+    this.statements.set('getAllMetadata', this.db.prepare('SELECT uri, hash, last_indexed, symbols_count, mtime FROM files'));
+    this.statements.set('updateMetadata', this.db.prepare(`
+      UPDATE files 
+      SET hash = ?, last_indexed = ?, symbols_count = ?, mtime = ?
+      WHERE uri = ?
+    `));
+
+    // Symbols
+    this.statements.set('deleteSymbolsByUri', this.db.prepare('DELETE FROM symbols WHERE uri = ?'));
+    this.statements.set('insertSymbol', this.db.prepare(`
+      INSERT INTO symbols (id, uri, name, kind, container_name, range_start_line, range_start_character, range_end_line, range_end_character, is_definition, is_exported, full_container_path, ngrx_metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `));
+    this.statements.set('getSymbolsByUri', this.db.prepare('SELECT * FROM symbols WHERE uri = ?'));
+    this.statements.set('findDefinitions', this.db.prepare('SELECT * FROM symbols WHERE name = ? AND is_definition = 1'));
+
+    // References
+    this.statements.set('deleteRefsByUri', this.db.prepare('DELETE FROM references WHERE uri = ?'));
+    this.statements.set('insertRef', this.db.prepare(`
+      INSERT INTO references (uri, symbol_name, line, character, range_start_line, range_start_character, range_end_line, range_end_character, container_name, is_local)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `));
+    this.statements.set('getRefsByUri', this.db.prepare('SELECT * FROM references WHERE uri = ?'));
+    this.statements.set('findRefsByName', this.db.prepare('SELECT * FROM references WHERE symbol_name = ?'));
+
+    // FTS
+    this.statements.set('deleteFtsByUri', this.db.prepare('DELETE FROM symbols_fts WHERE uri = ?'));
+    this.statements.set('insertFts', this.db.prepare(`
+      INSERT INTO symbols_fts (id, uri, symbol_name, container_name, kind, file_path)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `));
+    
+    // Meta & Utils
+    this.statements.set('getPendingFiles', this.db.prepare('SELECT uri FROM files WHERE has_pending = 1'));
+    this.statements.set('getAllUris', this.db.prepare('SELECT uri FROM files'));
+  }
+
+  private maintenance() {
+    if (!this.db) {
+      return;
+    }
+    try {
+      console.info('[NativeSqliteStorage] Running maintenance...');
+      this.db.pragma('optimize');
+      this.db.exec('ANALYZE');
+    } catch (error: any) {
+      console.warn(`[NativeSqliteStorage] Maintenance failed: ${error.message}`);
     }
   }
 
@@ -63,12 +137,30 @@ export class NativeSqliteStorage implements IIndexStorage {
       this.db!.transaction(() => {
         if (currentVersion === 0) {
           this.createTables();
-        }
-        if (currentVersion < 6) {
-           this.recreateEverything();
+        } else {
+          if (currentVersion < 6) {
+            this.recreateEverything();
+          }
+          if (currentVersion < 7) {
+            this.migrateToV7();
+          }
         }
         this.setSchemaVersion(NativeSqliteStorage.SCHEMA_VERSION);
       })();
+    }
+  }
+
+  private migrateToV7() {
+    try {
+      this.db!.exec(`
+        ALTER TABLE files ADD COLUMN symbol_hash TEXT;
+        ALTER TABLE files ADD COLUMN refs_hash TEXT;
+      `);
+    } catch (error: any) {
+      // It might already exist if created by createTables() in a previous version
+      if (!error.message.includes('duplicate column name')) {
+        throw error;
+      }
     }
   }
 
@@ -86,6 +178,8 @@ export class NativeSqliteStorage implements IIndexStorage {
       CREATE TABLE IF NOT EXISTS files (
         uri TEXT PRIMARY KEY,
         hash TEXT,
+        symbol_hash TEXT,
+        refs_hash TEXT,
         last_indexed INTEGER,
         has_pending INTEGER DEFAULT 0,
         symbols_count INTEGER DEFAULT 0,
@@ -160,7 +254,10 @@ export class NativeSqliteStorage implements IIndexStorage {
   private getSchemaVersion(): number {
     try {
       const row = this.db!.prepare('SELECT value FROM meta WHERE key = "version"').get() as { value: string };
-      return row ? parseInt(row.value, 10) : 0;
+      if (row) {
+        return parseInt(row.value, 10);
+      }
+      return 0;
     } catch {
       return 0;
     }
@@ -175,18 +272,37 @@ export class NativeSqliteStorage implements IIndexStorage {
     await this.storeFileNoLock(data);
   }
 
+  private computeHash(obj: any): string {
+    return Buffer.from(JSON.stringify(obj)).toString('base64');
+  }
+
   async storeFileNoLock(data: FileIndexData): Promise<void> {
+    const symbolHash = this.computeHash(data.symbols);
+    const refsHash = this.computeHash(data.references);
+
+    const existing = this.db!.prepare('SELECT symbol_hash, refs_hash FROM files WHERE uri = ?').get(data.uri) as any;
+
     const transaction = this.db!.transaction((fileData: FileIndexData) => {
-      this.db!.prepare('DELETE FROM symbols WHERE uri = ?').run(fileData.uri);
-      this.db!.prepare('DELETE FROM references WHERE uri = ?').run(fileData.uri);
-      this.db!.prepare('DELETE FROM symbols_fts WHERE uri = ?').run(fileData.uri);
+      const symbolsChanged = !existing || existing.symbol_hash !== symbolHash;
+      const refsChanged = !existing || existing.refs_hash !== refsHash;
+
+      if (symbolsChanged) {
+        this.statements.get('deleteSymbolsByUri')!.run(fileData.uri);
+        this.statements.get('deleteFtsByUri')!.run(fileData.uri);
+      }
+
+      if (refsChanged) {
+        this.statements.get('deleteRefsByUri')!.run(fileData.uri);
+      }
 
       this.db!.prepare(`
-        INSERT OR REPLACE INTO files (uri, hash, last_indexed, has_pending, symbols_count, refs_count, mtime, data)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO files (uri, hash, symbol_hash, refs_hash, last_indexed, has_pending, symbols_count, refs_count, mtime, data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         fileData.uri,
         fileData.hash,
+        symbolHash,
+        refsHash,
         fileData.lastIndexedAt,
         fileData.pendingReferences && fileData.pendingReferences.length > 0 ? 1 : 0,
         fileData.symbols.length,
@@ -195,37 +311,30 @@ export class NativeSqliteStorage implements IIndexStorage {
         Buffer.from(JSON.stringify({ ...fileData, symbols: [], references: [] }))
       );
 
-      const insertSymbol = this.db!.prepare(`
-        INSERT INTO symbols (id, uri, name, kind, container_name, range_start_line, range_start_character, range_end_line, range_end_character, is_definition, is_exported, full_container_path, ngrx_metadata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+      if (symbolsChanged) {
+        const insertSymbol = this.statements.get('insertSymbol')!;
+        const insertFts = this.statements.get('insertFts')!;
 
-      const insertFts = this.db!.prepare(`
-        INSERT INTO symbols_fts (id, uri, symbol_name, container_name, kind, file_path)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-
-      for (const s of fileData.symbols) {
-        insertSymbol.run(
-          s.id, fileData.uri, s.name, s.kind, s.containerName || '',
-          s.range.startLine, s.range.startCharacter, s.range.endLine, s.range.endCharacter,
-          s.isDefinition ? 1 : 0, s.isExported ? 1 : 0, s.fullContainerPath || '',
-          s.ngrxMetadata ? JSON.stringify(s.ngrxMetadata) : null
-        );
-        insertFts.run(s.id, fileData.uri, s.name, s.containerName || '', s.kind, s.filePath || '');
+        for (const s of fileData.symbols) {
+          insertSymbol.run(
+            s.id, fileData.uri, s.name, s.kind, s.containerName || '',
+            s.range.startLine, s.range.startCharacter, s.range.endLine, s.range.endCharacter,
+            s.isDefinition ? 1 : 0, s.isExported ? 1 : 0, s.fullContainerPath || '',
+            s.ngrxMetadata ? JSON.stringify(s.ngrxMetadata) : null
+          );
+          insertFts.run(s.id, fileData.uri, s.name, s.containerName || '', s.kind, s.filePath || '');
+        }
       }
 
-      const insertRef = this.db!.prepare(`
-        INSERT INTO references (uri, symbol_name, line, character, range_start_line, range_start_character, range_end_line, range_end_character, container_name, is_local)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-
-      for (const r of fileData.references) {
-        insertRef.run(
-          fileData.uri, r.symbolName, r.location.line, r.location.character,
-          r.range.startLine, r.range.startCharacter, r.range.endLine, r.range.endCharacter,
-          r.containerName || '', r.isLocal ? 1 : 0
-        );
+      if (refsChanged) {
+        const insertRef = this.statements.get('insertRef')!;
+        for (const r of fileData.references) {
+          insertRef.run(
+            fileData.uri, r.symbolName, r.location.line, r.location.character,
+            r.range.startLine, r.range.startCharacter, r.range.endLine, r.range.endCharacter,
+            r.containerName || '', r.isLocal ? 1 : 0
+          );
+        }
       }
     });
 
@@ -238,8 +347,10 @@ export class NativeSqliteStorage implements IIndexStorage {
   }
 
   async getFileNoLock(uri: string): Promise<FileIndexData | null> {
-    const row = this.db!.prepare('SELECT data FROM files WHERE uri = ?').get(uri) as { data: Buffer };
-    if (!row) return null;
+    const row = this.statements.get('getFileData')!.get(uri) as { data: Buffer };
+    if (!row) {
+      return null;
+    }
 
     const base = JSON.parse(row.data.toString());
     const symbols = await this.getFileSymbols(uri);
@@ -253,18 +364,20 @@ export class NativeSqliteStorage implements IIndexStorage {
     const results: FileIndexData[] = [];
     for (const uri of uris) {
       const file = await this.getFile(uri);
-      if (file) results.push(file);
+      if (file) {
+        results.push(file);
+      }
     }
     return results;
   }
 
   private async getFileSymbols(uri: string): Promise<IndexedSymbol[]> {
-    const rows = this.db!.prepare('SELECT * FROM symbols WHERE uri = ?').all(uri) as any[];
+    const rows = this.statements.get('getSymbolsByUri')!.all(uri) as any[];
     return rows.map(r => this.mapSymbol(r));
   }
 
   private async getFileReferences(uri: string): Promise<IndexedReference[]> {
-    const rows = this.db!.prepare('SELECT * FROM references WHERE uri = ?').all(uri) as any[];
+    const rows = this.statements.get('getRefsByUri')!.all(uri) as any[];
     return rows.map(r => ({
       symbolName: r.symbol_name,
       location: { uri: r.uri, line: r.line, character: r.character },
@@ -281,19 +394,21 @@ export class NativeSqliteStorage implements IIndexStorage {
 
   async deleteFile(uri: string): Promise<void> {
     this.ensureInitialized();
-    this.db!.prepare('DELETE FROM files WHERE uri = ?').run(uri);
+    this.statements.get('deleteFile')!.run(uri);
   }
 
   async hasFile(uri: string): Promise<boolean> {
     this.ensureInitialized();
-    const row = this.db!.prepare('SELECT 1 FROM files WHERE uri = ?').get(uri);
+    const row = this.statements.get('hasFile')!.get(uri);
     return !!row;
   }
 
   async getMetadata(uri: string): Promise<FileMetadata | null> {
     this.ensureInitialized();
-    const row = this.db!.prepare('SELECT uri, hash, last_indexed, symbols_count, mtime FROM files WHERE uri = ?').get(uri) as any;
-    if (!row) return null;
+    const row = this.statements.get('getFileMetadata')!.get(uri) as any;
+    if (!row) {
+      return null;
+    }
     return {
       uri: row.uri,
       hash: row.hash,
@@ -305,7 +420,7 @@ export class NativeSqliteStorage implements IIndexStorage {
 
   async getAllMetadata(): Promise<FileMetadata[]> {
     this.ensureInitialized();
-    const rows = this.db!.prepare('SELECT uri, hash, last_indexed, symbols_count, mtime FROM files').all() as any[];
+    const rows = this.statements.get('getAllMetadata')!.all() as any[];
     return rows.map(r => ({
       uri: r.uri,
       hash: r.hash,
@@ -317,11 +432,7 @@ export class NativeSqliteStorage implements IIndexStorage {
 
   async updateMetadata(metadata: FileMetadata): Promise<void> {
     this.ensureInitialized();
-    this.db!.prepare(`
-      UPDATE files 
-      SET hash = ?, last_indexed = ?, symbols_count = ?, mtime = ?
-      WHERE uri = ?
-    `).run(metadata.hash, metadata.lastIndexedAt, metadata.symbolCount, metadata.mtime || 0, metadata.uri);
+    this.statements.get('updateMetadata')!.run(metadata.hash, metadata.lastIndexedAt, metadata.symbolCount, metadata.mtime || 0, metadata.uri);
   }
 
   async removeMetadata(uri: string): Promise<void> {
@@ -341,12 +452,16 @@ export class NativeSqliteStorage implements IIndexStorage {
 
   async dispose(): Promise<void> {
     if (this.db) {
+      // Final maintenance
+      this.maintenance();
       this.db.close();
       this.db = null;
     }
+    this.statements.clear();
   }
 
-  async withLock<T>(uri: string, task: () => Promise<T>): Promise<T> {
+  async withLock<T>(_uri: string, task: () => Promise<T>): Promise<T> {
+    // Implicit locking via worker message queue + better-sqlite3 sync nature
     return task();
   }
 
@@ -356,7 +471,7 @@ export class NativeSqliteStorage implements IIndexStorage {
 
   async collectAllFiles(): Promise<string[]> {
     this.ensureInitialized();
-    const rows = this.db!.prepare('SELECT uri FROM files').all() as any[];
+    const rows = this.statements.get('getAllUris')!.all() as any[];
     return rows.map(r => r.uri);
   }
 
@@ -364,7 +479,7 @@ export class NativeSqliteStorage implements IIndexStorage {
     // No-op
   }
 
-  async searchSymbols(query: string, mode: 'exact' | 'fuzzy' | 'fulltext' = 'exact', limit: number = 100): Promise<any[]> {
+  async searchSymbols(query: string, _mode: 'exact' | 'fuzzy' | 'fulltext' = 'exact', limit: number = 100): Promise<any[]> {
     this.ensureInitialized();
     try {
       const sql = `
@@ -418,13 +533,13 @@ export class NativeSqliteStorage implements IIndexStorage {
 
   async findDefinitionsInSql(name: string): Promise<IndexedSymbol[]> {
     this.ensureInitialized();
-    const rows = this.db!.prepare('SELECT * FROM symbols WHERE name = ? AND is_definition = 1').all(name) as any[];
+    const rows = this.statements.get('findDefinitions')!.all(name) as any[];
     return rows.map(r => this.mapSymbol(r));
   }
 
   async findReferencesInSql(name: string): Promise<IndexedReference[]> {
     this.ensureInitialized();
-    const rows = this.db!.prepare('SELECT * FROM references WHERE symbol_name = ?').all(name) as any[];
+    const rows = this.statements.get('findRefsByName')!.all(name) as any[];
     return rows.map(r => ({
       symbolName: r.symbol_name,
       location: { uri: r.uri, line: r.line, character: r.character },
@@ -441,8 +556,46 @@ export class NativeSqliteStorage implements IIndexStorage {
 
   async findFilesWithPendingRefs(): Promise<string[]> {
     this.ensureInitialized();
-    const rows = this.db!.prepare('SELECT uri FROM files WHERE has_pending = 1').all() as any[];
+    const rows = this.statements.get('getPendingFiles')!.all() as any[];
     return rows.map(r => r.uri);
+  }
+
+  /**
+   * Impact Analysis: Find all files that depend on symbols from the given file,
+   * either directly or indirectly.
+   */
+  async getImpactedFiles(uri: string, maxDepth: number = 3): Promise<string[]> {
+    this.ensureInitialized();
+    
+    // Recursive query to find all files that reference symbols defined in 'uri'
+    // or defined in files that reference symbols defined in 'uri', etc.
+    const sql = `
+      WITH RECURSIVE impact(target_uri, depth) AS (
+        -- Base case: files referencing symbols in the starting uri
+        SELECT DISTINCT r.uri, 1
+        FROM references r
+        JOIN symbols s ON r.symbol_name = s.name
+        WHERE s.uri = ? AND s.is_definition = 1
+        
+        UNION
+        
+        -- Recursive step: files referencing symbols in already impacted files
+        SELECT DISTINCT r.uri, i.depth + 1
+        FROM references r
+        JOIN symbols s ON r.symbol_name = s.name
+        JOIN impact i ON s.uri = i.target_uri
+        WHERE s.is_definition = 1 AND i.depth < ?
+      )
+      SELECT DISTINCT target_uri FROM impact WHERE target_uri != ?
+    `;
+    
+    try {
+      const rows = this.db!.prepare(sql).all(uri, maxDepth, uri) as any[];
+      return rows.map(r => r.target_uri);
+    } catch (error: any) {
+      console.error(`[NativeSqliteStorage] Impact analysis failed: ${error.message}`);
+      return [];
+    }
   }
 
   async findNgRxActionGroups(): Promise<Array<{ uri: string; symbol: IndexedSymbol }>> {
@@ -470,8 +623,12 @@ export class NativeSqliteStorage implements IIndexStorage {
     }
     const wal = `${this.dbPath}-wal`;
     const shm = `${this.dbPath}-shm`;
-    if (fs.existsSync(wal)) fs.unlinkSync(wal);
-    if (fs.existsSync(shm)) fs.unlinkSync(shm);
+    if (fs.existsSync(wal)) {
+      fs.unlinkSync(wal);
+    }
+    if (fs.existsSync(shm)) {
+      fs.unlinkSync(shm);
+    }
     
     this.isInitialized = false;
   }
@@ -482,8 +639,8 @@ export class NativeSqliteStorage implements IIndexStorage {
     }
   }
 
-  async setAutoSaveDelay(delay: number): Promise<void> {
-     // No-op
+  async setAutoSaveDelay(_delay: number): Promise<void> {
+    // No-op
   }
 
   async selfHeal(): Promise<void> {

@@ -129,6 +129,9 @@ export async function activate(context: vscode.ExtensionContext) {
     outputChannel: logChannel,
     
     // Middleware: Implement fallback strategy (Native TS first, Smart Indexer fallback)
+    // NOTE: In reality, we just want to ensure Smart Indexer runs if Native TS is slow.
+    // We cannot strictly enforce "Native TS First" because we don't control Native TS.
+    // However, by racing against a timeout, we try to let Native TS win if it's fast.
     middleware: mode === 'hybrid' ? {
       provideDefinition: async (document, position, token, next) => {
         const start = Date.now();

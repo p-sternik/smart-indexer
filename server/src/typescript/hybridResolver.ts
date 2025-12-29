@@ -1,8 +1,6 @@
 import { IndexedSymbol } from '../types.js';
-import { TypeScriptService } from '../typescript/typeScriptService.js';
 import { findSymbolAtPosition, SymbolAtPosition } from '../indexer/symbolResolver.js';
 import { ISymbolIndex } from '../index/ISymbolIndex.js';
-import * as ts from 'typescript';
 
 export interface HybridResolutionResult {
   symbols: IndexedSymbol[];
@@ -26,8 +24,7 @@ export interface ResolutionContext {
  */
 export class HybridResolver {
   constructor(
-    private index: ISymbolIndex,
-    private tsService: TypeScriptService
+    private index: ISymbolIndex
   ) {}
 
   /**
@@ -37,31 +34,14 @@ export class HybridResolver {
     // Step 1: Try fast path - index-based resolution
     const fastPathResult = await this.tryFastPathResolution(context);
     
-    if (fastPathResult.filteredCount === 1) {
-      // Exact match found in index
-      return {
-        symbols: fastPathResult.symbols,
-        usedFallback: false,
-        candidateCount: fastPathResult.candidateCount,
-        filteredCount: fastPathResult.filteredCount
-      };
-    }
+    // STRICT MODE: No fallback to internal TypeScript service.
+    // If we are ambiguous or found nothing, we return what we have (or nothing).
+    // The client (VS Code) already has a native TypeScript service running.
+    // If we return nothing, the native service will provide the result.
+    // If we return a result, it will be merged with the native service result.
+    // Falling back here would cause duplicates because we would return the same symbol 
+    // that the native service is also returning.
 
-    if (fastPathResult.filteredCount === 0 || fastPathResult.filteredCount > 1) {
-      // Ambiguous or no results - try TypeScript LanguageService fallback
-      const fallbackResult = await this.tryTypeScriptFallback(context, 'definition');
-      
-      if (fallbackResult.symbols.length > 0) {
-        return {
-          symbols: fallbackResult.symbols,
-          usedFallback: true,
-          candidateCount: fastPathResult.candidateCount,
-          filteredCount: fallbackResult.symbols.length
-        };
-      }
-    }
-
-    // Return whatever we have from fast path
     return {
       symbols: fastPathResult.symbols,
       usedFallback: false,
@@ -90,21 +70,9 @@ export class HybridResolver {
       };
     }
 
-    if (fastPathResult.filteredCount === 0 || fastPathResult.filteredCount > 1) {
-      // Ambiguous or no results - try TypeScript LanguageService fallback
-      const fallbackResult = await this.tryTypeScriptFallback(context, 'references');
-      
-      if (fallbackResult.symbols.length > 0) {
-        return {
-          symbols: fallbackResult.symbols,
-          usedFallback: true,
-          candidateCount: fastPathResult.candidateCount,
-          filteredCount: fallbackResult.symbols.length
-        };
-      }
-    }
+    // STRICT MODE: No fallback to internal TypeScript service.
+    // See resolveDefinitions for reasoning.
 
-    // Return whatever we have from fast path
     return {
       symbols: fastPathResult.symbols,
       usedFallback: false,
@@ -239,174 +207,5 @@ export class HybridResolver {
     }
 
     return score;
-  }
-
-  /**
-   * Fallback: Use TypeScript LanguageService for precise resolution.
-   */
-  private async tryTypeScriptFallback(
-    context: ResolutionContext,
-    mode: 'definition' | 'references'
-  ): Promise<{ symbols: IndexedSymbol[] }> {
-    if (!this.tsService.isInitialized()) {
-      return { symbols: [] };
-    }
-
-    try {
-      // Update file in TS service
-      this.tsService.updateFile(context.fileName, context.content);
-
-      // Calculate offset from line/character
-      const offset = this.positionToOffset(context.content, context.position);
-
-      let tsResults: readonly ts.DefinitionInfo[] | ts.ReferenceEntry[] | undefined;
-
-      if (mode === 'definition') {
-        tsResults = this.tsService.getDefinitionAtPosition(context.fileName, offset);
-      } else {
-        tsResults = this.tsService.getReferencesAtPosition(context.fileName, offset);
-      }
-
-      if (!tsResults || tsResults.length === 0) {
-        return { symbols: [] };
-      }
-
-      // Convert TS results to IndexedSymbol format
-      const symbols: IndexedSymbol[] = [];
-      
-      for (const tsResult of tsResults) {
-        const symbol = await this.tsResultToIndexedSymbol(tsResult as ts.DefinitionInfo);
-        if (symbol) {
-          symbols.push(symbol);
-        }
-      }
-
-      return { symbols };
-    } catch (error) {
-      return { symbols: [] };
-    }
-  }
-
-  /**
-   * Convert TypeScript result to IndexedSymbol.
-   */
-  private async tsResultToIndexedSymbol(
-    tsResult: ts.DefinitionInfo
-  ): Promise<IndexedSymbol | null> {
-    try {
-      const fileName = tsResult.fileName;
-      const span = tsResult.textSpan;
-      
-      // Calculate line/character from offset
-      const content = this.tsService.isInitialized() 
-        ? (await this.readFileContent(fileName) || '')
-        : '';
-      
-      const start = this.offsetToPosition(content, span.start);
-      const end = this.offsetToPosition(content, span.start + span.length);
-
-      // Try to find this symbol in the index by position
-      const candidatesAtLocation = await this.index.getFileSymbols(fileName);
-      
-      for (const candidate of candidatesAtLocation) {
-        if (
-          candidate.range.startLine === start.line &&
-          candidate.range.startCharacter >= start.character - 5 &&
-          candidate.range.startCharacter <= start.character + 5
-        ) {
-          // Found matching symbol in index
-          return candidate;
-        }
-      }
-
-      // Create minimal symbol if not in index
-      return {
-        id: this.generateTempSymbolId(fileName, span.start),
-        name: this.extractNameFromFile(content, span.start, span.length),
-        kind: 'unknown',
-        location: {
-          uri: fileName,
-          line: start.line,
-          character: start.character
-        },
-        range: {
-          startLine: start.line,
-          startCharacter: start.character,
-          endLine: end.line,
-          endCharacter: end.character
-        },
-        filePath: fileName
-      };
-    } catch (error) {
-      return null;
-    }
-  }
-
-  /**
-   * Convert line/character position to offset.
-   */
-  private positionToOffset(content: string, position: { line: number; character: number }): number {
-    const lines = content.split('\n');
-    let offset = 0;
-    
-    for (let i = 0; i < position.line && i < lines.length; i++) {
-      offset += lines[i].length + 1; // +1 for newline
-    }
-    
-    offset += position.character;
-    return offset;
-  }
-
-  /**
-   * Convert offset to line/character position.
-   */
-  private offsetToPosition(content: string, offset: number): { line: number; character: number } {
-    const lines = content.split('\n');
-    let currentOffset = 0;
-    
-    for (let line = 0; line < lines.length; line++) {
-      const lineLength = lines[line].length + 1; // +1 for newline
-      
-      if (currentOffset + lineLength > offset) {
-        return {
-          line,
-          character: offset - currentOffset
-        };
-      }
-      
-      currentOffset += lineLength;
-    }
-    
-    return { line: lines.length - 1, character: 0 };
-  }
-
-  /**
-   * Extract symbol name from file content.
-   */
-  private extractNameFromFile(content: string, offset: number, length: number): string {
-    try {
-      return content.substring(offset, offset + length);
-    } catch {
-      return 'unknown';
-    }
-  }
-
-  /**
-   * Generate temporary symbol ID for TS-resolved symbols not in index.
-   */
-  private generateTempSymbolId(fileName: string, offset: number): string {
-    return `ts_temp_${fileName}_${offset}`;
-  }
-
-  /**
-   * Read file content.
-   */
-  private async readFileContent(fileName: string): Promise<string | null> {
-    try {
-      const fsPromises = await import('fs/promises');
-      return await fsPromises.readFile(fileName, 'utf-8');
-    } catch {
-      return null;
-    }
   }
 }

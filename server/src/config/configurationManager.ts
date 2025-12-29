@@ -25,7 +25,7 @@ export interface DeadCodeConfig {
 }
 
 const DEFAULT_DEAD_CODE_CONFIG: DeadCodeConfig = {
-  enabled: true,
+  enabled: false,
   entryPoints: [
     '**/main.ts',
     '**/public-api.ts',

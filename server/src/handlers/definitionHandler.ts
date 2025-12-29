@@ -500,17 +500,10 @@ export class DefinitionHandler implements IHandler {
         if (definitionCandidates.length > 0) {
           // If multiple candidates remain, use TypeScript for semantic disambiguation
           let finalCandidates = definitionCandidates;
-          if (definitionCandidates.length > 1) {
-            logger.info(`[Server] Multiple candidates detected, attempting TypeScript disambiguation...`);
-            finalCandidates = await this.disambiguateWithTypeScript(
-              definitionCandidates,
-              uri,
-              text,
-              line,
-              character,
-              500 // 500ms timeout (increased from 200ms for better precision)
-            );
-          }
+            // STRICT MODE: Skip TypeScript disambiguation to prevent duplicates with Native TS
+            // The Native TS service is already running in VS Code and will handle semantic resolution.
+            // We only provide "Fast Index" results here.
+            finalCandidates = definitionCandidates;
           
           // Apply disambiguation heuristics as final ranking if still multiple
           let rankedCandidates = finalCandidates;
@@ -860,119 +853,7 @@ export class DefinitionHandler implements IHandler {
     return [];
   }
 
-  /**
-   * Use TypeScript service to disambiguate when multiple candidates exist.
-   * Returns filtered candidates based on semantic analysis.
-   * 
-   * @param timeoutMs - Timeout in milliseconds (default: 500ms for better precision in large projects)
-   */
-  private async disambiguateWithTypeScript(
-    candidates: IndexedSymbol[],
-    fileName: string,
-    content: string,
-    line: number,
-    character: number,
-    timeoutMs: number = 500
-  ): Promise<IndexedSymbol[]> {
-    const { typeScriptService, logger } = this.services;
-    
-    if (!typeScriptService.isInitialized()) {
-      logger.info('[Server] TypeScript service not initialized, skipping disambiguation');
-      return candidates;
-    }
 
-    try {
-      // Calculate offset from line/character
-      const lines = content.split('\n');
-      let offset = 0;
-      for (let i = 0; i < line && i < lines.length; i++) {
-        offset += lines[i].length + 1; // +1 for newline
-      }
-      offset += character;
-
-      // Race the TS service call against a timeout
-      const disambiguationPromise = new Promise<IndexedSymbol[]>((resolve) => {
-        (async () => {
-          // Get semantic details from TypeScript
-          const symbolDetails = typeScriptService.getSymbolDetails(fileName, offset);
-          
-          if (!symbolDetails) {
-            logger.info('[Server] TypeScript service could not resolve symbol details');
-            resolve(candidates);
-            return;
-          }
-
-          logger.info(
-            `[Server] TS symbol details: name="${symbolDetails.name}", kind="${symbolDetails.kind}", ` +
-            `container="${symbolDetails.containerName || '<none>'}", containerKind="${symbolDetails.containerKind || '<none>'}"`
-          );
-
-          // Filter candidates based on semantic information
-          const filtered = candidates.filter(candidate => {
-            // Name must match
-            if (candidate.name !== symbolDetails.name) {
-              return false;
-            }
-
-            // If TS found a container, filter by it
-            if (symbolDetails.containerName) {
-              // Exact container match
-              if (candidate.containerName === symbolDetails.containerName) {
-                return true;
-              }
-              // Check if full container path matches
-              if (candidate.fullContainerPath && 
-                  candidate.fullContainerPath.endsWith(symbolDetails.containerName)) {
-                return true;
-              }
-              // No container match
-              return false;
-            }
-
-            // If no container from TS, prefer candidates without container (global scope)
-            if (!symbolDetails.containerName && !candidate.containerName) {
-              return true;
-            }
-
-            // Kind matching as secondary filter
-            if (candidate.kind === symbolDetails.kind) {
-              return true;
-            }
-
-            return false;
-          });
-
-          if (filtered.length > 0) {
-            logger.info(`[Server] TypeScript disambiguation: ${candidates.length} → ${filtered.length} candidates`);
-            resolve(filtered);
-          } else {
-            logger.info('[Server] TypeScript disambiguation filtered all candidates, keeping original set');
-            resolve(candidates);
-          }
-        })();
-      });
-
-      let timeoutId: NodeJS.Timeout | null = null;
-      const timeoutPromise = new Promise<IndexedSymbol[]>((resolve) => {
-        timeoutId = setTimeout(() => {
-          logger.warn(`[Server] TypeScript disambiguation timed out after ${timeoutMs}ms`);
-          resolve(candidates);
-        }, timeoutMs);
-      });
-
-      const result = await Promise.race([disambiguationPromise, timeoutPromise]);
-      
-      // Clear timeout if disambiguation completed before timeout
-      if (timeoutId !== null) {
-        clearTimeout(timeoutId);
-      }
-      
-      return result;
-    } catch (error) {
-      logger.error(`[Server] Error in TypeScript disambiguation: ${error}`);
-      return candidates;
-    }
-  }
 }
 
 /**

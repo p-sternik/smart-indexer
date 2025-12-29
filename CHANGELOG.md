@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.83.0](https://github.com/p-sternik/smart-indexer/compare/v1.82.0...v1.83.0) (2025-12-29)
+
+
+### Features
+
+* Implement core server, document event handling, symbol indexing, and language service handlers including recursive property resolution. ([a406e6e](https://github.com/p-sternik/smart-indexer/commit/a406e6e26f14db903c5b995fbfca2e3f3af0c285))
+
 ## [1.82.0](https://github.com/p-sternik/smart-indexer/compare/v1.81.0...v1.82.0) (2025-12-29)
 
 

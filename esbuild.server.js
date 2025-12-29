@@ -27,10 +27,11 @@ const esbuildProblemMatcherPlugin = {
 
 async function main() {
 	const ctx = await esbuild.context({
-		entryPoints: [
-			'server/src/server.ts',
-			'server/src/indexer/worker.ts'
-		],
+		entryPoints: {
+			'server': 'server/src/server.ts',
+			'indexer/worker': 'server/src/indexer/worker.ts',
+			'SqlWorker': 'server/src/storage/SqlWorker.ts'
+		},
 		bundle: true,
 		format: 'cjs',
 		minify: production,

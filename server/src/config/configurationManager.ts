@@ -13,6 +13,7 @@ export interface SmartIndexerConfig {
   maxConcurrentWorkers: number;
   batchSize: number;
   useFolderHashing: boolean;
+  autoSaveDelay: number;
   deadCode?: DeadCodeConfig;
 }
 
@@ -67,6 +68,7 @@ const DEFAULT_CONFIG: SmartIndexerConfig = {
   maxConcurrentWorkers: 4,
   batchSize: 50,
   useFolderHashing: true,
+  autoSaveDelay: 2000,
   deadCode: DEFAULT_DEAD_CODE_CONFIG
 };
 
@@ -89,6 +91,7 @@ export interface ISmartIndexerSettings {
   maxConcurrentWorkers?: number;
   batchSize?: number;
   useFolderHashing?: boolean;
+  autoSaveDelay?: number;
   deadCode?: Partial<DeadCodeConfig>;
 }
 
@@ -148,6 +151,9 @@ export class ConfigurationManager {
     if (typeof opts.useFolderHashing === 'boolean') {
       this.config.useFolderHashing = opts.useFolderHashing;
     }
+    if (typeof opts.autoSaveDelay === 'number') {
+      this.config.autoSaveDelay = Math.max(500, opts.autoSaveDelay);
+    }
     if (opts.deadCode) {
       this.config.deadCode = { ...DEFAULT_DEAD_CODE_CONFIG, ...opts.deadCode };
     }
@@ -197,6 +203,9 @@ export class ConfigurationManager {
     }
     if (typeof settings.useFolderHashing === 'boolean') {
       this.config.useFolderHashing = settings.useFolderHashing;
+    }
+    if (typeof settings.autoSaveDelay === 'number') {
+      this.config.autoSaveDelay = Math.max(500, settings.autoSaveDelay);
     }
     if (settings.deadCode) {
       this.config.deadCode = { ...DEFAULT_DEAD_CODE_CONFIG, ...settings.deadCode };

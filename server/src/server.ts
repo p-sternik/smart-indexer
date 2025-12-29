@@ -27,7 +27,6 @@ import { DynamicIndex } from './index/dynamicIndex.js';
 import { BackgroundIndex } from './index/backgroundIndex.js';
 import { MergedIndex } from './index/mergedIndex.js';
 import { StatsManager } from './index/statsManager.js';
-import { SqlJsStorage } from './storage/SqlJsStorage.js';
 import { NgRxLinkResolver } from './index/resolvers/NgRxLinkResolver.js';
 import { WorkerPool } from './utils/workerPool.js';
 import { Profiler } from './profiler/profiler.js';
@@ -84,7 +83,9 @@ const folderHasher = new FolderHasher();
 const fileSystem = new FileSystemService();
 
 // Infrastructure components (injected into BackgroundIndex)
-const storage = new SqlJsStorage(2000); // Auto-save every 2 seconds
+import { SqlWorkerProxy } from './storage/SqlWorkerProxy.js';
+
+const storage = new SqlWorkerProxy(2000); // Auto-save every 2 seconds (handled in worker)
 const workerScriptPath = path.join(__dirname, 'indexer', 'worker.js');
 const workerPool = new WorkerPool(workerScriptPath, 4, logger);
 const ngrxResolver = new NgRxLinkResolver(storage);
@@ -255,6 +256,7 @@ connection.onDidChangeConfiguration(change => {
       });
       
       backgroundIndex.setMaxConcurrentJobs(config.maxConcurrentIndexJobs);
+      storage.setAutoSaveDelay(config.autoSaveDelay); // Update autoSaveDelay for SqlWorkerProxy
       
       connection.console.info('[Server] Configuration updated and applied');
     }

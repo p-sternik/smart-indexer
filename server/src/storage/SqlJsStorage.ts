@@ -45,7 +45,7 @@ export class SqlJsStorage implements IIndexStorage {
   private isInitialized: boolean = false;
   
   // Schema version for migration system
-  private static readonly SCHEMA_VERSION = 5;
+  private static readonly SCHEMA_VERSION = 6;
 
   /**
    * Create a new SqlJsStorage instance.
@@ -272,6 +272,14 @@ export class SqlJsStorage implements IIndexStorage {
       await this.setSchemaVersion(currentVersion);
     }
 
+    // Migration v5 -> v6: Update FTS5 table with symbol IDs for joining
+    if (currentVersion === 5 && toVersion >= 6) {
+      console.info('[SqlJsStorage] Applying migration v5 -> v6 (FTS5 with mapping IDs)');
+      await this.migrateToV6();
+      currentVersion = 6;
+      await this.setSchemaVersion(currentVersion);
+    }
+
     console.info(`[SqlJsStorage] Migration completed successfully to v${currentVersion}`);
   }
 
@@ -466,6 +474,44 @@ private async migrateToV5(): Promise<void> {
     }
   } catch (error: any) {
     console.error(`[SqlJsStorage] Migration v5 failed: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * Migration v5 -> v6: Recreate FTS5 table with ID column for easier joining and better ranking.
+ */
+private async migrateToV6(): Promise<void> {
+  try {
+    // FTS5 doesn't support ALTER TABLE for adding columns to virtual tables easily, 
+    // so we recreate it.
+    this.db!.run('DROP TABLE IF EXISTS symbols_fts');
+    this.db!.run(`
+      CREATE VIRTUAL TABLE symbols_fts USING fts5(
+        id UNINDEXED,
+        uri,
+        symbol_name,
+        container_name,
+        kind,
+        file_path,
+        content='',
+        tokenize='porter'
+      )
+    `);
+
+    console.info('[SqlJsStorage] Populating FTS v6 index from relational symbols...');
+    const result = this.db!.exec('SELECT id, uri, name, container_name, kind FROM symbols');
+    
+    if (result.length > 0 && result[0].values.length > 0) {
+      for (const row of result[0].values) {
+        this.db!.run(
+          `INSERT INTO symbols_fts (id, uri, symbol_name, container_name, kind) VALUES (?, ?, ?, ?, ?)`,
+          [row[0], row[1], row[2], row[3] || '', row[4]]
+        );
+      }
+    }
+  } catch (error: any) {
+    console.error(`[SqlJsStorage] Migration v6 failed: ${error.message}`);
     throw error;
   }
 }
@@ -697,8 +743,9 @@ private async migrateToV5(): Promise<void> {
       for (const symbol of data.symbols) {
         if (symbol.isDefinition) {
           this.db!.run(
-            `INSERT INTO symbols_fts (uri, symbol_name, container_name, kind, file_path) VALUES (?, ?, ?, ?, ?)`,
+            `INSERT INTO symbols_fts (id, uri, symbol_name, container_name, kind, file_path) VALUES (?, ?, ?, ?, ?, ?)`,
             [
+              symbol.id,
               data.uri,
               symbol.name,
               symbol.containerName || '',
@@ -1010,6 +1057,83 @@ private async migrateToV5(): Promise<void> {
   }
 
   /**
+   * Search symbols using full-text search (FTS5) with custom ranking.
+   */
+  async searchSymbols(query: string, mode: 'exact' | 'fuzzy' | 'fulltext' = 'fulltext', limit: number = 100): Promise<Array<{
+    uri: string;
+    symbol: IndexedSymbol;
+    rank?: number;
+  }>> {
+    this.ensureInitialized();
+
+    const results: Array<{ uri: string; symbol: IndexedSymbol; rank?: number }> = [];
+
+    try {
+      // 1. Determine FTS match pattern
+      let matchPattern: string;
+      if (mode === 'exact') {
+        matchPattern = `"${query}"`;
+      } else if (mode === 'fuzzy') {
+        matchPattern = query.split('').join('* ') + '*';
+      } else {
+        matchPattern = `${query}*`;
+      }
+
+      // 2. Query with ranking
+      const sql = `
+        SELECT 
+          s.uri, s.id, s.name, s.kind, s.container_name, s.range_start_line, s.range_start_character,
+          s.range_end_line, s.range_end_character, s.is_definition, s.is_exported, s.full_container_path, s.ngrx_metadata,
+          (CASE WHEN s.name = ? THEN 100.0 ELSE 1.0 END) * 
+          (CASE WHEN s.is_definition = 1 THEN 2.0 ELSE 1.0 END) *
+          (CASE WHEN s.is_exported = 1 THEN 1.5 ELSE 1.0 END) as relevance
+        FROM symbols_fts f
+        JOIN symbols s ON s.id = f.id
+        WHERE symbols_fts MATCH ?
+        ORDER BY relevance DESC, s.name ASC
+        LIMIT ?
+      `;
+
+      const result = this.db!.exec(sql, [query, matchPattern, limit]);
+
+      if (result.length > 0 && result[0].values.length > 0) {
+        for (const row of result[0].values) {
+          results.push({
+            uri: row[0] as string,
+            symbol: this.mapSqlSymbol(row),
+            rank: row[13] as number
+          });
+        }
+      }
+    } catch (error: any) {
+      console.warn(`[SqlJsStorage] searchSymbols failed: ${error.message}`);
+      
+      // Fallback: Simple LIKE search
+      try {
+        const result = this.db!.exec(`
+          SELECT 
+            uri, id, name, kind, container_name, range_start_line, range_start_character,
+            range_end_line, range_end_character, is_definition, is_exported, full_container_path, ngrx_metadata
+          FROM symbols
+          WHERE name LIKE ?
+          LIMIT ?
+        `, [`%${query}%`, limit]);
+
+        if (result.length > 0 && result[0].values.length > 0) {
+          for (const row of result[0].values) {
+            results.push({
+              uri: row[0] as string,
+              symbol: this.mapSqlSymbol(row)
+            });
+          }
+        }
+      } catch (fallbackError) { /* ignore */ }
+    }
+
+    return results;
+  }
+
+  /**
    * Clear all indexed data by closing DB, deleting files, and re-initializing.
    * This ensures proper file handle cleanup on Windows before deletion.
    */
@@ -1099,29 +1223,27 @@ private async migrateToV5(): Promise<void> {
       this.autoSaveTimer = null;
     }
 
-    // Export database to buffer
+    // Capture snapshot of the database
+    // Note: db.export() is synchronous but required to get the binary data from WASM
     const data = this.db.export();
-    const buffer = Buffer.from(data);
+    this.isDirty = false; // Reset early so new changes can be tracked
 
-    // Atomic write: temp file -> rename
+    // Atomic write: temp file -> rename (asynchronous)
     const tmpPath = this.dbPath + '.tmp';
     try {
-      // Write to temp file
-      fs.writeFileSync(tmpPath, buffer);
-      
-      // Atomic rename (overwrites target)
-      fs.renameSync(tmpPath, this.dbPath);
-      
-      this.isDirty = false;
+      await fs.promises.writeFile(tmpPath, data);
+      await fs.promises.rename(tmpPath, this.dbPath);
     } catch (error: any) {
+      this.isDirty = true; // Restore dirty flag on failure
+      console.error(`[SqlJsStorage] Async flush failed: ${error.message}`);
+      
       // Clean up temp file on error
       try {
         if (fs.existsSync(tmpPath)) {
-          fs.unlinkSync(tmpPath);
+          await fs.promises.unlink(tmpPath);
         }
-      } catch (cleanupError) {
-        // Ignore cleanup errors
-      }
+      } catch (cleanupError) { /* ignore */ }
+      
       throw error;
     }
   }
@@ -1202,161 +1324,6 @@ private async migrateToV5(): Promise<void> {
    * Search symbols using full-text search (FTS5).
    * Falls back to simple name matching if FTS is not available.
    * 
-   * @param query - Search query (supports FTS5 syntax if available)
-   * @param mode - Search mode: 'exact' (default), 'fuzzy', or 'fulltext'
-   * @param limit - Maximum number of results (default: 100)
-   * @returns Array of matching symbols with their file URIs
-   */
-  async searchSymbols(
-    query: string, 
-    mode: 'exact' | 'fuzzy' | 'fulltext' = 'exact', 
-    limit: number = 100
-  ): Promise<Array<{ uri: string; symbol: any; rank?: number }>> {
-    this.ensureInitialized();
-
-    if (mode === 'fulltext') {
-      return this.searchFTS(query, limit);
-    } else if (mode === 'fuzzy') {
-      return this.searchRelationalFuzzy(query, limit);
-    } else {
-      return this.searchRelationalExact(query, limit);
-    }
-  }
-
-  /**
-   * High-performance exact search using relational symbols table.
-   * Replaces the O(N) searchExact that parsed JSON blobs.
-   */
-  private async searchRelationalExact(query: string, limit: number): Promise<Array<{ uri: string; symbol: any }>> {
-    const result = this.db!.exec(
-      `SELECT uri, id, name, kind, container_name, range_start_line, range_start_character, 
-              range_end_line, range_end_character, is_definition, is_exported, full_container_path 
-       FROM symbols 
-       WHERE name = ? AND is_definition = 1 
-       LIMIT ?`,
-      [query, limit]
-    );
-
-    if (result.length === 0 || result[0].values.length === 0) {
-      return [];
-    }
-
-    return this.mapSqlSymbols(result[0].values);
-  }
-
-  /**
-   * High-performance fuzzy search using SQL LIKE on relational symbols table.
-   * Replaces the O(N) searchFuzzy that parsed JSON blobs.
-   */
-  private async searchRelationalFuzzy(query: string, limit: number): Promise<Array<{ uri: string; symbol: any }>> {
-    const pattern = `%${query}%`;
-    const result = this.db!.exec(
-      `SELECT uri, id, name, kind, container_name, range_start_line, range_start_character, 
-              range_end_line, range_end_character, is_definition, is_exported, full_container_path 
-       FROM symbols 
-       WHERE name LIKE ? AND is_definition = 1 
-       LIMIT ?`,
-      [pattern, limit]
-    );
-
-    if (result.length === 0 || result[0].values.length === 0) {
-      return [];
-    }
-
-    return this.mapSqlSymbols(result[0].values);
-  }
-
-  /**
-   * Map SQL symbol rows back to IndexedSymbol-like structure.
-   */
-  private mapSqlSymbols(values: any[][]): Array<{ uri: string; symbol: any }> {
-    return values.map(row => ({
-      uri: row[0] as string,
-      symbol: {
-        id: row[1] as string,
-        name: row[2] as string,
-        kind: row[3] as string,
-        containerName: row[4] as string || undefined,
-        location: {
-          uri: row[0] as string,
-          line: row[5] as number,
-          character: row[6] as number
-        },
-        range: {
-          startLine: row[5] as number,
-          startCharacter: row[6] as number,
-          endLine: row[7] as number,
-          endCharacter: row[8] as number
-        },
-        isDefinition: row[9] === 1,
-        isExported: row[10] === 1,
-        fullContainerPath: row[11] as string || undefined,
-        filePath: row[0] as string
-      }
-    }));
-  }
-
-  /**
-   * Full-text search using FTS5.
-   */
-  private async searchFTS(query: string, limit: number): Promise<Array<{ uri: string; symbol: any; rank?: number }>> {
-    try {
-      // Check if FTS table exists
-      const tableCheck = this.db!.exec(
-        `SELECT name FROM sqlite_master WHERE type='table' AND name='symbols_fts'`
-      );
-      
-      if (tableCheck.length === 0 || tableCheck[0].values.length === 0) {
-        console.warn('[SqlJsStorage] FTS5 table not available, falling back to exact search');
-        return this.searchRelationalExact(query, limit);
-      }
-
-      // Execute FTS5 query
-      const ftsQuery = query.includes('*') ? query : `${query}*`; // Prefix matching
-      const result = this.db!.exec(
-        `SELECT uri, symbol_name, container_name, kind, file_path, rank 
-         FROM symbols_fts 
-         WHERE symbols_fts MATCH ? 
-         ORDER BY rank 
-         LIMIT ?`,
-        [ftsQuery, limit]
-      );
-
-      if (result.length === 0 || result[0].values.length === 0) {
-        return [];
-      }
-
-      // Convert FTS results to symbol objects
-      const results: Array<{ uri: string; symbol: any; rank?: number }> = [];
-      for (const row of result[0].values) {
-        const uri = row[0] as string;
-        const name = row[1] as string;
-        const containerName = row[2] as string;
-        const kind = row[3] as string;
-        const filePath = row[4] as string;
-        const rank = row[5] as number;
-
-        results.push({
-          uri,
-          symbol: {
-            name,
-            kind,
-            containerName: containerName || undefined,
-            filePath,
-            // Note: Location details would require loading full file data
-          },
-          rank
-        });
-      }
-
-      return results;
-    } catch (error: any) {
-      console.warn(`[SqlJsStorage] FTS search failed: ${error.message}, falling back to exact search`);
-      return this.searchRelationalExact(query, limit);
-    }
-  }
-
-  /**
    * Find candidate files that might reference a symbol.
    */
   async findNgRxActionGroups(): Promise<Array<{ uri: string; symbol: IndexedSymbol }>> {

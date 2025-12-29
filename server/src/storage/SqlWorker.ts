@@ -107,11 +107,10 @@ parentPort.on('message', async (message) => {
         result = await storage.saveMetadataSummary();
         break;
       case 'getImpactedFiles':
-        if (storage instanceof NativeSqliteStorage) {
-          result = await storage.getImpactedFiles(payload.uri, payload.maxDepth);
-        } else {
-          result = [];
-        }
+        result = await storage.getImpactedFiles(payload.uri, payload.maxDepth);
+        break;
+      case 'findImplementations':
+        result = await storage.findImplementations(payload);
         break;
       default:
         throw new Error(`Unknown message type in SqlWorker: ${type}`);

@@ -11,8 +11,19 @@
 		"skipLibCheck": true,
 		"noUnusedLocals": true,
 		"noUnusedParameters": true,
-		"allowUnreachableCode": false
+		"allowUnreachableCode": false,
+		"types": [
+			"node",
+			"vscode",
+			"mocha",
+			"better-sqlite3"
+		]
 	},
-	"include": ["src"],
-	"exclude": ["node_modules", "server"]
+	"include": [
+		"src"
+	],
+	"exclude": [
+		"node_modules",
+		"server"
+	]
 }

@@ -434,6 +434,14 @@ export class FileBasedStorage implements IIndexStorage {
     return uris;
   }
 
+  async findImplementations(_symbolName: string): Promise<any[]> {
+    return [];
+  }
+
+  async getImpactedFiles(_uri: string, _maxDepth: number = 3): Promise<string[]> {
+    return [];
+  }
+
   /**
    * Get the underlying shard manager (for backward compatibility).
    * 

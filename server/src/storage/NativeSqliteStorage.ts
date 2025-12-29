@@ -13,7 +13,7 @@ export class NativeSqliteStorage implements IIndexStorage {
   private db: Database.Database | null = null;
   private dbPath: string = '';
   private isInitialized = false;
-  private static readonly SCHEMA_VERSION = 7;
+  private static readonly SCHEMA_VERSION = 9;
   
   // Statement Cache
   private statements: Map<string, Database.Statement> = new Map();
@@ -91,8 +91,8 @@ export class NativeSqliteStorage implements IIndexStorage {
     // Symbols
     this.statements.set('deleteSymbolsByUri', this.db.prepare('DELETE FROM symbols WHERE uri = ?'));
     this.statements.set('insertSymbol', this.db.prepare(`
-      INSERT INTO symbols (id, uri, name, kind, container_name, range_start_line, range_start_character, range_end_line, range_end_character, is_definition, is_exported, full_container_path, ngrx_metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO symbols (id, uri, name, kind, container_name, range_start_line, range_start_character, range_end_line, range_end_character, is_definition, is_exported, full_container_path, ngrx_metadata, extends_name, implements_names)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `));
     this.statements.set('getSymbolsByUri', this.db.prepare('SELECT * FROM symbols WHERE uri = ?'));
     this.statements.set('findDefinitions', this.db.prepare('SELECT * FROM symbols WHERE name = ? AND is_definition = 1'));
@@ -144,9 +144,51 @@ export class NativeSqliteStorage implements IIndexStorage {
           if (currentVersion < 7) {
             this.migrateToV7();
           }
+          if (currentVersion < 8) {
+            this.migrateToV8();
+          }
+          if (currentVersion < 9) {
+            this.migrateToV9();
+          }
         }
         this.setSchemaVersion(NativeSqliteStorage.SCHEMA_VERSION);
       })();
+    }
+  }
+
+  private migrateToV9() {
+    try {
+      this.db!.exec(`
+        ALTER TABLE symbols ADD COLUMN extends_name TEXT;
+        ALTER TABLE symbols ADD COLUMN implements_names TEXT;
+      `);
+    } catch (error: any) {
+      if (!error.message.includes('duplicate column name')) {
+        throw error;
+      }
+    }
+  }
+
+  private migrateToV8() {
+    try {
+      // Trigram requires rebuilding the FTS table
+      this.db!.exec('DROP TABLE IF EXISTS symbols_fts');
+      this.db!.exec(`
+        CREATE VIRTUAL TABLE symbols_fts USING fts5(
+          id UNINDEXED,
+          uri,
+          symbol_name,
+          container_name,
+          kind,
+          file_path,
+          tokenize='trigram'
+        )
+      `);
+      // Re-populate would happen during next indexing, or we could do it here
+      // For now, next indexing will fix it due to symbol_hash mismatch (force update)
+      this.db!.exec('UPDATE files SET symbol_hash = NULL');
+    } catch (error: any) {
+      console.error(`[NativeSqliteStorage] migrateToV8 failed: ${error.message}`);
     }
   }
 
@@ -238,8 +280,7 @@ export class NativeSqliteStorage implements IIndexStorage {
         container_name,
         kind,
         file_path,
-        content='',
-        tokenize='porter'
+        tokenize='trigram'
       )
     `);
 
@@ -320,7 +361,9 @@ export class NativeSqliteStorage implements IIndexStorage {
             s.id, fileData.uri, s.name, s.kind, s.containerName || '',
             s.range.startLine, s.range.startCharacter, s.range.endLine, s.range.endCharacter,
             s.isDefinition ? 1 : 0, s.isExported ? 1 : 0, s.fullContainerPath || '',
-            s.ngrxMetadata ? JSON.stringify(s.ngrxMetadata) : null
+            s.ngrxMetadata ? JSON.stringify(s.ngrxMetadata) : null,
+            (s as any).extends || null,
+            (s as any).implements ? (s as any).implements.join(',') : null
           );
           insertFts.run(s.id, fileData.uri, s.name, s.containerName || '', s.kind, s.filePath || '');
         }
@@ -482,10 +525,12 @@ export class NativeSqliteStorage implements IIndexStorage {
   async searchSymbols(query: string, _mode: 'exact' | 'fuzzy' | 'fulltext' = 'exact', limit: number = 100): Promise<any[]> {
     this.ensureInitialized();
     try {
+      // Use trigram matching for partial matches and ranking
       const sql = `
         SELECT 
           s.*,
-          (CASE WHEN s.name = ? THEN 100.0 ELSE 1.0 END) * 
+          (CASE WHEN s.name = ? THEN 200.0 ELSE 1.0 END) * 
+          (CASE WHEN s.name LIKE ? THEN 5.0 ELSE 1.0 END) *
           (CASE WHEN s.is_definition = 1 THEN 2.0 ELSE 1.0 END) *
           (CASE WHEN s.is_exported = 1 THEN 1.5 ELSE 1.0 END) as relevance
         FROM symbols_fts f
@@ -494,14 +539,16 @@ export class NativeSqliteStorage implements IIndexStorage {
         ORDER BY relevance DESC, s.name ASC
         LIMIT ?
       `;
-      const rows = this.db!.prepare(sql).all(query, query, limit) as any[];
+      // For trigram, we use '"query"' for better accuracy or just query for contains
+      const ftsQuery = `"${query.replace(/"/g, '""')}"`;
+      const rows = this.db!.prepare(sql).all(query, `${query}%`, ftsQuery, limit) as any[];
       return rows.map(r => ({
         uri: r.uri,
         symbol: this.mapSymbol(r),
         rank: r.relevance
       }));
-    } catch {
-      // Fallback
+    } catch (error: any) {
+      console.warn(`[NativeSqliteStorage] Search failed: ${error.message}. Falling back to LIKE.`);
       const rows = this.db!.prepare('SELECT * FROM symbols WHERE name LIKE ? LIMIT ?').all(`%${query}%`, limit) as any[];
       return rows.map(r => ({
         uri: r.uri,
@@ -527,6 +574,8 @@ export class NativeSqliteStorage implements IIndexStorage {
       isExported: !!r.is_exported,
       fullContainerPath: r.full_container_path,
       filePath: r.uri,
+      extends: r.extends_name,
+      implements: r.implements_names ? r.implements_names.split(',') : undefined,
       ngrxMetadata: r.ngrx_metadata ? JSON.parse(r.ngrx_metadata) : undefined
     };
   }
@@ -570,32 +619,43 @@ export class NativeSqliteStorage implements IIndexStorage {
     // Recursive query to find all files that reference symbols defined in 'uri'
     // or defined in files that reference symbols defined in 'uri', etc.
     const sql = `
-      WITH RECURSIVE impact(target_uri, depth) AS (
-        -- Base case: files referencing symbols in the starting uri
-        SELECT DISTINCT r.uri, 1
-        FROM references r
-        JOIN symbols s ON r.symbol_name = s.name
-        WHERE s.uri = ? AND s.is_definition = 1
-        
+      WITH RECURSIVE impact(uri, depth) AS (
+        SELECT uri, 0 FROM files WHERE uri = ?
         UNION
-        
-        -- Recursive step: files referencing symbols in already impacted files
-        SELECT DISTINCT r.uri, i.depth + 1
+        SELECT r.uri, i.depth + 1
         FROM references r
-        JOIN symbols s ON r.symbol_name = s.name
-        JOIN impact i ON s.uri = i.target_uri
-        WHERE s.is_definition = 1 AND i.depth < ?
+        JOIN impact i ON r.target_uri = i.uri
+        WHERE i.depth < ?
       )
-      SELECT DISTINCT target_uri FROM impact WHERE target_uri != ?
+      SELECT DISTINCT uri FROM impact WHERE depth > 0
     `;
-    
     try {
-      const rows = this.db!.prepare(sql).all(uri, maxDepth, uri) as any[];
-      return rows.map(r => r.target_uri);
+      const rows = this.db!.prepare(sql).all(uri, maxDepth) as any[];
+      return rows.map(r => r.uri);
     } catch (error: any) {
       console.error(`[NativeSqliteStorage] Impact analysis failed: ${error.message}`);
       return [];
     }
+  }
+
+  async findImplementations(symbolName: string): Promise<any[]> {
+    this.ensureInitialized();
+    // Find all subclasses/implementations (recursive)
+    const sql = `
+      WITH RECURSIVE hierarchy(name) AS (
+        SELECT ?
+        UNION
+        SELECT s.name
+        FROM symbols s
+        JOIN hierarchy h ON s.extends_name = h.name OR (',' || s.implements_names || ',') LIKE ('%,' || h.name || ',%')
+      )
+      SELECT s.*
+      FROM symbols s
+      JOIN hierarchy h ON s.name = h.name
+      WHERE s.name != ?
+    `;
+    const rows = this.db!.prepare(sql).all(symbolName, symbolName) as any[];
+    return rows.map(r => this.mapSymbol(r));
   }
 
   async findNgRxActionGroups(): Promise<Array<{ uri: string; symbol: IndexedSymbol }>> {

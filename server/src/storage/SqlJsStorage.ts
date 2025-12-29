@@ -1381,6 +1381,14 @@ private async migrateToV6(): Promise<void> {
     return results;
   }
 
+  async findImplementations(_symbolName: string): Promise<any[]> {
+    return [];
+  }
+
+  async getImpactedFiles(_uri: string, _maxDepth: number = 3): Promise<string[]> {
+    return [];
+  }
+
   /**
    * Find candidate files that might reference a symbol.
    * Uses SQL LIKE for fast filtering before deep analysis.

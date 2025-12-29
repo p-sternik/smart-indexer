@@ -42,11 +42,10 @@ export class FastRegexParser {
     const maskedContent = this.maskComments(content);
 
     for (const [kind, regex] of Object.entries(this.PATTERNS)) {
-      regex.lastIndex = 0; // Reset
-      let match;
-      while ((match = regex.exec(maskedContent)) !== null) {
+      const matches = maskedContent.matchAll(regex);
+      for (const match of matches) {
         const name = match[1];
-        const offset = match.index;
+        const offset = match.index!;
         
         // Find line and column in ORIGINAL content (offsets are same)
         let currentOffset = 0;

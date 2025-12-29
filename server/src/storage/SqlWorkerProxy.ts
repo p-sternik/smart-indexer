@@ -201,4 +201,8 @@ export class SqlWorkerProxy implements IIndexStorage {
   async getImpactedFiles(uri: string, maxDepth: number = 3): Promise<string[]> {
     return this.sendRequest('getImpactedFiles', { uri, maxDepth });
   }
+
+  async findImplementations(symbolName: string): Promise<any[]> {
+    return this.sendRequest('findImplementations', symbolName);
+  }
 }

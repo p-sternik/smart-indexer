@@ -231,4 +231,14 @@ export interface IIndexStorage {
    * Find all files that have pending references.
    */
   findFilesWithPendingRefs(): Promise<string[]>;
+
+  /**
+   * Find all symbols that implement or extend a given symbol (recursive).
+   */
+  findImplementations(symbolName: string): Promise<any[]>;
+
+  /**
+   * Find all files impacted by changes in the given file (recursive).
+   */
+  getImpactedFiles(uri: string, maxDepth?: number): Promise<string[]>;
 }

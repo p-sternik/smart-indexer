@@ -183,6 +183,9 @@
     "vsix": "pnpm run clean && pnpm run package && node scripts/publish.js package",
     "publish": "node scripts/publish.js publish"
   },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
   "devDependencies": {
     "@msgpack/msgpack": "^3.1.2",
     "@semantic-release/changelog": "^6.0.3",
@@ -200,7 +203,6 @@
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.2.1",
-    "better-sqlite3": "^11.0.0",
     "chokidar": "^4.0.0",
     "conventional-changelog-conventionalcommits": "^7.0.2",
     "esbuild": "^0.27.0",

@@ -2,7 +2,10 @@
   "compilerOptions": {
     "module": "Node16",
     "target": "ES2022",
-    "lib": ["ES2022", "WebWorker"],
+    "lib": [
+      "ES2022",
+      "WebWorker"
+    ],
     "outDir": "./out",
     "rootDir": "./src",
     "sourceMap": true,
@@ -13,8 +16,19 @@
     "forceConsistentCasingInFileNames": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "allowUnreachableCode": false
+    "allowUnreachableCode": false,
+    "types": [
+      "node",
+      "better-sqlite3"
+    ]
   },
-  "include": ["src"],
-  "exclude": ["node_modules", "out", "src/**/*.test.ts", "src/**/*.spec.ts"]
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "node_modules",
+    "out",
+    "src/**/*.test.ts",
+    "src/**/*.spec.ts"
+  ]
 }

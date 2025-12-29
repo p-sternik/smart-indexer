@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.87.0](https://github.com/p-sternik/smart-indexer/compare/v1.86.0...v1.87.0) (2025-12-29)
+
+
+### Features
+
+* Add `SqlWorker` entry point and refactor esbuild configuration to use object-based entry points. ([0ea0089](https://github.com/p-sternik/smart-indexer/commit/0ea00896ae6f394b1002c398fa2235dac5b9d623))
+
 ## [1.86.0](https://github.com/p-sternik/smart-indexer/compare/v1.85.0...v1.86.0) (2025-12-29)
 
 

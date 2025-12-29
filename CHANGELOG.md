@@ -5,6 +5,13 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.85.0](https://github.com/p-sternik/smart-indexer/compare/v1.84.0...v1.85.0) (2025-12-29)
+
+
+### Features
+
+* add SqlJsStorage for SQLite-based index storage with schema migrations, FTS5, and crash recovery. ([7ee9b52](https://github.com/p-sternik/smart-indexer/commit/7ee9b524c1e1ee2e6ffba4abd269d7c9d379b875))
+
 ## [1.84.0](https://github.com/p-sternik/smart-indexer/compare/v1.83.0...v1.84.0) (2025-12-29)
 
 

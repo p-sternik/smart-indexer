@@ -208,7 +208,27 @@ export interface IIndexStorage {
    */
   searchSymbols(query: string, mode?: 'exact' | 'fuzzy' | 'fulltext', limit?: number): Promise<Array<{
     uri: string;
-    symbol: any; // IndexedSymbol, but avoiding circular dependency
+    symbol: IndexedSymbol;
     rank?: number;
   }>>;
+
+  /**
+   * Find definitions for a symbol name using relational index.
+   */
+  findDefinitionsInSql(name: string): Promise<IndexedSymbol[]>;
+
+  /**
+   * Find references for a symbol name using relational index.
+   */
+  findReferencesInSql(name: string): Promise<IndexedReference[]>;
+
+  /**
+   * Find all NgRx action groups in the workspace.
+   */
+  findNgRxActionGroups(): Promise<Array<{ uri: string; symbol: IndexedSymbol }>>;
+
+  /**
+   * Find all files that have pending references.
+   */
+  findFilesWithPendingRefs(): Promise<string[]>;
 }

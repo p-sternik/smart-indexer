@@ -1,4 +1,5 @@
 import { IIndexStorage, FileIndexData, FileMetadata, StorageStats } from './IIndexStorage.js';
+import { IndexedSymbol, IndexedReference } from '../types.js';
 import initSqlJs, { Database } from 'sql.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -44,7 +45,7 @@ export class SqlJsStorage implements IIndexStorage {
   private isInitialized: boolean = false;
   
   // Schema version for migration system
-  private static readonly SCHEMA_VERSION = 2;
+  private static readonly SCHEMA_VERSION = 5;
 
   /**
    * Create a new SqlJsStorage instance.
@@ -247,15 +248,227 @@ export class SqlJsStorage implements IIndexStorage {
       await this.setSchemaVersion(currentVersion);
     }
 
-    // Future migrations go here:
-    // if (currentVersion === 2 && toVersion >= 3) {
-    //   await this.migrateToV3();
-    //   currentVersion = 3;
-    //   await this.setSchemaVersion(currentVersion);
-    // }
+    // Migration v2 -> v3: Add relational symbols and references tables
+    if (currentVersion === 2 && toVersion >= 3) {
+      console.info('[SqlJsStorage] Applying migration v2 -> v3 (Relational symbols/references)');
+      await this.migrateToV3();
+      currentVersion = 3;
+      await this.setSchemaVersion(currentVersion);
+    }
+
+    // Migration v3 -> v4: Add ngrx_metadata and has_pending flags
+    if (currentVersion === 3 && toVersion >= 4) {
+      console.info('[SqlJsStorage] Applying migration v3 -> v4 (NgRx metadata and pending flags)');
+      await this.migrateToV4();
+      currentVersion = 4;
+      await this.setSchemaVersion(currentVersion);
+    }
+
+    // Migration v4 -> v5: Add explicit metadata columns to files table
+    if (currentVersion === 4 && toVersion >= 5) {
+      console.info('[SqlJsStorage] Applying migration v4 -> v5 (Explicit metadata columns)');
+      await this.migrateToV5();
+      currentVersion = 5;
+      await this.setSchemaVersion(currentVersion);
+    }
 
     console.info(`[SqlJsStorage] Migration completed successfully to v${currentVersion}`);
   }
+
+  /**
+   * Migration v2 -> v3: Add relational symbols and references tables for high-performance queries.
+   */
+  private async migrateToV3(): Promise<void> {
+    try {
+      // Create symbols table for fast definition/symbol lookups
+      this.db!.run(`
+        CREATE TABLE IF NOT EXISTS symbols (
+          id TEXT PRIMARY KEY,
+          uri TEXT NOT NULL,
+          name TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          container_name TEXT,
+          range_start_line INTEGER NOT NULL,
+          range_start_character INTEGER NOT NULL,
+          range_end_line INTEGER NOT NULL,
+          range_end_character INTEGER NOT NULL,
+          is_definition INTEGER NOT NULL,
+          is_exported INTEGER,
+          full_container_path TEXT,
+          FOREIGN KEY(uri) REFERENCES files(uri) ON DELETE CASCADE
+        )
+      `);
+
+      this.db!.run(`CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name)`);
+      this.db!.run(`CREATE INDEX IF NOT EXISTS idx_symbols_uri ON symbols(uri)`);
+
+      // Create references table for fast usage lookups
+      this.db!.run(`
+        CREATE TABLE IF NOT EXISTS refs (
+          uri TEXT NOT NULL,
+          symbol_name TEXT NOT NULL,
+          line INTEGER NOT NULL,
+          character INTEGER NOT NULL,
+          container_name TEXT,
+          is_local INTEGER NOT NULL,
+          FOREIGN KEY(uri) REFERENCES files(uri) ON DELETE CASCADE
+        )
+      `);
+
+      this.db!.run(`CREATE INDEX IF NOT EXISTS idx_refs_symbol_name ON refs(symbol_name)`);
+      this.db!.run(`CREATE INDEX IF NOT EXISTS idx_refs_uri ON refs(uri)`);
+
+      // Populate tables from existing data
+      console.info('[SqlJsStorage] Populating relational tables from existing data...');
+      const result = this.db!.exec('SELECT uri, json_data FROM files');
+      
+      if (result.length > 0 && result[0].values.length > 0) {
+        let symbolCount = 0;
+        let refCount = 0;
+        
+        for (const row of result[0].values) {
+          const uri = row[0] as string;
+          const jsonData = row[1] as string;
+          
+          try {
+            const data: FileIndexData = JSON.parse(jsonData);
+            
+            // Insert symbols
+            for (const symbol of data.symbols) {
+              this.db!.run(
+                `INSERT OR REPLACE INTO symbols (
+                  id, uri, name, kind, container_name, 
+                  range_start_line, range_start_character, range_end_line, range_end_character, 
+                  is_definition, is_exported, full_container_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  symbol.id,
+                  uri,
+                  symbol.name,
+                  symbol.kind,
+                  symbol.containerName || null,
+                  symbol.range.startLine,
+                  symbol.range.startCharacter,
+                  symbol.range.endLine,
+                  symbol.range.endCharacter,
+                  symbol.isDefinition ? 1 : 0,
+                  symbol.isExported ? 1 : 0,
+                  symbol.fullContainerPath || null
+                ]
+              );
+              symbolCount++;
+            }
+
+            // Insert references
+            if (data.references) {
+              for (const ref of data.references) {
+                this.db!.run(
+                  `INSERT INTO refs (uri, symbol_name, line, character, container_name, is_local) 
+                   VALUES (?, ?, ?, ?, ?, ?)`,
+                  [
+                    uri,
+                    ref.symbolName,
+                    ref.location.line,
+                    ref.location.character,
+                    ref.containerName || null,
+                    ref.isLocal ? 1 : 0
+                  ]
+                );
+                refCount++;
+              }
+            }
+          } catch (parseError) {
+            console.warn(`[SqlJsStorage] Skipping corrupt file data for ${uri}`);
+          }
+        }
+        console.info(`[SqlJsStorage] Populated relational index with ${symbolCount} symbols and ${refCount} references`);
+      }
+    } catch (error: any) {
+      console.error(`[SqlJsStorage] Relational migration failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Migration v3 -> v4: Add ngrx_metadata to symbols and has_pending to files.
+   */
+  private async migrateToV4(): Promise<void> {
+    try {
+      // Add columns to existing tables
+      this.db!.run(`ALTER TABLE symbols ADD COLUMN ngrx_metadata TEXT`);
+      this.db!.run(`ALTER TABLE files ADD COLUMN has_pending INTEGER DEFAULT 0`);
+      
+      // Create optimized indexes for the new columns
+      this.db!.run(`CREATE INDEX IF NOT EXISTS idx_symbols_ngrx ON symbols(ngrx_metadata) WHERE ngrx_metadata IS NOT NULL`);
+      this.db!.run(`CREATE INDEX IF NOT EXISTS idx_files_pending ON files(has_pending) WHERE has_pending = 1`);
+
+      // Populate data from JSON blobs
+      console.info('[SqlJsStorage] Syncing ngrx_metadata and pending flags from JSON blobs...');
+      const result = this.db!.exec('SELECT uri, json_data FROM files');
+      
+      if (result.length > 0 && result[0].values.length > 0) {
+        for (const row of result[0].values) {
+          const uri = row[0] as string;
+          const jsonData = row[1] as string;
+          try {
+            const data: FileIndexData = JSON.parse(jsonData);
+            
+            // Update has_pending flag
+            const hasPending = (data.pendingReferences && data.pendingReferences.length > 0) ? 1 : 0;
+            if (hasPending) {
+              this.db!.run('UPDATE files SET has_pending = 1 WHERE uri = ?', [uri]);
+            }
+
+            // Update ngrx_metadata for symbols
+            for (const symbol of data.symbols) {
+              if (symbol.ngrxMetadata) {
+                this.db!.run('UPDATE symbols SET ngrx_metadata = ? WHERE id = ?', [
+                  JSON.stringify(symbol.ngrxMetadata), 
+                  symbol.id
+                ]);
+              }
+            }
+          } catch (e) {
+            // Skip corrupt data
+          }
+        }
+      }
+    } catch (error: any) {
+      console.error(`[SqlJsStorage] Migration v4 failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+ * Migration v4 -> v5: Add metadata columns to files table for O(1) retrieval.
+ */
+private async migrateToV5(): Promise<void> {
+  try {
+    this.db!.run('ALTER TABLE files ADD COLUMN hash TEXT');
+    this.db!.run('ALTER TABLE files ADD COLUMN symbol_count INTEGER DEFAULT 0');
+    this.db!.run('ALTER TABLE files ADD COLUMN last_indexed_at INTEGER DEFAULT 0');
+    this.db!.run('ALTER TABLE files ADD COLUMN mtime INTEGER');
+
+    console.info('[SqlJsStorage] Populating metadata columns from JSON blobs (v5)...');
+    const result = this.db!.exec('SELECT uri, json_data FROM files');
+    if (result.length > 0 && result[0].values.length > 0) {
+      for (const row of result[0].values) {
+        const uri = row[0] as string;
+        const jsonData = row[1] as string;
+        try {
+          const data: FileIndexData = JSON.parse(jsonData);
+          this.db!.run(
+            'UPDATE files SET hash = ?, symbol_count = ?, last_indexed_at = ?, mtime = ? WHERE uri = ?',
+            [data.hash, data.symbols.length, data.lastIndexedAt, data.mtime || null, uri]
+          );
+        } catch { /* skip */ }
+      }
+    }
+  } catch (error: any) {
+    console.error(`[SqlJsStorage] Migration v5 failed: ${error.message}`);
+    throw error;
+  }
+}
 
   /**
    * Migration v1 -> v2: Add FTS5 virtual table for full-text search.
@@ -347,7 +560,7 @@ export class SqlJsStorage implements IIndexStorage {
   private async selfHeal(): Promise<void> {
     try {
       // Drop all tables
-      const tables = ['symbols_fts', 'files', 'meta'];
+      const tables = ['refs', 'symbols', 'symbols_fts', 'files', 'meta'];
       for (const table of tables) {
         try {
           this.db!.run(`DROP TABLE IF EXISTS ${table}`);
@@ -422,24 +635,33 @@ export class SqlJsStorage implements IIndexStorage {
    * @param data - Complete indexed data for the file
    */
   private async updateFileSymbols(normalizedUri: string, data: FileIndexData): Promise<void> {
-    const jsonData = JSON.stringify(data);
-    const updatedAt = Date.now();
-
     // Use transaction for atomicity (DELETE + INSERT)
     this.db!.run('BEGIN TRANSACTION');
     
     try {
-      // CRITICAL: Delete old entry BEFORE inserting new one to prevent duplicates
-      this.db!.run('DELETE FROM files WHERE uri = ?', [normalizedUri]);
-      
-      // Insert new entry
+      // Insert or update file entry
       this.db!.run(
-        'INSERT INTO files (uri, json_data, updated_at) VALUES (?, ?, ?)',
-        [normalizedUri, jsonData, updatedAt]
+        `INSERT OR REPLACE INTO files (
+          uri, json_data, updated_at, has_pending, 
+          hash, symbol_count, last_indexed_at, mtime
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          normalizedUri, 
+          JSON.stringify(data), 
+          Date.now(),
+          (data.pendingReferences && data.pendingReferences.length > 0) ? 1 : 0,
+          data.hash,
+          data.symbols.length,
+          data.lastIndexedAt,
+          data.mtime || null
+        ]
       );
 
       // Update FTS index (if FTS5 is available)
       await this.updateFTSIndex(data);
+
+      // Update relational index (v3)
+      await this.updateRelationalIndex(data);
       
       this.db!.run('COMMIT');
     } catch (error) {
@@ -489,6 +711,62 @@ export class SqlJsStorage implements IIndexStorage {
     } catch (error) {
       // Silently fail - FTS is optional
       // Error will be caught by parent transaction and rolled back
+    }
+  }
+
+  /**
+   * Update relational index for a file's symbols and references.
+   * MUST be called within an existing transaction.
+   */
+  private async updateRelationalIndex(data: FileIndexData): Promise<void> {
+    const uri = this.normalizeUri(data.uri);
+
+    // CRITICAL: Delete existing entries for this file to prevent duplicates
+    this.db!.run('DELETE FROM symbols WHERE uri = ?', [uri]);
+    this.db!.run('DELETE FROM refs WHERE uri = ?', [uri]);
+
+    // Insert symbols
+    for (const symbol of data.symbols) {
+      this.db!.run(
+        `INSERT INTO symbols (
+          id, uri, name, kind, container_name, 
+          range_start_line, range_start_character, range_end_line, range_end_character, 
+          is_definition, is_exported, full_container_path, ngrx_metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          symbol.id,
+          uri,
+          symbol.name,
+          symbol.kind,
+          symbol.containerName || null,
+          symbol.range.startLine,
+          symbol.range.startCharacter,
+          symbol.range.endLine,
+          symbol.range.endCharacter,
+          symbol.isDefinition ? 1 : 0,
+          symbol.isExported ? 1 : 0,
+          symbol.fullContainerPath || null,
+          symbol.ngrxMetadata ? JSON.stringify(symbol.ngrxMetadata) : null
+        ]
+      );
+    }
+
+    // Insert references
+    if (data.references) {
+      for (const ref of data.references) {
+        this.db!.run(
+          `INSERT INTO refs (uri, symbol_name, line, character, container_name, is_local) 
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            uri,
+            ref.symbolName,
+            ref.location.line,
+            ref.location.character,
+            ref.containerName || null,
+            ref.isLocal ? 1 : 0
+          ]
+        );
+      }
     }
   }
 
@@ -599,6 +877,14 @@ export class SqlJsStorage implements IIndexStorage {
       // Delete from files table
       this.db!.run('DELETE FROM files WHERE uri = ?', [normalizedUri]);
 
+      // Delete from relational index
+      try {
+        this.db!.run('DELETE FROM symbols WHERE uri = ?', [normalizedUri]);
+        this.db!.run('DELETE FROM refs WHERE uri = ?', [normalizedUri]);
+      } catch {
+        // Tables might not exist
+      }
+
       // Delete from FTS index (if available)
       try {
         this.db!.run('DELETE FROM symbols_fts WHERE uri = ?', [normalizedUri]);
@@ -634,7 +920,7 @@ export class SqlJsStorage implements IIndexStorage {
     this.ensureInitialized();
 
     const result = this.db!.exec(
-      'SELECT json_data FROM files WHERE uri = ?',
+      'SELECT uri, hash, mtime, symbol_count, last_indexed_at FROM files WHERE uri = ?',
       [uri]
     );
 
@@ -642,15 +928,13 @@ export class SqlJsStorage implements IIndexStorage {
       return null;
     }
 
-    const jsonData = result[0].values[0][0] as string;
-    const data: FileIndexData = JSON.parse(jsonData);
-
+    const row = result[0].values[0];
     return {
-      uri: data.uri,
-      hash: data.hash,
-      mtime: data.mtime,
-      symbolCount: data.symbols.length,
-      lastIndexedAt: data.lastIndexedAt
+      uri: row[0] as string,
+      hash: row[1] as string,
+      mtime: row[2] as number,
+      symbolCount: row[3] as number,
+      lastIndexedAt: row[4] as number
     };
   }
 
@@ -660,27 +944,19 @@ export class SqlJsStorage implements IIndexStorage {
   async getAllMetadata(): Promise<FileMetadata[]> {
     this.ensureInitialized();
 
-    const result = this.db!.exec('SELECT json_data FROM files');
+    const result = this.db!.exec('SELECT uri, hash, mtime, symbol_count, last_indexed_at FROM files');
 
-    if (result.length === 0) {
+    if (result.length === 0 || result[0].values.length === 0) {
       return [];
     }
 
-    const metadata: FileMetadata[] = [];
-    for (const row of result[0].values) {
-      const jsonData = row[0] as string;
-      const data: FileIndexData = JSON.parse(jsonData);
-      
-      metadata.push({
-        uri: data.uri,
-        hash: data.hash,
-        mtime: data.mtime,
-        symbolCount: data.symbols.length,
-        lastIndexedAt: data.lastIndexedAt
-      });
-    }
-
-    return metadata;
+    return result[0].values.map(row => ({
+      uri: row[0] as string,
+      hash: row[1] as string,
+      mtime: row[2] as number,
+      symbolCount: row[3] as number,
+      lastIndexedAt: row[4] as number
+    }));
   }
 
   /**
@@ -941,10 +1217,83 @@ export class SqlJsStorage implements IIndexStorage {
     if (mode === 'fulltext') {
       return this.searchFTS(query, limit);
     } else if (mode === 'fuzzy') {
-      return this.searchFuzzy(query, limit);
+      return this.searchRelationalFuzzy(query, limit);
     } else {
-      return this.searchExact(query, limit);
+      return this.searchRelationalExact(query, limit);
     }
+  }
+
+  /**
+   * High-performance exact search using relational symbols table.
+   * Replaces the O(N) searchExact that parsed JSON blobs.
+   */
+  private async searchRelationalExact(query: string, limit: number): Promise<Array<{ uri: string; symbol: any }>> {
+    const result = this.db!.exec(
+      `SELECT uri, id, name, kind, container_name, range_start_line, range_start_character, 
+              range_end_line, range_end_character, is_definition, is_exported, full_container_path 
+       FROM symbols 
+       WHERE name = ? AND is_definition = 1 
+       LIMIT ?`,
+      [query, limit]
+    );
+
+    if (result.length === 0 || result[0].values.length === 0) {
+      return [];
+    }
+
+    return this.mapSqlSymbols(result[0].values);
+  }
+
+  /**
+   * High-performance fuzzy search using SQL LIKE on relational symbols table.
+   * Replaces the O(N) searchFuzzy that parsed JSON blobs.
+   */
+  private async searchRelationalFuzzy(query: string, limit: number): Promise<Array<{ uri: string; symbol: any }>> {
+    const pattern = `%${query}%`;
+    const result = this.db!.exec(
+      `SELECT uri, id, name, kind, container_name, range_start_line, range_start_character, 
+              range_end_line, range_end_character, is_definition, is_exported, full_container_path 
+       FROM symbols 
+       WHERE name LIKE ? AND is_definition = 1 
+       LIMIT ?`,
+      [pattern, limit]
+    );
+
+    if (result.length === 0 || result[0].values.length === 0) {
+      return [];
+    }
+
+    return this.mapSqlSymbols(result[0].values);
+  }
+
+  /**
+   * Map SQL symbol rows back to IndexedSymbol-like structure.
+   */
+  private mapSqlSymbols(values: any[][]): Array<{ uri: string; symbol: any }> {
+    return values.map(row => ({
+      uri: row[0] as string,
+      symbol: {
+        id: row[1] as string,
+        name: row[2] as string,
+        kind: row[3] as string,
+        containerName: row[4] as string || undefined,
+        location: {
+          uri: row[0] as string,
+          line: row[5] as number,
+          character: row[6] as number
+        },
+        range: {
+          startLine: row[5] as number,
+          startCharacter: row[6] as number,
+          endLine: row[7] as number,
+          endCharacter: row[8] as number
+        },
+        isDefinition: row[9] === 1,
+        isExported: row[10] === 1,
+        fullContainerPath: row[11] as string || undefined,
+        filePath: row[0] as string
+      }
+    }));
   }
 
   /**
@@ -959,7 +1308,7 @@ export class SqlJsStorage implements IIndexStorage {
       
       if (tableCheck.length === 0 || tableCheck[0].values.length === 0) {
         console.warn('[SqlJsStorage] FTS5 table not available, falling back to exact search');
-        return this.searchExact(query, limit);
+        return this.searchRelationalExact(query, limit);
       }
 
       // Execute FTS5 query
@@ -1003,84 +1352,59 @@ export class SqlJsStorage implements IIndexStorage {
       return results;
     } catch (error: any) {
       console.warn(`[SqlJsStorage] FTS search failed: ${error.message}, falling back to exact search`);
-      return this.searchExact(query, limit);
+      return this.searchRelationalExact(query, limit);
     }
   }
 
   /**
-   * Fuzzy search (partial matching on symbol names).
+   * Find candidate files that might reference a symbol.
    */
-  private async searchFuzzy(query: string, limit: number): Promise<Array<{ uri: string; symbol: any }>> {
-    const results: Array<{ uri: string; symbol: any }> = [];
-    const lowerQuery = query.toLowerCase();
-
-    // Get all files
-    const filesResult = this.db!.exec('SELECT uri, json_data FROM files');
+  async findNgRxActionGroups(): Promise<Array<{ uri: string; symbol: IndexedSymbol }>> {
+    this.ensureInitialized();
+    const results: Array<{ uri: string; symbol: IndexedSymbol }> = [];
     
-    if (filesResult.length === 0 || filesResult[0].values.length === 0) {
-      return [];
-    }
-
-    // Search through all symbols
-    for (const row of filesResult[0].values) {
-      const uri = row[0] as string;
-      const jsonData = row[1] as string;
+    try {
+      const sql = `SELECT uri, id, name, kind, container_name, range_start_line, range_start_character, 
+                          range_end_line, range_end_character, is_definition, is_exported, 
+                          full_container_path, ngrx_metadata 
+                   FROM symbols 
+                   WHERE ngrx_metadata IS NOT NULL`;
+      const result = this.db!.exec(sql);
       
-      try {
-        const data: FileIndexData = JSON.parse(jsonData);
-        
-        for (const symbol of data.symbols) {
-          if (symbol.isDefinition && symbol.name.toLowerCase().includes(lowerQuery)) {
-            results.push({ uri, symbol });
-            
-            if (results.length >= limit) {
-              return results;
-            }
-          }
+      if (result.length > 0 && result[0].values.length > 0) {
+        for (const row of result[0].values) {
+          const uri = row[0] as string;
+          results.push({
+            uri,
+            symbol: this.mapSqlSymbol(row, 0)
+          });
         }
-      } catch {
-        // Skip corrupt data
       }
+    } catch (error: any) {
+      console.error(`[SqlJsStorage] findNgRxActionGroups failed: ${error.message}`);
     }
-
+    
     return results;
   }
 
   /**
-   * Exact name matching.
+   * Find all files that have pending references.
    */
-  private async searchExact(query: string, limit: number): Promise<Array<{ uri: string; symbol: any }>> {
-    const results: Array<{ uri: string; symbol: any }> = [];
-
-    // Get all files
-    const filesResult = this.db!.exec('SELECT uri, json_data FROM files');
+  async findFilesWithPendingRefs(): Promise<string[]> {
+    this.ensureInitialized();
+    const results: string[] = [];
     
-    if (filesResult.length === 0 || filesResult[0].values.length === 0) {
-      return [];
-    }
-
-    // Search through all symbols
-    for (const row of filesResult[0].values) {
-      const uri = row[0] as string;
-      const jsonData = row[1] as string;
-      
-      try {
-        const data: FileIndexData = JSON.parse(jsonData);
-        
-        for (const symbol of data.symbols) {
-          if (symbol.isDefinition && symbol.name === query) {
-            results.push({ uri, symbol });
-            
-            if (results.length >= limit) {
-              return results;
-            }
-          }
+    try {
+      const result = this.db!.exec(`SELECT uri FROM files WHERE has_pending = 1`);
+      if (result.length > 0 && result[0].values.length > 0) {
+        for (const row of result[0].values) {
+          results.push(row[0] as string);
         }
-      } catch {
-        // Skip corrupt data
       }
+    } catch (error: any) {
+      console.error(`[SqlJsStorage] findFilesWithPendingRefs failed: ${error.message}`);
     }
-
+    
     return results;
   }
 
@@ -1148,8 +1472,102 @@ export class SqlJsStorage implements IIndexStorage {
   }
 
   /**
-   * Schedule an auto-save operation with debouncing.
+   * Find definitions for a symbol name using relational index.
+   * This is much faster than loading full shards and filtering in JS.
    */
+  async findDefinitionsInSql(name: string): Promise<IndexedSymbol[]> {
+    this.ensureInitialized();
+    const result = this.db!.exec(
+      `SELECT uri, id, name, kind, container_name, range_start_line, range_start_character, 
+              range_end_line, range_end_character, is_definition, is_exported, full_container_path, ngrx_metadata 
+       FROM symbols 
+       WHERE name = ? AND is_definition = 1`,
+      [name]
+    );
+
+    if (result.length === 0 || result[0].values.length === 0) {
+      return [];
+    }
+
+    return result[0].values.map(row => this.mapSqlSymbol(row));
+  }
+
+  /**
+   * Find references for a symbol name using relational index.
+   */
+  async findReferencesInSql(name: string): Promise<IndexedReference[]> {
+    this.ensureInitialized();
+    const result = this.db!.exec(
+      `SELECT uri, symbol_name, line, character, container_name, is_local 
+       FROM refs 
+       WHERE symbol_name = ?`,
+      [name]
+    );
+
+    if (result.length === 0 || result[0].values.length === 0) {
+      return [];
+    }
+
+    return result[0].values.map(row => this.mapSqlReference(row));
+  }
+
+  /**
+   * Helper to map a SQL row to an IndexedSymbol.
+   */
+  private mapSqlSymbol(values: any[], offset: number = 0): IndexedSymbol {
+    const uri = values[offset + 0] as string;
+    const line = values[offset + 5] as number;
+    const character = values[offset + 6] as number;
+    
+    return {
+      id: values[offset + 1] as string,
+      name: values[offset + 2] as string,
+      kind: values[offset + 3] as string,
+      containerName: (values[offset + 4] as string) || undefined,
+      location: {
+        uri,
+        line,
+        character
+      },
+      range: {
+        startLine: line,
+        startCharacter: character,
+        endLine: values[offset + 7] as number,
+        endCharacter: values[offset + 8] as number
+      },
+      isDefinition: values[offset + 9] === 1,
+      isExported: values[offset + 10] === 1,
+      fullContainerPath: (values[offset + 11] as string) || undefined,
+      ngrxMetadata: values[offset + 12] ? JSON.parse(values[offset + 12] as string) : undefined,
+      filePath: uri
+    };
+  }
+
+  /**
+   * Helper to map a SQL row to an IndexedReference.
+   */
+  private mapSqlReference(values: any[], offset: number = 0): IndexedReference {
+    const symbolName = values[offset + 1] as string;
+    const line = values[offset + 2] as number;
+    const character = values[offset + 3] as number;
+    
+    return {
+      symbolName,
+      location: {
+        uri: values[offset + 0] as string,
+        line,
+        character
+      },
+      range: {
+        startLine: line,
+        startCharacter: character,
+        endLine: line,
+        endCharacter: character + symbolName.length
+      },
+      containerName: values[offset + 4] as string || undefined,
+      isLocal: values[offset + 5] === 1
+    };
+  }
   private scheduleAutoSave(): void {
     if (this.autoSaveTimer) {
       clearTimeout(this.autoSaveTimer);

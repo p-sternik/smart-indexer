@@ -1,4 +1,5 @@
 import { IIndexStorage, FileIndexData, FileMetadata, StorageStats } from './IIndexStorage.js';
+import { IndexedSymbol, IndexedReference } from '../types.js';
 import { ShardPersistenceManager, FileShard, ShardMetadataEntry } from '../index/ShardPersistenceManager.js';
 
 /**
@@ -354,6 +355,82 @@ export class FileBasedStorage implements IIndexStorage {
       }
     }
 
+    return uris;
+  }
+
+  /**
+   * Find definitions for a symbol name (fallback for non-SQL storage).
+   */
+  async findDefinitionsInSql(name: string): Promise<IndexedSymbol[]> {
+    const symbols: IndexedSymbol[] = [];
+    const allFiles = await this.getAllMetadata();
+    
+    for (const meta of allFiles) {
+      const shard = await this.getFile(meta.uri);
+      if (shard) {
+        for (const sym of shard.symbols) {
+          if (sym.name === name && sym.isDefinition) {
+            symbols.push(sym);
+          }
+        }
+      }
+    }
+    return symbols;
+  }
+
+  /**
+   * Find references for a symbol name (fallback for non-SQL storage).
+   */
+  async findReferencesInSql(name: string): Promise<IndexedReference[]> {
+    const refs: IndexedReference[] = [];
+    const allFiles = await this.getAllMetadata();
+    
+    for (const meta of allFiles) {
+      const shard = await this.getFile(meta.uri);
+      if (shard) {
+        for (const ref of shard.references) {
+          if (ref.symbolName === name) {
+            refs.push(ref);
+          }
+        }
+      }
+    }
+    return refs;
+  }
+
+  /**
+   * Find all NgRx action groups in the workspace.
+   */
+  async findNgRxActionGroups(): Promise<Array<{ uri: string; symbol: IndexedSymbol }>> {
+    const results: Array<{ uri: string; symbol: IndexedSymbol }> = [];
+    const allFiles = await this.getAllMetadata();
+    
+    for (const meta of allFiles) {
+      const shard = await this.getFile(meta.uri);
+      if (shard) {
+        for (const sym of shard.symbols) {
+          if (sym.ngrxMetadata?.isGroup) {
+            results.push({ uri: shard.uri, symbol: sym });
+          }
+        }
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Find all files that have pending references.
+   */
+  async findFilesWithPendingRefs(): Promise<string[]> {
+    const uris: string[] = [];
+    const allFiles = await this.getAllMetadata();
+    
+    for (const meta of allFiles) {
+      const shard = await this.getFile(meta.uri);
+      if (shard && shard.pendingReferences && shard.pendingReferences.length > 0) {
+        uris.push(shard.uri);
+      }
+    }
     return uris;
   }
 

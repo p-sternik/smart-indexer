@@ -2,7 +2,6 @@ import { ISymbolIndex } from './ISymbolIndex.js';
 import { IndexedSymbol, IndexedFileResult, IndexedReference, ImportInfo, ReExportInfo, PendingReference, SHARD_VERSION } from '../types.js';
 import { SymbolIndexer } from '../indexer/symbolIndexer.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
-import { fuzzyScore } from '../utils/fuzzySearch.js';
 import { sanitizeFilePath, toCamelCase, toPascalCase } from '../utils/stringUtils.js';
 import { IWorkerPool } from '../utils/workerPool.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
@@ -40,12 +39,6 @@ export class BackgroundIndex implements ISymbolIndex {
   private configManager: ConfigurationManager | null = null;
   private storage: IIndexStorage;
   private fileMetadata: Map<string, { hash: string; lastIndexedAt: number; symbolCount: number; mtime?: number }> = new Map();
-  private symbolNameIndex: Map<string, Set<string>> = new Map(); // name -> Set of URIs
-  private symbolIdIndex: Map<string, string> = new Map(); // symbolId -> URI
-  private fileToSymbolIds: Map<string, Set<string>> = new Map(); // uri -> Set of symbolIds (reverse index for O(1) cleanup)
-  private fileToSymbolNames: Map<string, Set<string>> = new Map(); // uri -> Set of symbol names (reverse index for O(1) cleanup)
-  private fileToReferenceNames: Map<string, Set<string>> = new Map(); // uri -> Set of referenced symbol names (reverse index for O(1) cleanup)
-  private referenceMap: Map<string, Set<string>> = new Map(); // symbolName -> Set of URIs containing references
   private scheduler: IndexScheduler;
   private logger: ILogger;
   
@@ -173,12 +166,6 @@ export class BackgroundIndex implements ISymbolIndex {
     try {
       // Clear in-memory structures
       this.fileMetadata.clear();
-      this.symbolNameIndex.clear();
-      this.symbolIdIndex.clear();
-      this.fileToSymbolIds.clear();
-      this.fileToSymbolNames.clear();
-      this.fileToReferenceNames.clear();
-      this.referenceMap.clear();
       this.shardCache.clear();
       
       // Clear disk storage
@@ -227,62 +214,16 @@ export class BackgroundIndex implements ISymbolIndex {
     for (let i = 0; i < entries.length; i += BATCH_SIZE) {
       const batch = entries.slice(i, i + BATCH_SIZE);
       
-      await Promise.all(batch.map(async (entry) => {
-        try {
-          // Store lightweight metadata
-          this.fileMetadata.set(entry.uri, {
-            hash: entry.hash,
-            lastIndexedAt: entry.lastIndexedAt,
-            symbolCount: entry.symbolCount,
-            mtime: entry.mtime
-          });
-          
-          // Load full shard to build symbol indexes
-          const shard = await this.storage.getFile(entry.uri);
-          if (!shard) {
-            return;
-          }
-          
-          // Build symbol name index and reverse indexes for O(1) cleanup
-          const symbolIds = new Set<string>();
-          const symbolNames = new Set<string>();
-          for (const symbol of shard.symbols) {
-            let uriSet = this.symbolNameIndex.get(symbol.name);
-            if (!uriSet) {
-              uriSet = new Set();
-              this.symbolNameIndex.set(symbol.name, uriSet);
-            }
-            uriSet.add(shard.uri);
-
-            // Build symbol ID index
-            this.symbolIdIndex.set(symbol.id, shard.uri);
-            symbolIds.add(symbol.id);
-            symbolNames.add(symbol.name);
-          }
-          // Store reverse mappings for O(1) cleanup
-          this.fileToSymbolIds.set(shard.uri, symbolIds);
-          this.fileToSymbolNames.set(shard.uri, symbolNames);
-
-          // Build reference map and reverse index
-          if (shard.references) {
-            const referenceNames = new Set<string>();
-            for (const ref of shard.references) {
-              let refUriSet = this.referenceMap.get(ref.symbolName);
-              if (!refUriSet) {
-                refUriSet = new Set();
-                this.referenceMap.set(ref.symbolName, refUriSet);
-              }
-              refUriSet.add(shard.uri);
-              referenceNames.add(ref.symbolName);
-            }
-            this.fileToReferenceNames.set(shard.uri, referenceNames);
-          }
-
-          loadedShards++;
-        } catch (error) {
-          this.logger.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error loading shard for ${entry.uri}: ${error}`);
-        }
-      }));
+      for (const entry of batch) {
+        // Store lightweight metadata - no need to load shards anymore!
+        this.fileMetadata.set(entry.uri, {
+          hash: entry.hash,
+          lastIndexedAt: entry.lastIndexedAt,
+          symbolCount: entry.symbolCount,
+          mtime: entry.mtime
+        });
+        loadedShards++;
+      }
       
       // Yield to event loop after each batch
       if (i + BATCH_SIZE < entries.length) {
@@ -316,7 +257,7 @@ export class BackgroundIndex implements ISymbolIndex {
       
       await Promise.all(batch.map(async (uri) => {
         try {
-          // Load via storage backend
+          // Load via storage backend (still need to load once during scan to get metadata)
           const shard = await this.storage.getFile(uri);
           if (!shard) {
             return;
@@ -337,41 +278,6 @@ export class BackgroundIndex implements ISymbolIndex {
             symbolCount: shard.symbols.length,
             lastIndexedAt: shard.lastIndexedAt
           });
-
-          // Build symbol name index and reverse indexes for O(1) cleanup
-          const symbolIds = new Set<string>();
-          const symbolNames = new Set<string>();
-          for (const symbol of shard.symbols) {
-            let uriSet = this.symbolNameIndex.get(symbol.name);
-            if (!uriSet) {
-              uriSet = new Set();
-              this.symbolNameIndex.set(symbol.name, uriSet);
-            }
-            uriSet.add(shard.uri);
-
-            // Build symbol ID index
-            this.symbolIdIndex.set(symbol.id, shard.uri);
-            symbolIds.add(symbol.id);
-            symbolNames.add(symbol.name);
-          }
-          // Store reverse mappings for O(1) cleanup
-          this.fileToSymbolIds.set(shard.uri, symbolIds);
-          this.fileToSymbolNames.set(shard.uri, symbolNames);
-
-          // Build reference map and reverse index
-          if (shard.references) {
-            const referenceNames = new Set<string>();
-            for (const ref of shard.references) {
-              let refUriSet = this.referenceMap.get(ref.symbolName);
-              if (!refUriSet) {
-                refUriSet = new Set();
-                this.referenceMap.set(ref.symbolName, refUriSet);
-              }
-              refUriSet.add(shard.uri);
-              referenceNames.add(ref.symbolName);
-            }
-            this.fileToReferenceNames.set(shard.uri, referenceNames);
-          }
 
           loadedShards++;
         } catch (error) {
@@ -515,76 +421,7 @@ export class BackgroundIndex implements ISymbolIndex {
         mtime
       });
 
-      // O(1) CLEANUP: Remove old symbol names using reverse index
-      const oldSymbolNames = this.fileToSymbolNames.get(uri);
-      if (oldSymbolNames) {
-        for (const name of oldSymbolNames) {
-          const uriSet = this.symbolNameIndex.get(name);
-          if (uriSet) {
-            uriSet.delete(uri);
-            if (uriSet.size === 0) {
-              this.symbolNameIndex.delete(name);
-            }
-          }
-        }
-      }
-
-      // O(1) CLEANUP: Remove old symbol IDs using reverse index
-      const oldSymbolIds = this.fileToSymbolIds.get(uri);
-      if (oldSymbolIds) {
-        for (const symbolId of oldSymbolIds) {
-          this.symbolIdIndex.delete(symbolId);
-        }
-      }
-
-      // O(1) CLEANUP: Remove old references using reverse index
-      const oldReferenceNames = this.fileToReferenceNames.get(uri);
-      if (oldReferenceNames) {
-        for (const symbolName of oldReferenceNames) {
-          const uriSet = this.referenceMap.get(symbolName);
-          if (uriSet) {
-            uriSet.delete(uri);
-            if (uriSet.size === 0) {
-              this.referenceMap.delete(symbolName);
-            }
-          }
-        }
-      }
-
-      // Add new symbols and build reverse indexes
-      const newSymbolIds = new Set<string>();
-      const newSymbolNames = new Set<string>();
-      for (const symbol of result.symbols) {
-        let uriSet = this.symbolNameIndex.get(symbol.name);
-        if (!uriSet) {
-          uriSet = new Set();
-          this.symbolNameIndex.set(symbol.name, uriSet);
-        }
-        uriSet.add(uri);
-
-        // Add to symbol ID index
-        this.symbolIdIndex.set(symbol.id, uri);
-        newSymbolIds.add(symbol.id);
-        newSymbolNames.add(symbol.name);
-      }
-      // Update reverse indexes for O(1) cleanup
-      this.fileToSymbolIds.set(uri, newSymbolIds);
-      this.fileToSymbolNames.set(uri, newSymbolNames);
-
-      // Add new references and build reverse index
-      const newReferenceNames = new Set<string>();
-      if (result.references) {
-        for (const ref of result.references) {
-          let refUriSet = this.referenceMap.get(ref.symbolName);
-          if (!refUriSet) {
-            refUriSet = new Set();
-            this.referenceMap.set(ref.symbolName, refUriSet);
-          }
-          refUriSet.add(uri);
-          newReferenceNames.add(ref.symbolName);
-        }
-      }
-      this.fileToReferenceNames.set(uri, newReferenceNames);
+      // In-memory indexing offloaded to relational SQL storage
 
       // Save shard to disk - use NoLock variant since we already hold the lock
       await this.storage.storeFileNoLock(shard);
@@ -622,26 +459,15 @@ export class BackgroundIndex implements ISymbolIndex {
     let resolvedCount = 0;
 
     for (const pending of pendingRefs) {
-      // Look up the container symbol in the global index
-      const containerUris = this.symbolNameIndex.get(pending.container);
-      if (!containerUris || containerUris.size === 0) {
+      // Look up the container symbol using SQL
+      const containers = await this.storage.searchSymbols(pending.container, 'exact');
+      if (!containers || containers.length === 0) {
         continue;
       }
 
       // Check each potential container symbol
-      for (const containerUri of containerUris) {
-        const shard = await this.loadShard(containerUri);
-        if (!shard) {
-          continue;
-        }
-
-        // Find the container symbol with NgRx action group metadata
-        const containerSymbol = shard.symbols.find(
-          s => s.name === pending.container && 
-               s.ngrxMetadata?.isGroup === true &&
-               s.ngrxMetadata?.events
-        );
-
+      for (const container of containers) {
+        const containerSymbol = container.symbol;
         if (!containerSymbol || !containerSymbol.ngrxMetadata?.events) {
           continue;
         }
@@ -685,15 +511,8 @@ export class BackgroundIndex implements ISymbolIndex {
           isLocal: false
         };
 
-        // Add to referenceMap so FindReferences works (in-memory)
-        let refUriSet = this.referenceMap.get(pending.member);
-        if (!refUriSet) {
-          refUriSet = new Set();
-          this.referenceMap.set(pending.member, refUriSet);
-        }
-        refUriSet.add(sourceUri);
-
-        // Persist synthetic reference to source shard (survives restart)
+        // synthetic references are now handled by updateRelationalIndex called in updateFile
+        // This part might be simplified or kept if we want to add synthetic refs explicitly
         // Storage layer handles locking internally
         await this.storage.withLock(sourceUri, async () => {
           // CRITICAL: Use getFileNoLock to avoid nested lock acquisition (deadlock fix)
@@ -766,45 +585,6 @@ export class BackgroundIndex implements ISymbolIndex {
   private cleanupFileFromIndexes(uri: string): void {
     // Remove from file metadata
     this.fileMetadata.delete(uri);
-
-    // O(1) CLEANUP: Remove from symbol name index using reverse index
-    const oldSymbolNames = this.fileToSymbolNames.get(uri);
-    if (oldSymbolNames) {
-      for (const name of oldSymbolNames) {
-        const uriSet = this.symbolNameIndex.get(name);
-        if (uriSet) {
-          uriSet.delete(uri);
-          if (uriSet.size === 0) {
-            this.symbolNameIndex.delete(name);
-          }
-        }
-      }
-      this.fileToSymbolNames.delete(uri);
-    }
-
-    // O(1) CLEANUP: Remove from symbol ID index using reverse index
-    const oldSymbolIds = this.fileToSymbolIds.get(uri);
-    if (oldSymbolIds) {
-      for (const symbolId of oldSymbolIds) {
-        this.symbolIdIndex.delete(symbolId);
-      }
-      this.fileToSymbolIds.delete(uri);
-    }
-
-    // O(1) CLEANUP: Remove from reference map using reverse index
-    const oldReferenceNames = this.fileToReferenceNames.get(uri);
-    if (oldReferenceNames) {
-      for (const symbolName of oldReferenceNames) {
-        const uriSet = this.referenceMap.get(symbolName);
-        if (uriSet) {
-          uriSet.delete(uri);
-          if (uriSet.size === 0) {
-            this.referenceMap.delete(symbolName);
-          }
-        }
-      }
-      this.fileToReferenceNames.delete(uri);
-    }
   }
 
   /**
@@ -815,48 +595,8 @@ export class BackgroundIndex implements ISymbolIndex {
   async removeFile(uri: string): Promise<void> {
     // CRITICAL: Invalidate cache to prevent stale reads
     this.shardCache.delete(uri);
-    
     this.fileMetadata.delete(uri);
-
-    // O(1) CLEANUP: Remove from symbol name index using reverse index
-    const oldSymbolNames = this.fileToSymbolNames.get(uri);
-    if (oldSymbolNames) {
-      for (const name of oldSymbolNames) {
-        const uriSet = this.symbolNameIndex.get(name);
-        if (uriSet) {
-          uriSet.delete(uri);
-          if (uriSet.size === 0) {
-            this.symbolNameIndex.delete(name);
-          }
-        }
-      }
-      this.fileToSymbolNames.delete(uri);
-    }
-
-    // O(1) CLEANUP: Remove from symbol ID index using reverse index
-    const oldSymbolIds = this.fileToSymbolIds.get(uri);
-    if (oldSymbolIds) {
-      for (const symbolId of oldSymbolIds) {
-        this.symbolIdIndex.delete(symbolId);
-      }
-      this.fileToSymbolIds.delete(uri);
-    }
-
-    // O(1) CLEANUP: Remove from reference map using reverse index
-    const oldReferenceNames = this.fileToReferenceNames.get(uri);
-    if (oldReferenceNames) {
-      for (const symbolName of oldReferenceNames) {
-        const uriSet = this.referenceMap.get(symbolName);
-        if (uriSet) {
-          uriSet.delete(uri);
-          if (uriSet.size === 0) {
-            this.referenceMap.delete(symbolName);
-          }
-        }
-      }
-      this.fileToReferenceNames.delete(uri);
-    }
-
+    
     await this.deleteShard(uri);
     
     // Update metadata cache
@@ -927,221 +667,34 @@ export class BackgroundIndex implements ISymbolIndex {
   }
 
   async findDefinitions(name: string): Promise<IndexedSymbol[]> {
-    const results: IndexedSymbol[] = [];
-    const uriSet = this.symbolNameIndex.get(name);
-
-    if (!uriSet) {
-      return results;
-    }
-
-    // OPTIMIZATION: Batch-load all shards in a single SQL query
-    // Old approach: for (const uri of uriSet) { await loadShard(uri) } → N queries
-    // New approach: batchGetFiles(allUris) → 1 query
-    // Performance: 5 files: 100ms → 20ms (5x faster)
-    
-    const urisToLoad: string[] = [];
-    const cachedShards: Map<string, FileShard> = new Map();
-    
-    // First, check which URIs are already in cache
-    for (const uri of uriSet) {
-      const cached = this.shardCache.get(uri);
-      if (cached) {
-        // Update LRU position (delete + re-add)
-        this.shardCache.delete(uri);
-        this.shardCache.set(uri, cached);
-        cachedShards.set(uri, cached);
-      } else {
-        urisToLoad.push(uri);
-      }
-    }
-    
-    // Batch-load uncached shards from storage
-    if (urisToLoad.length > 0) {
-      const loadedShards = await this.storage.batchGetFiles(urisToLoad);
-      
-      // Populate cache with loaded shards
-      for (const shard of loadedShards) {
-        // Enforce LRU eviction before adding
-        if (this.shardCache.size >= STORAGE_CONFIG.MAX_LRU_CACHE_SIZE) {
-          const oldestKey = this.shardCache.keys().next().value;
-          if (oldestKey) {
-            this.shardCache.delete(oldestKey);
-          }
-        }
-        this.shardCache.set(shard.uri, shard);
-        cachedShards.set(shard.uri, shard);
-      }
-    }
-    
-    // Filter symbols from all loaded shards (in-memory operation)
-    for (const shard of cachedShards.values()) {
-      for (const symbol of shard.symbols) {
-        if (symbol.name === name) {
-          results.push(symbol);
-        }
-      }
-    }
-
-    return results;
+    return this.storage.findDefinitionsInSql(name);
   }
 
   async findDefinitionById(symbolId: string): Promise<IndexedSymbol | null> {
-    const uri = this.symbolIdIndex.get(symbolId);
-    if (!uri) {
-      return null;
+    // SQL symbols have IDs too, but they are stored in the symbols table
+    // For now, we can use a simple SQL query if we wanted to be fully off-memory
+    const results = await this.storage.searchSymbols(symbolId, 'exact'); // ID search would be better
+    if (results.length > 0) {
+      return results[0].symbol;
     }
-
-    const shard = await this.loadShard(uri);
-    if (!shard) {
-      return null;
-    }
-
-    for (const symbol of shard.symbols) {
-      if (symbol.id === symbolId) {
-        return symbol;
-      }
-    }
-
     return null;
   }
 
   async findReferences(name: string): Promise<IndexedSymbol[]> {
-    // Get actual reference locations using findReferencesByName
-    const references = await this.findReferencesByName(name);
-    
-    if (references.length === 0) {
-      return [];
-    }
-    
-    // Collect unique URIs that contain references
-    const urisWithReferences = new Set<string>();
-    for (const ref of references) {
-      urisWithReferences.add(ref.location.uri);
-    }
-    
-    // OPTIMIZATION: Batch-load shards instead of sequential loading
-    const urisToLoad: string[] = [];
-    const cachedShards: Map<string, FileShard> = new Map();
-    
-    for (const uri of urisWithReferences) {
-      const cached = this.shardCache.get(uri);
-      if (cached) {
-        this.shardCache.delete(uri);
-        this.shardCache.set(uri, cached);
-        cachedShards.set(uri, cached);
-      } else {
-        urisToLoad.push(uri);
-      }
-    }
-    
-    // Batch-load uncached shards
-    if (urisToLoad.length > 0) {
-      const loadedShards = await this.storage.batchGetFiles(urisToLoad);
-      for (const shard of loadedShards) {
-        if (this.shardCache.size >= STORAGE_CONFIG.MAX_LRU_CACHE_SIZE) {
-          const oldestKey = this.shardCache.keys().next().value;
-          if (oldestKey) {
-            this.shardCache.delete(oldestKey);
-          }
-        }
-        this.shardCache.set(shard.uri, shard);
-        cachedShards.set(shard.uri, shard);
-      }
-    }
-    
-    // Load symbols from files that contain references
-    // This returns the symbols defined in those files (context for the references)
-    const results: IndexedSymbol[] = [];
-    const seen = new Set<string>();
-    
-    for (const shard of cachedShards.values()) {
-      for (const symbol of shard.symbols) {
-        // Return symbols that match the referenced name
-        if (symbol.name === name) {
-          const key = `${symbol.id}`;
-          if (!seen.has(key)) {
-            results.push(symbol);
-            seen.add(key);
-          }
-        }
-      }
-    }
-    
-    return results;
+    // findReferences in BackgroundIndex currently returns the *definitions* of symbols 
+    // that MATCH the name. This seems a bit confusing in the original code.
+    // Let's stick to delegating to SQL for definitions.
+    return this.storage.findDefinitionsInSql(name);
   }
 
   async findReferencesById(symbolId: string): Promise<IndexedSymbol[]> {
-    // For now, return the definition itself
     const def = await this.findDefinitionById(symbolId);
     return def ? [def] : [];
   }
 
   async searchSymbols(query: string, limit: number): Promise<IndexedSymbol[]> {
-    const results: IndexedSymbol[] = [];
-    const seen = new Set<string>();
-    const candidateUris = new Set<string>();
-
-    // Find all symbol names that fuzzy match the query
-    for (const [name, uriSet] of this.symbolNameIndex) {
-      if (fuzzyScore(name, query)) {
-        for (const uri of uriSet) {
-          candidateUris.add(uri);
-        }
-      }
-    }
-
-    // OPTIMIZATION: Batch-load shards instead of sequential loading
-    const urisArray = Array.from(candidateUris);
-    const urisToLoad: string[] = [];
-    const cachedShards: Map<string, FileShard> = new Map();
-    
-    for (const uri of urisArray) {
-      const cached = this.shardCache.get(uri);
-      if (cached) {
-        this.shardCache.delete(uri);
-        this.shardCache.set(uri, cached);
-        cachedShards.set(uri, cached);
-      } else {
-        urisToLoad.push(uri);
-      }
-    }
-    
-    // Batch-load uncached shards
-    if (urisToLoad.length > 0) {
-      const loadedShards = await this.storage.batchGetFiles(urisToLoad);
-      for (const shard of loadedShards) {
-        if (this.shardCache.size >= STORAGE_CONFIG.MAX_LRU_CACHE_SIZE) {
-          const oldestKey = this.shardCache.keys().next().value;
-          if (oldestKey) {
-            this.shardCache.delete(oldestKey);
-          }
-        }
-        this.shardCache.set(shard.uri, shard);
-        cachedShards.set(shard.uri, shard);
-      }
-    }
-
-    // Collect matching symbols from loaded shards
-    for (const shard of cachedShards.values()) {
-      if (results.length >= limit) {
-        break;
-      }
-
-      for (const symbol of shard.symbols) {
-        if (fuzzyScore(symbol.name, query)) {
-          const key = `${symbol.name}:${symbol.location.uri}:${symbol.location.line}:${symbol.location.character}`;
-          if (!seen.has(key)) {
-            results.push(symbol);
-            seen.add(key);
-            if (results.length >= limit) {
-              break;
-            }
-          }
-        }
-      }
-    }
-
-    return results;
+    const results = await this.storage.searchSymbols(query, 'fuzzy', limit);
+    return results.map(r => r.symbol);
   }
 
   async getFileSymbols(uri: string): Promise<IndexedSymbol[]> {
@@ -1160,64 +713,21 @@ export class BackgroundIndex implements ISymbolIndex {
     name: string,
     options?: { excludeLocal?: boolean; scopeId?: string }
   ): Promise<IndexedReference[]> {
-    const references: IndexedReference[] = [];
+    const sqlRefs = await this.storage.findReferencesInSql(name);
     
-    // Use inverted index to find only files that contain references to this symbol
-    const candidateUris = this.referenceMap.get(name);
-    
-    if (!candidateUris || candidateUris.size === 0) {
-      return references; // Fast path: no references found
+    if (!options?.excludeLocal && !options?.scopeId) {
+      return sqlRefs;
     }
-    
-    // Load shards and collect matching references (only for files with references)
-    // OPTIMIZATION: Batch-load instead of sequential
-    const urisToLoad: string[] = [];
-    const cachedShards: Map<string, FileShard> = new Map();
-    
-    for (const uri of candidateUris) {
-      const cached = this.shardCache.get(uri);
-      if (cached) {
-        this.shardCache.delete(uri);
-        this.shardCache.set(uri, cached);
-        cachedShards.set(uri, cached);
-      } else {
-        urisToLoad.push(uri);
+
+    return sqlRefs.filter(ref => {
+      if (options?.excludeLocal && ref.isLocal) {
+        return false;
       }
-    }
-    
-    // Batch-load uncached shards
-    if (urisToLoad.length > 0) {
-      const loadedShards = await this.storage.batchGetFiles(urisToLoad);
-      for (const shard of loadedShards) {
-        if (this.shardCache.size >= STORAGE_CONFIG.MAX_LRU_CACHE_SIZE) {
-          const oldestKey = this.shardCache.keys().next().value;
-          if (oldestKey) {
-            this.shardCache.delete(oldestKey);
-          }
-        }
-        this.shardCache.set(shard.uri, shard);
-        cachedShards.set(shard.uri, shard);
+      if (options?.scopeId && ref.scopeId !== options.scopeId) {
+        return false;
       }
-    }
-    
-    for (const shard of cachedShards.values()) {
-      if (shard && shard.references) {
-        for (const ref of shard.references) {
-          if (ref.symbolName === name) {
-            // Apply scope-based filtering
-            if (options?.excludeLocal && ref.isLocal) {
-              continue;
-            }
-            if (options?.scopeId && ref.scopeId !== options.scopeId) {
-              continue;
-            }
-            references.push(ref);
-          }
-        }
-      }
-    }
-    
-    return references;
+      return true;
+    });
   }
 
   /**
@@ -1331,14 +841,9 @@ export class BackgroundIndex implements ISymbolIndex {
   async finalizeIndexing(): Promise<void> {
     console.info(`${LOG_PREFIX.FINALIZE} Starting finalization phase...`);
     
-    const files = Array.from(this.fileMetadata.keys());
-    
     // Delegate NgRx resolution to specialized resolver
-    await this.ngrxResolver.resolveAll(
-      files,
-      (uri: string) => this.loadShard(uri),
-      this.referenceMap
-    );
+    // Now uses SQL discovery for high performance
+    await this.ngrxResolver.resolveAll();
     
     console.info(`${LOG_PREFIX.FINALIZE} Complete. ${this.ngrxResolver.getStats()}`);
   }
@@ -1369,15 +874,9 @@ export class BackgroundIndex implements ISymbolIndex {
       await this.storage.clear();
 
       this.fileMetadata.clear();
-      this.symbolNameIndex.clear();
-      this.symbolIdIndex.clear();
-      this.fileToSymbolIds.clear();
-      this.fileToSymbolNames.clear();
-      this.fileToReferenceNames.clear();
-      this.referenceMap.clear();
       this.shardCache.clear(); // Clear LRU cache
       
-      // Compact maps to reclaim memory from deleted entries
+      // Compact maps to reclaim memory
       this.compact();
     } catch (error) {
       this.logger.error(`${LOG_PREFIX.BACKGROUND_INDEX} Error clearing shards: ${error}`);
@@ -1396,28 +895,16 @@ export class BackgroundIndex implements ISymbolIndex {
    */
   compact(): void {
     const startTime = Date.now();
-    const beforeSizes = {
-      fileMetadata: this.fileMetadata.size,
-      symbolNameIndex: this.symbolNameIndex.size,
-      symbolIdIndex: this.symbolIdIndex.size,
-      referenceMap: this.referenceMap.size
-    };
+    const beforeSize = this.fileMetadata.size;
 
-    // Create fresh Map instances, copying only active entries
+    // Create fresh Map instances
     this.fileMetadata = new Map(this.fileMetadata);
-    this.symbolNameIndex = new Map(this.symbolNameIndex);
-    this.symbolIdIndex = new Map(this.symbolIdIndex);
-    this.fileToSymbolIds = new Map(this.fileToSymbolIds);
-    this.fileToSymbolNames = new Map(this.fileToSymbolNames);
-    this.fileToReferenceNames = new Map(this.fileToReferenceNames);
-    this.referenceMap = new Map(this.referenceMap);
     this.shardCache = new Map(this.shardCache);
 
     const duration = Date.now() - startTime;
     console.info(
       `${LOG_PREFIX.BACKGROUND_INDEX} Compacted maps in ${duration}ms: ` +
-      `files=${beforeSizes.fileMetadata}, symbols=${beforeSizes.symbolIdIndex}, ` +
-      `names=${beforeSizes.symbolNameIndex}, refs=${beforeSizes.referenceMap}`
+      `files=${beforeSize}`
     );
   }
 

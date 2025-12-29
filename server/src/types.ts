@@ -54,6 +54,14 @@ export interface IndexedSymbol {
   metadata?: Record<string, unknown>;
   /** Flag to distinguish definitions (true) from usages/references (false). Used for precise "Go to Definition" filtering. */
   isDefinition?: boolean;
+  /** Access modifier for class members */
+  visibility?: 'public' | 'protected' | 'private';
+  /** Whether the symbol is exported from the module */
+  isExported?: boolean;
+  /** Names of interfaces this class/interface implements/extends */
+  implements?: string[];
+  /** Name of the base class this class extends */
+  extends?: string;
 }
 
 /**
@@ -74,6 +82,10 @@ export interface CompactSymbol {
   nx?: NgRxMetadata; // ngrxMetadata (deprecated, for backwards compat)
   md?: Record<string, unknown>; // metadata (generic plugin metadata)
   d?: boolean; // isDefinition (true for definitions, false/undefined for references)
+  v?: number;  // visibility (0=public, 1=protected, 2=private)
+  e?: boolean; // isExported
+  im?: string[]; // implements
+  ex?: string;   // extends
 }
 
 export interface IndexedReference {
@@ -211,6 +223,12 @@ export function compactSymbol(sym: IndexedSymbol): CompactSymbol {
   if (sym.ngrxMetadata) { compact.nx = sym.ngrxMetadata; }
   if (sym.metadata && Object.keys(sym.metadata).length > 0) { compact.md = sym.metadata; }
   if (sym.isDefinition !== undefined) { compact.d = sym.isDefinition; }
+  if (sym.visibility) { 
+    compact.v = sym.visibility === 'public' ? 0 : (sym.visibility === 'protected' ? 1 : 2); 
+  }
+  if (sym.isExported) { compact.e = sym.isExported; }
+  if (sym.implements && sym.implements.length > 0) { compact.im = sym.implements; }
+  if (sym.extends) { compact.ex = sym.extends; }
   return compact;
 }
 
@@ -237,7 +255,11 @@ export function hydrateSymbol(compact: CompactSymbol, uri: string): IndexedSymbo
     parametersCount: compact.pc,
     ngrxMetadata: compact.nx,
     metadata: compact.md,
-    isDefinition: compact.d
+    isDefinition: compact.d,
+    visibility: compact.v === undefined ? undefined : (compact.v === 0 ? 'public' : (compact.v === 1 ? 'protected' : 'private')),
+    isExported: compact.e,
+    implements: compact.im,
+    extends: compact.ex
   };
 }
 

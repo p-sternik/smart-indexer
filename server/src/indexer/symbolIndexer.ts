@@ -206,7 +206,8 @@ export class SymbolIndexer {
     containerKind?: string,
     containerPath: string[] = [],
     imports: ImportInfo[] = [],
-    scopeTracker?: ScopeTracker
+    scopeTracker?: ScopeTracker,
+    parentNode?: TSESTree.Node
   ): void {
     if (!node || !node.loc) {return;}
 
@@ -287,6 +288,54 @@ export class SymbolIndexer {
           if ((node as TSESTree.ClassDeclaration).id?.name) {
             symbolName = (node as TSESTree.ClassDeclaration).id!.name;
             symbolKind = 'class';
+            const classNode = node as TSESTree.ClassDeclaration;
+            
+            // Push symbol immediately to include heritage info
+            const fullContainerPath = containerPath.length > 0 ? containerPath.join('.') : undefined;
+            const id = createSymbolId(
+              uri,
+              symbolName,
+              containerName,
+              fullContainerPath,
+              symbolKind,
+              false,
+              undefined,
+              node.loc.start.line - 1,
+              node.loc.start.column
+            );
+
+            symbols.push({
+              id,
+              name: symbolName,
+              kind: symbolKind,
+              location: {
+                uri,
+                line: node.loc.start.line - 1,
+                character: node.loc.start.column
+              },
+              range: {
+                startLine: node.loc.start.line - 1,
+                startCharacter: node.loc.start.column,
+                endLine: node.loc.end.line - 1,
+                endCharacter: node.loc.end.column
+              },
+              containerName,
+              containerKind,
+              fullContainerPath,
+              filePath: uri,
+              isDefinition: true,
+              isExported: this.isNodeExported(parentNode),
+              implements: this.getImplementedInterfaces(classNode),
+              extends: this.getExtendedClass(classNode)
+            });
+
+            // Prevent duplicate push at end of method
+            symbolName = undefined; 
+            symbolKind = undefined;
+            
+            // Allow children traversal
+            const newContainerPath = [...containerPath, (node as TSESTree.ClassDeclaration).id!.name];
+            this.traverseChildren(node, symbols, references, uri, (node as TSESTree.ClassDeclaration).id!.name, 'class', newContainerPath, imports, scopeTracker);
           }
           break;
 
@@ -294,6 +343,55 @@ export class SymbolIndexer {
           if ((node as TSESTree.TSInterfaceDeclaration).id?.name) {
             symbolName = (node as TSESTree.TSInterfaceDeclaration).id.name;
             symbolKind = 'interface';
+            
+            const interfaceNode = node as TSESTree.TSInterfaceDeclaration;
+            
+            // Push symbol immediately to include heritage info
+            const fullContainerPath = containerPath.length > 0 ? containerPath.join('.') : undefined;
+            const id = createSymbolId(
+              uri,
+              symbolName,
+              containerName,
+              fullContainerPath,
+              symbolKind,
+              false,
+              undefined,
+              node.loc.start.line - 1,
+              node.loc.start.column
+            );
+
+            symbols.push({
+              id,
+              name: symbolName,
+              kind: symbolKind,
+              location: {
+                uri,
+                line: node.loc.start.line - 1,
+                character: node.loc.start.column
+              },
+              range: {
+                startLine: node.loc.start.line - 1,
+                startCharacter: node.loc.start.column,
+                endLine: node.loc.end.line - 1,
+                endCharacter: node.loc.end.column
+              },
+              containerName,
+              containerKind,
+              fullContainerPath,
+              filePath: uri,
+              isDefinition: true,
+              isExported: this.isNodeExported(parentNode),
+              extends: undefined, // Interfaces don't "extend" classes in the same way, but they extend other interfaces
+              implements: this.getImplementedInterfaces(interfaceNode) // Treat interface extension as implementation for search purposes
+            });
+
+            // Prevent duplicate push
+            symbolName = undefined;
+            symbolKind = undefined;
+
+            // Allow children traversal
+            const newContainerPath = [...containerPath, (node as TSESTree.TSInterfaceDeclaration).id.name];
+            this.traverseChildren(node, symbols, references, uri, (node as TSESTree.TSInterfaceDeclaration).id.name, 'interface', newContainerPath, imports, scopeTracker);
           }
           break;
 
@@ -347,7 +445,8 @@ export class SymbolIndexer {
                 containerKind,
                 fullContainerPath,
                 filePath: uri,
-                isDefinition: true
+                isDefinition: true,
+                isExported: this.isNodeExported(parentNode)
               });
               
               // If the initializer is an object literal, index its properties as nested symbols
@@ -402,7 +501,8 @@ export class SymbolIndexer {
               isStatic: methodStatic,
               parametersCount: methodParams,
               filePath: uri,
-              isDefinition: true
+              isDefinition: true,
+              visibility: this.getNodeVisibility(node as TSESTree.MethodDefinition)
             });
             needsScopeTracking = true;
           }
@@ -445,7 +545,8 @@ export class SymbolIndexer {
               fullContainerPath,
               isStatic: propStatic,
               filePath: uri,
-              isDefinition: true
+              isDefinition: true,
+              visibility: this.getNodeVisibility(node as TSESTree.PropertyDefinition)
             });
           }
           break;
@@ -485,7 +586,11 @@ export class SymbolIndexer {
           isStatic,
           parametersCount,
           filePath: uri,
-          isDefinition: true
+          isDefinition: true,
+          isExported: this.isNodeExported(parentNode),
+          visibility: node.type === AST_NODE_TYPES.MethodDefinition || node.type === AST_NODE_TYPES.PropertyDefinition 
+            ? this.getNodeVisibility(node as TSESTree.MethodDefinition | TSESTree.PropertyDefinition) 
+            : undefined
         });
 
         const newContainer = symbolName;
@@ -525,11 +630,11 @@ export class SymbolIndexer {
             if (Array.isArray(child)) {
               for (const item of child) {
                 if (item && typeof item === 'object' && item.type) {
-                  this.traverseAST(item, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker);
+                  this.traverseAST(item, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node);
                 }
               }
             } else if (child.type) {
-              this.traverseAST(child, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker);
+              this.traverseAST(child, symbols, references, uri, newContainer, newContainerKind, newContainerPath, imports, scopeTracker, node);
             }
           }
         }
@@ -545,11 +650,11 @@ export class SymbolIndexer {
             if (Array.isArray(child)) {
               for (const item of child) {
                 if (item && typeof item === 'object' && item.type) {
-                  this.traverseAST(item, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker);
+                  this.traverseAST(item, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node);
                 }
               }
             } else if (child.type) {
-              this.traverseAST(child, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker);
+              this.traverseAST(child, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node);
             }
           }
         }
@@ -690,5 +795,77 @@ export class SymbolIndexer {
       }
 
     return symbols;
+    }
+
+  private traverseChildren(
+    node: TSESTree.Node,
+    symbols: IndexedSymbol[],
+    references: IndexedReference[],
+    uri: string,
+    containerName: string | undefined,
+    containerKind: string | undefined,
+    containerPath: string[],
+    imports: ImportInfo[],
+    scopeTracker?: ScopeTracker
+  ): void {
+     for (const key in node) {
+      const child = (node as any)[key];
+      if (child && typeof child === 'object') {
+        if (Array.isArray(child)) {
+          for (const item of child) {
+            if (item && typeof item === 'object' && item.type) {
+              this.traverseAST(item, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node);
+            }
+          }
+        } else if (child.type) {
+          this.traverseAST(child, symbols, references, uri, containerName, containerKind, containerPath, imports, scopeTracker, node);
+        }
+      }
+    }
+  }
+
+  private isNodeExported(parentNode?: TSESTree.Node): boolean {
+    if (!parentNode) {
+      return false;
+    }
+    return (
+      parentNode.type === AST_NODE_TYPES.ExportNamedDeclaration ||
+      parentNode.type === AST_NODE_TYPES.ExportDefaultDeclaration
+    );
+  }
+
+  private getNodeVisibility(node: TSESTree.MethodDefinition | TSESTree.PropertyDefinition): 'public' | 'protected' | 'private' {
+    return node.accessibility || 'public';
+  }
+
+  private getImplementedInterfaces(node: TSESTree.ClassDeclaration | TSESTree.TSInterfaceDeclaration): string[] {
+    const interfaces: string[] = [];
+    
+    // Classes have 'implements'
+    if (node.type === AST_NODE_TYPES.ClassDeclaration && node.implements) {
+      for (const impl of node.implements) {
+        if (impl.expression.type === AST_NODE_TYPES.Identifier) {
+          interfaces.push(impl.expression.name);
+        }
+      }
+    }
+    
+    // For interfaces, 'extends' behaves like 'implements' in terms of type compatibility
+    if (node.type === AST_NODE_TYPES.TSInterfaceDeclaration && node.extends) {
+      for (const ext of node.extends) {
+        if (ext.expression.type === AST_NODE_TYPES.Identifier) {
+          interfaces.push(ext.expression.name);
+        }
+      }
+    }
+    return interfaces;
+  }
+
+  private getExtendedClass(node: TSESTree.ClassDeclaration): string | undefined {
+    if (node.superClass && node.superClass.type === AST_NODE_TYPES.Identifier) {
+      return node.superClass.name;
+    }
+    return undefined;
   }
 }
+

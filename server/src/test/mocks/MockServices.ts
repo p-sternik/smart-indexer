@@ -82,10 +82,7 @@ export function createMockServices(
     mergedIndex: mergedIndex as any,
     profiler: new Profiler(),
     statsManager: new StatsManager(),
-    typeScriptService: {
-      isInitialized: () => false,
-      getSymbolDetails: () => null
-    } as any,
+
     workspaceRoot: '/test/workspace'
   };
 }

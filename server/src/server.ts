@@ -32,7 +32,6 @@ import { NgRxLinkResolver } from './index/resolvers/NgRxLinkResolver.js';
 import { WorkerPool } from './utils/workerPool.js';
 import { Profiler } from './profiler/profiler.js';
 import { FolderHasher } from './cache/folderHasher.js';
-import { TypeScriptService } from './typescript/typeScriptService.js';
 import { LoggerService, LogLevel } from './utils/Logger.js';
 import { RequestTracer } from './utils/RequestTracer.js';
 import * as path from 'path';
@@ -60,6 +59,7 @@ import {
   createHoverHandler,
   createRenameHandler,
   createWorkspaceSymbolHandler,
+  createImplementationHandler,
   DeadCodeHandler
 } from './handlers/index.js';
 
@@ -81,7 +81,6 @@ const symbolIndexer = new SymbolIndexer();
 const languageRouter = new LanguageRouter(symbolIndexer, false);
 const profiler = new Profiler();
 const folderHasher = new FolderHasher();
-const typeScriptService = new TypeScriptService();
 const fileSystem = new FileSystemService();
 
 // Infrastructure components (injected into BackgroundIndex)
@@ -109,14 +108,13 @@ const serverDeps = {
   backgroundIndex,
   mergedIndex,
   statsManager,
-  typeScriptService,
-  languageRouter,
-  fileScanner,
-  gitWatcher,
   folderHasher,
   profiler,
   fileSystem,
-  logger
+  logger,
+  languageRouter,
+  fileScanner,
+  gitWatcher
 };
 
 const serverInitializer = new ServerInitializer(serverDeps);
@@ -156,7 +154,6 @@ const serverServices: ServerServices = {
   dynamicIndex,
   backgroundIndex,
   staticIndex: undefined,
-  typeScriptService,
   importResolver: null,
   deadCodeDetector: null,
   profiler,
@@ -182,6 +179,7 @@ handlerRegistry.register(createCompletionHandler);
 handlerRegistry.register(createHoverHandler);
 handlerRegistry.register(createRenameHandler);
 handlerRegistry.register(createWorkspaceSymbolHandler);
+handlerRegistry.register(createImplementationHandler);
 
 // ============================================================================
 // LSP Lifecycle Handlers
@@ -221,7 +219,6 @@ connection.onInitialized(async () => {
     dynamicIndex,
     backgroundIndex,
     configManager,
-    typeScriptService,
     statsManager,
     logger
   );

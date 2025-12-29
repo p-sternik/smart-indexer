@@ -93,9 +93,6 @@ export class InitializationHandler implements IHandler {
         await this.state.importResolver.init();
         connection.console.info('[Server] Import resolver initialized');
         
-        // Initialize TypeScript service for semantic intelligence
-        await this.services.typeScriptService.init(this.state.workspaceRoot);
-        connection.console.info('[Server] TypeScript service initialized');
       }
 
       // Build capabilities result

@@ -103,6 +103,19 @@ export class CompletionHandler implements IHandler {
 
       for (const sym of symbols) {
         if (!seen.has(sym.name)) {
+          // Filter 1: Private members
+          const isSameFile = sym.filePath === uri;
+          if (sym.visibility === 'private' && !isSameFile) {
+            continue;
+          }
+
+          // Filter 2: Non-exported top-level symbols from other files
+          // We define top-level as having no containerName.
+          // We check explicitly for isExported === false (it might be undefined for older indices or 'text' symbols)
+          if (!sym.containerName && !isSameFile && sym.isExported === false) {
+            continue;
+          }
+
           seen.add(sym.name);
           
           // Attach minimal data for the resolve phase
@@ -120,6 +133,7 @@ export class CompletionHandler implements IHandler {
             label: sym.name,
             kind: this.mapCompletionItemKind(sym.kind),
             detail: this.formatDetail(sym),
+            sortText: this.calculateSortText(sym, uri),
             // Store data for resolve phase
             data: itemData
           });
@@ -162,8 +176,7 @@ export class CompletionHandler implements IHandler {
         };
       }
 
-      // Add sort text to prioritize certain items
-      item.sortText = this.calculateSortText(data);
+
 
       // Add filter text for better fuzzy matching
       item.filterText = data.name;
@@ -216,35 +229,47 @@ export class CompletionHandler implements IHandler {
    * Calculate sort text for ordering completion items.
    * Lower values appear first.
    */
-  private calculateSortText(data: CompletionItemData): string {
-    // Prioritize by kind:
+  private calculateSortText(sym: IndexedSymbol, currentUri: string): string {
+    // Priority levels:
+    // 0: Same file symbols (highest)
+    // 1: Exported symbols from other files
+    // 2: Other symbols (lowest)
+    
+    let scopePriority = '2';
+    if (sym.filePath === currentUri) {
+      scopePriority = '0';
+    } else if (sym.isExported) {
+      scopePriority = '1';
+    }
+
+    // Kind priority within scope
     // 1. Functions/Methods (most likely what user wants)
     // 2. Classes/Interfaces
     // 3. Variables/Constants
     // 4. Others
-    let priority = '5';
+    let kindPriority = '5';
     
-    switch (data.kind) {
+    switch (sym.kind) {
       case 'function':
       case 'method':
-        priority = '1';
+        kindPriority = '1';
         break;
       case 'class':
       case 'interface':
-        priority = '2';
+        kindPriority = '2';
         break;
       case 'variable':
       case 'constant':
-        priority = '3';
+        kindPriority = '3';
         break;
       case 'type':
       case 'enum':
-        priority = '4';
+        kindPriority = '4';
         break;
     }
 
     // Append name for alphabetical sorting within priority
-    return `${priority}${data.name.toLowerCase()}`;
+    return `${scopePriority}${kindPriority}${sym.name.toLowerCase()}`;
   }
 
   /**

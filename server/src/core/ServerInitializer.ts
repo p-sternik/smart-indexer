@@ -16,7 +16,6 @@ import { MergedIndex } from '../index/mergedIndex.js';
 import { StaticIndex } from '../index/staticIndex.js';
 import { StatsManager } from '../index/statsManager.js';
 import { FileWatcher } from '../index/fileWatcher.js';
-import { TypeScriptService } from '../typescript/typeScriptService.js';
 import { DeadCodeDetector } from '../features/deadCode.js';
 import { ImportResolver } from '../indexer/importResolver.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
@@ -53,7 +52,6 @@ export interface ServerDependencies {
   backgroundIndex: BackgroundIndex;
   mergedIndex: MergedIndex;
   statsManager: StatsManager;
-  typeScriptService: TypeScriptService;
   languageRouter: LanguageRouter;
   fileScanner: FileScanner;
   gitWatcher: GitWatcher;
@@ -92,7 +90,7 @@ export class ServerInitializer {
    * Handle LSP initialize request.
    */
   async handleInitialize(params: InitializeParams): Promise<InitializeResult> {
-    const { connection, configManager, typeScriptService, logger } = this.deps;
+    const { connection, configManager, logger } = this.deps;
 
     try {
       connection.console.info('[ServerInitializer] ========== INITIALIZATION START ==========');
@@ -127,8 +125,7 @@ export class ServerInitializer {
         await this.importResolver.init();
         connection.console.info('[ServerInitializer] Import resolver initialized');
         
-        await typeScriptService.init(this.workspaceRoot);
-        connection.console.info('[ServerInitializer] TypeScript service initialized');
+        connection.console.info('[ServerInitializer] Import resolver initialized');
       }
 
       const result: InitializeResult = {

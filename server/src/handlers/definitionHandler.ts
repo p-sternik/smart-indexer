@@ -72,7 +72,7 @@ export class DefinitionHandler implements IHandler {
     const uri = URI.parse(params.textDocument.uri).fsPath;
     const { line, character } = params.position;
     
-    const { documents, mergedIndex, profiler, statsManager, typeScriptService, logger, requestTracer } = this.services;
+    const { documents, mergedIndex, profiler, statsManager, logger, requestTracer } = this.services;
     const { importResolver } = this.state;
     
     // OPTIMIZATION: Check query cache FIRST (0ms latency for repeated clicks)
@@ -156,7 +156,7 @@ export class DefinitionHandler implements IHandler {
             memberAccess.propertyChain,
             fileResolver,
             symbolFinder,
-            typeScriptService.isInitialized() ? typeScriptService : undefined
+            undefined
           );
 
           if (resolved) {

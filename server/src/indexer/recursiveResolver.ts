@@ -1,7 +1,6 @@
 import { parse } from '@typescript-eslint/typescript-estree';
 import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/typescript-estree';
 import { IndexedSymbol } from '../types.js';
-import { TypeScriptService } from '../typescript/typeScriptService.js';
 
 const MAX_RECURSION_DEPTH = 10;
 
@@ -155,7 +154,6 @@ export async function resolvePropertyRecursively(
   propertyChain: string[],
   fileResolver: (uri: string) => Promise<string>,
   symbolFinder: (name: string, uri?: string) => Promise<IndexedSymbol[]>,
-  tsService?: TypeScriptService,
   depth: number = 0,
   visited: Set<string> = new Set()
 ): Promise<ResolvedProperty | null> {
@@ -198,7 +196,6 @@ export async function resolvePropertyRecursively(
       content,
       fileResolver,
       symbolFinder,
-      tsService,
       depth,
       visited
     );
@@ -212,7 +209,6 @@ export async function resolvePropertyRecursively(
           remainingChain,
           fileResolver,
           symbolFinder,
-          tsService,
           depth + 1,
           visited
         );
@@ -233,7 +229,6 @@ async function analyzeSymbolInitializer(
   content: string,
   fileResolver: (uri: string) => Promise<string>,
   symbolFinder: (name: string, uri?: string) => Promise<IndexedSymbol[]>,
-  tsService?: TypeScriptService,
   depth: number = 0,
   visited: Set<string> = new Set()
 ): Promise<ResolvedProperty | null> {
@@ -265,7 +260,6 @@ async function analyzeSymbolInitializer(
         content,
         fileResolver,
         symbolFinder,
-        tsService,
         depth,
         visited
       );
@@ -281,7 +275,6 @@ async function analyzeSymbolInitializer(
           [propertyName],
           fileResolver,
           symbolFinder,
-          tsService,
           depth + 1,
           visited
         );
@@ -289,16 +282,7 @@ async function analyzeSymbolInitializer(
     }
   }
 
-  // Fallback: Try TypeScript service if available
-  if (tsService && tsService.isInitialized()) {
 
-    return resolveWithTypeScript(
-      baseSymbol,
-      propertyName,
-      content,
-      tsService
-    );
-  }
 
   return null;
 }
@@ -370,7 +354,6 @@ async function analyzeFunctionCall(
   _content: string,
   fileResolver: (uri: string) => Promise<string>,
   symbolFinder: (name: string, uri?: string) => Promise<IndexedSymbol[]>,
-  _tsService?: TypeScriptService,
   _depth: number = 0,
   _visited: Set<string> = new Set()
 ): Promise<ResolvedProperty | null> {
@@ -491,35 +474,4 @@ function findReturnStatement(node: TSESTree.Node): TSESTree.ReturnStatement | nu
   return null;
 }
 
-async function resolveWithTypeScript(
-  baseSymbol: IndexedSymbol,
-  _propertyName: string,
-  content: string,
-  tsService: TypeScriptService
-): Promise<ResolvedProperty | null> {
-  try {
-    // Calculate offset for the base symbol
-    const lines = content.split('\n');
-    let offset = 0;
-    for (let i = 0; i < baseSymbol.location.line && i < lines.length; i++) {
-      offset += lines[i].length + 1;
-    }
-    offset += baseSymbol.location.character;
 
-    // Get type information from TypeScript
-    const details = tsService.getSymbolDetails(baseSymbol.location.uri, offset);
-    if (!details) {
-      return null;
-    }
-
-    // Use TypeScript to find the property within the type
-    // This is a simplified implementation - in production, you'd use tsserver's more advanced APIs
-
-    
-    // This would require deeper TypeScript API integration
-    return null;
-  } catch (error) {
-
-    return null;
-  }
-}

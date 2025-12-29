@@ -3,7 +3,6 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { URI } from 'vscode-uri';
 import { DynamicIndex } from '../index/dynamicIndex.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
-import { TypeScriptService } from '../typescript/typeScriptService.js';
 import { StatsManager } from '../index/statsManager.js';
 import { BackgroundIndex } from '../index/backgroundIndex.js';
 import { DeadCodeHandler } from '../handlers/deadCodeHandler.js';
@@ -23,7 +22,6 @@ export class DocumentEventHandler {
     private readonly dynamicIndex: DynamicIndex,
     private readonly backgroundIndex: BackgroundIndex,
     private readonly configManager: ConfigurationManager,
-    private readonly typeScriptService: TypeScriptService,
     private readonly statsManager: StatsManager,
     private readonly logger: ILogger,
     private deadCodeHandler: DeadCodeHandler | null = null
@@ -79,10 +77,7 @@ export class DocumentEventHandler {
         await this.dynamicIndex.updateFile(uri, content);
       }
       
-      // Update TypeScript service for semantic intelligence
-      if (this.typeScriptService.isInitialized()) {
-        this.typeScriptService.updateFile(uri, content);
-      }
+
       
       // NOTE: Dead code analysis removed from didOpen - only run on didSave to avoid blocking
       
@@ -124,10 +119,7 @@ export class DocumentEventHandler {
             await this.dynamicIndex.updateFile(uri, content);
           }
           
-          // Update TypeScript service for semantic intelligence
-          if (this.typeScriptService.isInitialized()) {
-            this.typeScriptService.updateFile(uri, content);
-          }
+
           
           this.updateStats();
           this.connection.console.info(`[DocumentEventHandler] Dynamic index updated for: ${uri}`);

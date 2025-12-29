@@ -12,7 +12,6 @@ import { DynamicIndex } from '../index/dynamicIndex.js';
 import { BackgroundIndex } from '../index/backgroundIndex.js';
 import { StaticIndex } from '../index/staticIndex.js';
 import { ConfigurationManager } from '../config/configurationManager.js';
-import { TypeScriptService } from '../typescript/typeScriptService.js';
 import { ImportResolver } from '../indexer/importResolver.js';
 import { LanguageRouter } from '../indexer/languageRouter.js';
 import { FileScanner } from '../indexer/fileScanner.js';
@@ -70,8 +69,6 @@ export interface IndexingInfrastructure {
  * Resolution and analysis services.
  */
 export interface ResolutionServices {
-  /** TypeScript service for semantic analysis */
-  typeScriptService: TypeScriptService;
   /** Import path resolver */
   importResolver: ImportResolver | null;
   /** Dead code detector */

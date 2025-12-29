@@ -66,6 +66,11 @@ export {
   createWorkspaceSymbolHandler
 } from './WorkspaceSymbolHandler.js';
 
+export {
+  ImplementationHandler,
+  createImplementationHandler
+} from './implementationHandler.js';
+
 // Future handlers (to be implemented):
 // export { DocumentHandler, createDocumentHandler } from './DocumentHandler.js';
 // export { CommandsHandler, createCommandsHandler } from './CommandsHandler.js';

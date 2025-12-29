@@ -5,6 +5,14 @@ All notable changes to the "smart-indexer" extension will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.86.0](https://github.com/p-sternik/smart-indexer/compare/v1.85.0...v1.86.0) (2025-12-29)
+
+
+### Features
+
+* implement native SQLite storage and offload indexing to a worker thread, adding symbol indexing and fast regex parsing. ([18c025e](https://github.com/p-sternik/smart-indexer/commit/18c025e2729f3c476aa54cca82d0fe2d2092f370))
+* Implement native SQLite storage with `better-sqlite3` in a worker thread with `sql.js` fallback. ([cd8a482](https://github.com/p-sternik/smart-indexer/commit/cd8a4820f03662dc8ae109e3b3123dd0e55f8c95))
+
 ## [1.85.0](https://github.com/p-sternik/smart-indexer/compare/v1.84.0...v1.85.0) (2025-12-29)
 
 

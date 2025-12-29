@@ -1,11 +1,14 @@
 import { parentPort } from 'worker_threads';
-import { SqlJsStorage } from './SqlJsStorage.js';
+import { SqlJsStorage } from './SqlJsStorage';
+import { NativeSqliteStorage } from './NativeSqliteStorage';
+import { IIndexStorage } from './IIndexStorage';
+import * as path from 'path';
 
 if (!parentPort) {
   throw new Error('This script must be run as a worker thread');
 }
 
-let storage: SqlJsStorage | null = null;
+let storage: IIndexStorage | null = null;
 
 parentPort.on('message', async (message) => {
   const { id, type, payload } = message;
@@ -13,8 +16,20 @@ parentPort.on('message', async (message) => {
   try {
     if (type === 'init') {
       const { workspaceRoot, cacheDirectory, autoSaveDelay } = payload;
-      storage = new SqlJsStorage(autoSaveDelay);
-      await storage.init(workspaceRoot, cacheDirectory);
+      const dbPath = path.join(workspaceRoot, cacheDirectory, 'index.db');
+      
+      try {
+        console.info('[SqlWorker] Attempting to initialize NativeSqliteStorage...');
+        const nativeStorage = new NativeSqliteStorage(dbPath);
+        await nativeStorage.init(workspaceRoot, cacheDirectory);
+        storage = nativeStorage;
+        console.info('[SqlWorker] NativeSqliteStorage initialized successfully.');
+      } catch (error: any) {
+        console.warn(`[SqlWorker] NativeSqliteStorage failed: ${error.message}. Falling back to SqlJsStorage.`);
+        storage = new SqlJsStorage(autoSaveDelay);
+        await storage.init(workspaceRoot, cacheDirectory);
+      }
+      
       parentPort!.postMessage({ id, success: true });
       return;
     }

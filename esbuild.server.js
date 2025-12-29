@@ -38,7 +38,7 @@ async function main() {
 		sourcesContent: false,
 		platform: 'node',
 		outdir: 'server/out',
-		external: ['vscode'],
+		external: ['vscode', 'better-sqlite3'],
 		logLevel: 'silent',
 		plugins: [
 			esbuildProblemMatcherPlugin,
@@ -54,7 +54,7 @@ async function main() {
 	// Copy WASM file to output directory
 	const wasmSource = path.join(__dirname, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm');
 	const wasmDest = path.join(__dirname, 'server', 'out', 'sql-wasm.wasm');
-	
+
 	if (fs.existsSync(wasmSource)) {
 		fs.copyFileSync(wasmSource, wasmDest);
 		console.log('[build] Copied sql-wasm.wasm to server/out/');

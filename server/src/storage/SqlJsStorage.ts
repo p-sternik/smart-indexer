@@ -1225,13 +1225,17 @@ private async migrateToV6(): Promise<void> {
 
     // Capture snapshot of the database
     // Note: db.export() is synchronous but required to get the binary data from WASM
-    const data = this.db.export();
+    let data: Uint8Array | null = this.db.export();
     this.isDirty = false; // Reset early so new changes can be tracked
 
     // Atomic write: temp file -> rename (asynchronous)
     const tmpPath = this.dbPath + '.tmp';
     try {
       await fs.promises.writeFile(tmpPath, data);
+      
+      // Free the memory as soon as possible
+      data = null; 
+      
       await fs.promises.rename(tmpPath, this.dbPath);
     } catch (error: any) {
       this.isDirty = true; // Restore dirty flag on failure
@@ -1245,6 +1249,8 @@ private async migrateToV6(): Promise<void> {
       } catch (cleanupError) { /* ignore */ }
       
       throw error;
+    } finally {
+      data = null; // Ensure it's cleared even on error
     }
   }
 
